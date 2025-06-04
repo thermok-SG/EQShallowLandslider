@@ -1,27 +1,33 @@
 # %% List of major functions used elsewhere
 # %% Required components
 from pathlib import Path
-import matplotlib.pyplot as plt
+
 import numpy as np
 import math
 from tqdm import tqdm
 import heapq
 import pandas as pd
+
+import matplotlib.pyplot as plt
 import seaborn as sns
 
 from scipy import stats
-from scipy.ndimage import label, gaussian_filter, binary_dilation, labeled_comprehension
-from scipy.ndimage import generate_binary_structure, center_of_mass
+
+from scipy.ndimage import (
+    label, labeled_comprehension,
+    gaussian_filter, binary_dilation,
+    generate_binary_structure, center_of_mass
+    )
+
 from skimage.measure import regionprops
 
 from rasterio.features import rasterize
 
 from bmi_topography import Topography
-# from landlab.io import read_esri_ascii
 from landlab.io import esri_ascii
-from landlab import RasterModelGrid, imshowhs_grid # to plot results
-
-# import rasterio as rs
+from landlab import (
+    RasterModelGrid, imshowhs_grid # to plot results
+    )
 
 # %% ### General function list ###
 # %%% Calculate number of output files
@@ -797,66 +803,6 @@ def zone_aspects(aspect_array, zones=None):
     
     return zone_array
 
-# def split_groups_by_aspect(groups, aspect_array, zones=None):
-#     """
-#     Split connected component groups based on aspect zones.
-#     Each group that spans multiple aspect zones will be split into separate groups.
-    
-#     Parameters:
-#     groups : numpy.ndarray
-#         2D array of integer labels where each connected component has a unique label
-#     aspect_array : numpy.ndarray
-#         2D array of aspect values in degrees (0-360)
-#     zones : dict, optional
-#         Dictionary mapping zone names to (min_angle, max_angle) tuples
-    
-#     Returns:
-#     numpy.ndarray
-#         New array where groups have been split based on aspect zones
-#     dict
-#         Mapping of new group labels to (original_group, zone_name) pairs
-#     """
-#     # Get zone labels for aspects
-#     if zones is None:
-#         zones = create_zones(20)
-#     zone_labels = zone_aspects(aspect_array, zones)
-    
-#     # Initialize output array and group info dictionary
-#     new_groups = np.zeros_like(groups)
-#     group_info = {}
-#     next_label = 1
-    
-#     # Get list of zone names for lookup
-#     zone_names = list(zones.keys())
-    
-#     # Process each original group
-#     pbar = tqdm(np.unique(groups))
-#     for group_id in pbar:
-#         if group_id == 0:  # Skip background
-#             continue
-        
-#         pbar.set_description(f"Processing group number {group_id}")
-        
-#         # Get mask for current group
-#         group_mask = (groups == group_id)
-        
-#         # For each zone present in this group
-#         for zone_id in np.unique(zone_labels[group_mask]):
-#             # Create mask for this group in this zone
-#             zone_mask = (zone_labels == zone_id)
-#             combined_mask = group_mask & zone_mask
-            
-#             # Label connected components within this zone
-#             labels, _ = label(combined_mask)
-            
-#             # Assign new unique labels to each component
-#             for label_name in range(1, labels.max() + 1):
-#                 new_groups[labels == label_name] = next_label
-#                 group_info[next_label] = (group_id, zone_names[zone_id])
-#                 next_label += 1
-    
-#     return new_groups, zone_labels, group_info
-
 def split_groups_by_aspect(groups, aspect_array, zones=None, 
                            min_size=2, handle_small='merge'):
     """
@@ -979,7 +925,7 @@ def split_groups_by_aspect(groups, aspect_array, zones=None,
 
 # %% ### Region selection functions ###
 # %%% Method 1
-
+# TODO: add method for simple proportional selection of regions
 # %%% Method 2: Select groups/proportion based on a_c
 # %%%% Helper functions
 def _calculate_acceleration_probability(pga_ratio, critical_acceleration):
@@ -1732,245 +1678,83 @@ def calculate_slope_factor(slope):
     else:
         return 0.1 + 0.03 * 15 + 0.08 * (slope - 15)
 # %%% Calculate properties for selected regions
-
-# def calculate_region_properties(grid, labeled_array, slopes, aspect_array):
-#     """
-#     Calculates area, shape properties for each labeled region
-
-#     Parameters
-#     ----------
-#     grid : RasterModelGrid
-#         Elevation grid.
-#     labeled_array : np.ndarray
-#         Array showing labeled regions.
-#     slopes : np.ndarray
-#         Array showing regional slopes.
-#     aspect_array : np.ndarray
-#         Array showing topographic aspect.
-
-#     Raises
-#     ------
-#     ValueError
-#         Raised when the arrays are not the same size as the grid.
-
-#     Returns
-#     -------
-#     props_df : pd.Dataframe
-#         Dataframe listing the shape properties for each labeled region.
-
-#     """
-    
-#     # Input validation
-#     if labeled_array.shape != (grid.number_of_node_rows, grid.number_of_node_columns):
-#         raise ValueError("Labeled array must match grid dimensions")
-    
-#     # Get unique labels excluding background (0)
-#     unique_labels = np.unique(labeled_array)
-#     unique_labels = unique_labels[unique_labels != 0]
-    
-#     if len(unique_labels) == 0:
-#         return pd.DataFrame()
-    
-#     # Reshape arrays
-#     elevation_grid = grid.at_node['topographic__elevation'].reshape(grid.shape)
-#     slopes_grid = slopes.reshape(grid.shape)
-    
-#     # Set up properties dictionary
-#     props = {
-#         'label': unique_labels,
-#         'area': np.zeros_like(unique_labels, dtype=float),
-#         # Elevation
-#         'max_elevation': np.zeros_like(unique_labels, dtype=float),
-#         'median_elevation': np.zeros_like(unique_labels, dtype=float),
-#         'local_relief': np.zeros_like(unique_labels, dtype=float),
-#         # Slope
-#         'median_slope': np.zeros_like(unique_labels, dtype=float),
-        
-#         'mean_aspect': np.zeros_like(unique_labels, dtype=float),
-#         'perimeter': np.zeros_like(unique_labels, dtype=float),
-#         'compactness': np.zeros_like(unique_labels, dtype=float),
-        
-#         # Shape properties
-#         'bbox_width': np.zeros_like(unique_labels, dtype=float),
-#         'bbox_height': np.zeros_like(unique_labels, dtype=float),
-#         'bbox_area': np.zeros_like(unique_labels, dtype=float),
-#         'fill_ratio': np.zeros_like(unique_labels, dtype=float),
-#         'major_axis_length': np.zeros_like(unique_labels, dtype=float),
-#         'minor_axis_length': np.zeros_like(unique_labels, dtype=float),
-#         'orientation': np.zeros_like(unique_labels, dtype=float),
-#         'eccentricity': np.zeros_like(unique_labels, dtype=float),
-#         'slope_direction_length': np.zeros_like(unique_labels, dtype=float),
-#         'perpendicular_width': np.zeros_like(unique_labels, dtype=float)
-#     }
-    
-#     # Calculate topographic statistics
-#     props['median_elevation'] = labeled_comprehension(
-#         elevation_grid, labeled_array, unique_labels, np.median, float, 0)
-#     props['max_elevation'] = labeled_comprehension(
-#         elevation_grid, labeled_array, unique_labels, np.max, float, 0)
-#     props['local_relief'] = props['max_elevation'] - labeled_comprehension(
-#         elevation_grid, labeled_array, unique_labels, np.min, float, 0)
-    
-#     props['median_slope'] = labeled_comprehension(
-#         slopes_grid, labeled_array, unique_labels, np.median, float, 0)
-    
-#     props['mean_aspect'] = labeled_comprehension(
-#         aspect_array, labeled_array, unique_labels, np.mean, float, 0)
-    
-#     # Get region properties using scikit-image's regionprops
-#     region_properties = regionprops(labeled_array)
-    
-#     # Process each region
-#     for i, label_num in enumerate(unique_labels):
-#         region_mask = labeled_array == label_num
-        
-#         # Calculate area in map units
-#         props['area'][i] = np.sum(region_mask) * grid.dx * grid.dy
-        
-#         # Calculate perimeter (assuming the calculate_perimeter_vectorized function exists)
-#         props['perimeter'][i] = calculate_perimeter_vectorized(region_mask, grid.dx, grid.dy)
-        
-#         # Calculate compactness
-#         if props['perimeter'][i] > 0:
-#             props['compactness'][i] = 4 * np.pi * props['area'][i] / (props['perimeter'][i] ** 2)
-        
-#         # Find the corresponding region in regionprops
-#         # Note: regionprops labels regions starting from 1 in order of appearance
-#         # We need to find which index corresponds to our label_num
-#         region_idx = None
-#         for j, region in enumerate(region_properties):
-#             if region.label == label_num:
-#                 region_idx = j
-#                 break
-        
-#         if region_idx is not None:
-#             region = region_properties[region_idx]
-            
-#             # Extract bounding box properties
-#             min_row, min_col, max_row, max_col = region.bbox
-#             props['bbox_height'][i] = (max_row - min_row) * grid.dy  # Convert to map units
-#             props['bbox_width'][i] = (max_col - min_col) * grid.dx   # Convert to map units
-#             props['bbox_area'][i] = props['bbox_height'][i] * props['bbox_width'][i]
-            
-#             # Calculate fill ratio (how much of the bounding box is filled by the region)
-#             if props['bbox_area'][i] > 0:
-#                 props['fill_ratio'][i] = props['area'][i] / props['bbox_area'][i]
-            
-#             # Get shape properties (also converted to map units where relevant)
-#             props['major_axis_length'][i] = region.major_axis_length * grid.dx  # Assuming dx=dy or using average
-#             props['minor_axis_length'][i] = region.minor_axis_length * grid.dx
-#             props['orientation'][i] = region.orientation * (180 / np.pi)  # Convert to degrees
-#             props['eccentricity'][i] = region.eccentricity
-            
-#             # Get the mean aspect for this region (already calculated in props['mean_aspect'][i])
-#             mean_aspect_radians = props['mean_aspect'][i] * (np.pi / 180)
-            
-#             # Calculate the slope direction vector (aspect is measured clockwise from north)
-#             # Convert to a direction where 0 is east (to match image coordinates)
-#             slope_direction_x = np.sin(mean_aspect_radians)  
-#             slope_direction_y = np.cos(mean_aspect_radians)
-#             slope_direction = np.array([slope_direction_y, slope_direction_x])
-            
-#             # Normalize the direction vector
-#             slope_direction = slope_direction / np.linalg.norm(slope_direction)
-            
-#             # Get perpendicular direction
-#             perp_direction = np.array([-slope_direction[1], slope_direction[0]])
-            
-#             # Get the region coordinates
-#             coords = np.column_stack(np.where(region_mask))  # [row, col] coordinates
-            
-#             if len(coords) > 0:
-#                 # Convert to map coordinates
-#                 map_coords = coords * np.array([grid.dy, grid.dx])
-                
-#                 # Center the coordinates on the region centroid
-#                 centroid = np.mean(map_coords, axis=0)
-#                 centered_coords = map_coords - centroid
-                
-#                 # Project each point onto the slope direction and perpendicular direction
-#                 slope_projections = np.dot(centered_coords, slope_direction)
-#                 perp_projections = np.dot(centered_coords, perp_direction)
-                
-#                 # Calculate length and width as twice the maximum projection
-#                 props['slope_direction_length'][i] = np.max(slope_projections) - np.min(slope_projections)
-#                 props['perpendicular_width'][i] = np.max(perp_projections) - np.min(perp_projections)
-    
-#     # Create DataFrame
-#     props_df = pd.DataFrame(props)
-#     props_df.set_index('label', inplace=True)
-    
-#     return props_df
-
-# %%%%
 def calculate_region_properties(grid, labeled_array, slopes, aspect_array, min_size=1, handle_small='keep'):
     """
-    Calculates area, shape properties for each labeled region
+    Calculates various geometric properties for each of the identified regions
 
     Parameters
     ----------
-    grid : RasterModelGrid
-        Elevation grid.
-    labeled_array : np.ndarray
-        Array showing labeled regions.
-    slopes : np.ndarray
-        Array showing regional slopes.
-    aspect_array : np.ndarray
-        Array showing topographic aspect.
+    grid : landlab.grid
+        Landlab grid containing elevation data
+    labeled_array : ndarray
+        Numpy array with each of the labeled regions 
+    slopes : _type_
+        Numpy array of slope values
+    aspect_array : _type_
+        Numpy array of topographic aspect values
     min_size : int, optional
-        Minimum number of pixels for a region to be kept (default: 1)
+        Minimum integer number of pixels that a region can have, by default 1
     handle_small : str, optional
-        How to handle regions smaller than min_size: 'keep', 'merge', or 'remove' (default: 'keep')
+        Flag to choose how to manage small (< min_size) regions, by default 'keep'
+        Can be: 'keep', 'merge', 'remove'
+
+    Returns
+    -------
+    propos : Pandas dataframe
+        Dataframe listing geometric properties for each labeled region
+        Properties include:
+            region label
+            area
+            max, min elevation
+            median elevation
+            local relief
+            mean topographic aspect
+            perimeter
+            compactness
+            bounding box (bbox) width, height, area
+            fill ratio
+            major, minor axis lengths
+            orientation of major axis
+            eccentricity
+            slope-parallel length
+            slope-perpendicular width
+            hybrid length, width
 
     Raises
     ------
     ValueError
-        Raised when the arrays are not the same size as the grid.
-
-    Returns
-    -------
-    props_df : pd.Dataframe
-        Dataframe listing the shape properties for each labeled region.
-    labeled_array : np.ndarray
-        Potentially modified labeled array if small regions were handled.
+        Raised if array of labeled regions is not the same size as the landlab grid
     """
-    # Input validation
+
+
     if labeled_array.shape != (grid.number_of_node_rows, grid.number_of_node_columns):
         raise ValueError("Labeled array must match grid dimensions")
-    
-    # Make a copy to avoid modifying the original
-    # Handle small regions, if required
+
     if handle_small in ['merge', 'remove'] and min_size > 1:
         working_labeled_array = labeled_array.copy()
         working_labeled_array = handle_small_regions(working_labeled_array, min_size, handle_small, grid)
     else:
         working_labeled_array = labeled_array
 
-    # Get unique labels excluding background
     unique_labels = np.unique(working_labeled_array)
     unique_labels = unique_labels[unique_labels != 0]
-    
+
     if len(unique_labels) == 0:
         return pd.DataFrame(), working_labeled_array
-    
-    # Reshape arrays
+
     elevation_grid = grid.at_node['topographic__elevation'].reshape(grid.shape)
     slopes_grid = slopes.reshape(grid.shape)
-    
-    # Set up properties dictionary with zeros for all metrics
+
     props = {
         'label': unique_labels,
         'area': np.zeros_like(unique_labels, dtype=float),
-        # Elevation
         'max_elevation': np.zeros_like(unique_labels, dtype=float),
         'median_elevation': np.zeros_like(unique_labels, dtype=float),
         'local_relief': np.zeros_like(unique_labels, dtype=float),
-        # Slope
         'median_slope': np.zeros_like(unique_labels, dtype=float),
         'mean_aspect': np.zeros_like(unique_labels, dtype=float),
         'perimeter': np.zeros_like(unique_labels, dtype=float),
         'compactness': np.zeros_like(unique_labels, dtype=float),
-        # Shape properties
         'bbox_width': np.zeros_like(unique_labels, dtype=float),
         'bbox_height': np.zeros_like(unique_labels, dtype=float),
         'bbox_area': np.zeros_like(unique_labels, dtype=float),
@@ -1979,229 +1763,160 @@ def calculate_region_properties(grid, labeled_array, slopes, aspect_array, min_s
         'minor_axis_length': np.zeros_like(unique_labels, dtype=float),
         'orientation': np.zeros_like(unique_labels, dtype=float),
         'eccentricity': np.zeros_like(unique_labels, dtype=float),
-        # Slope direction metrics
         'slope_direction_length': np.zeros_like(unique_labels, dtype=float),
-        'perpendicular_width': np.zeros_like(unique_labels, dtype=float)
+        'perpendicular_width': np.zeros_like(unique_labels, dtype=float),
+        'hybrid_length': np.zeros_like(unique_labels, dtype=float),
+        'hybrid_width': np.zeros_like(unique_labels, dtype=float)
     }
-    
-    # Calculate basic topographic statistics
+
     calculate_topographic_stats(props, unique_labels, working_labeled_array, elevation_grid, slopes_grid, aspect_array)
-    
-    # Get region properties
     region_properties = regionprops(working_labeled_array)
-    
-    # Process each region's geometric properties
     calculate_geometric_properties(props, unique_labels, working_labeled_array, region_properties, grid)
-    
-    # Calculate slope-direction metrics
     calculate_slope_direction_metrics(props, unique_labels, working_labeled_array, grid)
-    
-    # Create properties DataFrame
+    calculate_landslide_shape_metrics(props)
+
     props_df = pd.DataFrame(props)
     props_df.set_index('label', inplace=True)
-    
+
     return props_df, working_labeled_array
 
+# %%%% Helper functions
 def handle_small_regions(labeled_array, min_size, method='merge', grid=None):
     """
-    Process regions smaller than min_size by either removing them or merging with neighbors.
+    Helper function to handle labeled regions that are smaller than a defined threshold minimum size
     
-    Parameters:
-    -----------
-    labeled_array : numpy.ndarray
-        2D array of integer labels where each connected component has a unique label
-    min_size : int
-        Minimum number of pixels for a region to be kept
-    method : str, optional
-        How to handle small regions: 'merge' or 'remove' (default: 'merge')
-    grid : RasterModelGrid, optional
-        Grid object for calculating distances (used for merging)
+    Parameters
+    ----------
+    
+    labeled_array : ndarray
+        Numpy array with each of the labeled regions
+    min_size : int, optional
+        Minimum integer number of pixels that a region can have, by default 1
+    handle_small : str, optional
+        Flag to choose how to manage small (< min_size) regions, by default 'merge'
+        Can be: 'keep', 'merge', 'remove'
+    grid : landlab.grid
+        Landlab grid containing elevation data
         
-    Returns:
-    --------
-    numpy.ndarray
-        Modified labeled array with small regions processed
+    
     """
+
     if method not in ['merge', 'remove']:
         return labeled_array
-    
+
     print('Processing small regions...')
-    # Make a copy of the labeled array
     modified_array = labeled_array.copy()
-    
-    # Find all regions and their sizes
     props = regionprops(labeled_array)
-    small_regions = []
-    
-    # Identify small regions
-    for region in props:
-        if region.area < min_size:
-            small_regions.append({
-                'label': region.label,
-                'mask': labeled_array == region.label,
-                'centroid': region.centroid,
-                'size': region.area
-            })
-    
-    # If no small regions found, just return the original
+    small_regions = [
+        {'label': region.label, 'mask': labeled_array == region.label, 'centroid': region.centroid, 'size': region.area}
+        for region in props if region.area < min_size
+    ]
+
     if not small_regions:
         return labeled_array
-    
-    # If removing small regions, just set them to background (0)
+
     if method == 'remove':
         for region in small_regions:
             modified_array[region['mask']] = 0
         return modified_array
-    
-    # For merging, sort small regions by size (smallest first)
+
     small_regions.sort(key=lambda x: x['size'])
-    
-    # Process each small region
     for region in small_regions:
         mask = region['mask']
-        
-        # Dilate the small region mask to find neighbors
         dilated = binary_dilation(mask)
         neighbor_mask = dilated & ~mask
-        
-        # Find neighboring regions
         neighbor_labels = np.unique(modified_array[neighbor_mask])
-        # Remove background (0) and the small region's own label
         neighbor_labels = neighbor_labels[(neighbor_labels > 0) & (neighbor_labels != region['label'])]
-        
+
         if len(neighbor_labels) > 0:
-            # Find the most common neighbor
-            neighbor_counts = [(nl, np.sum(modified_array[neighbor_mask] == nl)) 
-                              for nl in neighbor_labels]
+            neighbor_counts = [(nl, np.sum(modified_array[neighbor_mask] == nl)) for nl in neighbor_labels]
             best_neighbor = max(neighbor_counts, key=lambda x: x[1])[0]
-            
-            # Merge with best neighbor
             modified_array[mask] = best_neighbor
-        else:
-            # No neighbors found, region remains as is
-            pass
-    
+
     return modified_array
 
 
 def calculate_topographic_stats(props, unique_labels, labeled_array, elevation_grid, slopes_grid, aspect_array):
-    """Calculates basic topographic statistics for each region"""
-    props['median_elevation'] = labeled_comprehension(
-        elevation_grid, labeled_array, unique_labels, np.median, float, 0)
-    props['max_elevation'] = labeled_comprehension(
-        elevation_grid, labeled_array, unique_labels, np.max, float, 0)
-    props['local_relief'] = props['max_elevation'] - labeled_comprehension(
-        elevation_grid, labeled_array, unique_labels, np.min, float, 0)
-    
-    props['median_slope'] = labeled_comprehension(
-        slopes_grid, labeled_array, unique_labels, np.median, float, 0)
-    
-    props['mean_aspect'] = labeled_comprehension(
-        aspect_array, labeled_array, unique_labels, np.mean, float, 0)
+    props['median_elevation'] = labeled_comprehension(elevation_grid, labeled_array, unique_labels, np.median, float, 0)
+    props['max_elevation'] = labeled_comprehension(elevation_grid, labeled_array, unique_labels, np.max, float, 0)
+    props['local_relief'] = props['max_elevation'] - labeled_comprehension(elevation_grid, labeled_array, unique_labels, np.min, float, 0)
+    props['median_slope'] = labeled_comprehension(slopes_grid, labeled_array, unique_labels, np.median, float, 0)
+    props['mean_aspect'] = labeled_comprehension(aspect_array, labeled_array, unique_labels, np.mean, float, 0)
 
 
 def calculate_geometric_properties(props, unique_labels, labeled_array, region_properties, grid):
-    """Calculates geometric properties for each region"""
     for i, label_num in enumerate(unique_labels):
         region_mask = labeled_array == label_num
-        
-        # Calculate area in map units
         props['area'][i] = np.sum(region_mask) * grid.dx * grid.dy
-        
-        # Calculate perimeter
         props['perimeter'][i] = calculate_perimeter_vectorized(region_mask, grid.dx, grid.dy)
-        
-        # Calculate compactness
         if props['perimeter'][i] > 0:
             props['compactness'][i] = 4 * np.pi * props['area'][i] / (props['perimeter'][i] ** 2)
-        
-        # Find the corresponding region in regionprops
-        region_idx = None
-        for j, region in enumerate(region_properties):
-            if region.label == label_num:
-                region_idx = j
-                break
-        
+
+        region_idx = next((j for j, r in enumerate(region_properties) if r.label == label_num), None)
         if region_idx is not None:
-            region = region_properties[region_idx]
-            extract_region_shape_metrics(props, i, region, grid)
+            extract_region_shape_metrics(props, i, region_properties[region_idx], grid)
 
 
 def extract_region_shape_metrics(props, i, region, grid):
-    """Extracts shape metrics from a region object"""
-    # Extract bounding box properties
     min_row, min_col, max_row, max_col = region.bbox
-    props['bbox_height'][i] = (max_row - min_row) * grid.dy  # Convert to map units
-    props['bbox_width'][i] = (max_col - min_col) * grid.dx   # Convert to map units
+    props['bbox_height'][i] = (max_row - min_row) * grid.dy
+    props['bbox_width'][i] = (max_col - min_col) * grid.dx
     props['bbox_area'][i] = props['bbox_height'][i] * props['bbox_width'][i]
-    
-    # Calculate fill ratio
     if props['bbox_area'][i] > 0:
         props['fill_ratio'][i] = props['area'][i] / props['bbox_area'][i]
-    
+
     epsilon = 1
-    # Get shape properties
     props['major_axis_length'][i] = region.major_axis_length * grid.dx
-        
     props['minor_axis_length'][i] = region.minor_axis_length * grid.dx
     if props['minor_axis_length'][i] == 0:
         props['minor_axis_length'][i] += epsilon
-    
-    props['orientation'][i] = region.orientation * (180 / np.pi)  # Convert to degrees
+
+    props['orientation'][i] = region.orientation * (180 / np.pi)
     props['eccentricity'][i] = region.eccentricity
 
 
 def calculate_slope_direction_metrics(props, unique_labels, labeled_array, grid):
-    """Calculates length in slope direction and width in perpendicular direction"""
     for i, label_num in enumerate(unique_labels):
         region_mask = labeled_array == label_num
-        
-        # Get the mean aspect for this region
         mean_aspect_radians = props['mean_aspect'][i] * (np.pi / 180)
-        
-        # Calculate the slope direction vector (aspect is measured clockwise from north)
-        slope_direction_x = np.sin(mean_aspect_radians)
-        slope_direction_y = np.cos(mean_aspect_radians)
-        slope_direction = np.array([slope_direction_y, slope_direction_x])
-        
-        # Normalize the direction vector
-        slope_direction = slope_direction / np.linalg.norm(slope_direction)
-        
-        # Get perpendicular direction
+        slope_direction = np.array([np.cos(mean_aspect_radians), np.sin(mean_aspect_radians)])
+        slope_direction /= np.linalg.norm(slope_direction)
         perp_direction = np.array([-slope_direction[1], slope_direction[0]])
-        
-        # Get the region coordinates
-        coords = np.column_stack(np.where(region_mask))  # [row, col] coordinates
-        
+
+        coords = np.column_stack(np.where(region_mask))
         if len(coords) > 0:
-            # Convert to map coordinates
             map_coords = coords * np.array([grid.dy, grid.dx])
-            
-            # Center the coordinates on the region centroid
             centroid = np.mean(map_coords, axis=0)
             centered_coords = map_coords - centroid
-            
-            # Project each point onto the slope direction and perpendicular direction
-            slope_projections = np.dot(centered_coords, slope_direction)
-            perp_projections = np.dot(centered_coords, perp_direction)
-            
-            # Calculate length and width as range of projections
-            props['slope_direction_length'][i] = np.max(slope_projections) - np.min(slope_projections)
-            props['perpendicular_width'][i] = np.max(perp_projections) - np.min(perp_projections)
+
+            slope_proj = np.dot(centered_coords, slope_direction)
+            perp_proj = np.dot(centered_coords, perp_direction)
+
+            props['slope_direction_length'][i] = np.max(slope_proj) - np.min(slope_proj)
+            props['perpendicular_width'][i] = np.max(perp_proj) - np.min(perp_proj)
+
+
+def calculate_landslide_shape_metrics(props):
+    for i in range(len(props['label'])):
+        length_candidates = [
+            props['slope_direction_length'][i],
+            props['major_axis_length'][i],
+            max(props['bbox_height'][i], props['bbox_width'][i])
+        ]
+        width_candidates = [
+            props['perpendicular_width'][i],
+            props['minor_axis_length'][i],
+            min(props['bbox_height'][i], props['bbox_width'][i])
+        ]
+
+        props['hybrid_length'][i] = np.median(length_candidates)
+        props['hybrid_width'][i] = np.median(width_candidates)
+
 
 def calculate_perimeter_vectorized(region_mask, dx, dy):
-    """Vectorized version of perimeter calculation"""
-    # Create a dilated mask
     dilated = binary_dilation(region_mask)
-    
-    # Boundary pixels are those in dilated but not in original
     boundary = np.logical_and(dilated, ~region_mask)
-    
-    # Count boundary pixels and multiply by grid spacing
-    # This is a simplification - for more accuracy you might need 
-    # to account for diagonal edges differently
     perimeter_length = np.sum(boundary) * (dx + dy) / 2
-    
     return perimeter_length
 # %%% Split regions by width
 def split_wide_regions(labeled_array, region_df, kde_results, transform_info,
@@ -2489,6 +2204,178 @@ def calculate_region_dimensions(grid, labels, slopes, aspects):
     return results_df
 
 # %% ### Calculation of instability ###
+# %%% Generate soil depth array
+def apply_soil_depth(grid,
+                    elevation_field='topographic__elevation', 
+                    soil_field='soil__depth',
+                    max_soil_depth=1.0,
+                    distribution='uniform',
+                    plot=False
+                    ):
+    """
+    Apply soil depth to core nodes based on elevation or uniform distribution.
+    
+    Parameters:
+    -----------
+    grid : Landlab grid object
+        The landlab grid (RasterModelGrid, HexModelGrid, etc.)
+    elevation_field : str, default 'topographic__elevation'
+        Name of the field containing elevation data
+    soil_field : str, default 'soil__depth'
+        Name of the field to store soil depth data
+    max_soil_depth : float, default 1.0
+        Maximum soil depth in meters. For elevation-based: applied to minimum elevation.
+        For uniform: applied to all core nodes.
+    distribution : str, default 'uniform'
+        When 'uniform' : 
+        - All core nodes get the same soil depth (max_soil_depth)
+        - Boundary nodes get zero soil depthapplies the max_soil_depth uniformly across entire grid
+        When 'elevation' :
+        - Soil depth varies inversely with elevation
+        - Minimum elevation gets maximum soil depth
+        - Maximum elevation gets zero soil depth
+    plot : bool, default False
+        If True, creates a scatter plot showing soil depth vs elevation relationship.
+    
+    Returns:
+    --------
+    soil_depth : ndarray
+        1D array of soil depth values, associated with the grid 'soil__depth' field
+        
+    """
+    # Get elevation data and core nodes
+    elevation = grid.at_node[elevation_field]
+    core_nodes = grid.core_nodes
+    
+    # Initialize soil depth field on the grid (zeros everywhere)
+    soil_depth = grid.add_zeros("node", soil_field, clobber=True)
+    
+    if distribution == 'uniform':
+        # Apply uniform soil depth to core nodes only
+        soil_depth[core_nodes] = max_soil_depth
+        print(f"Uniform soil depth applied to grid:")
+        print(f"  Soil depth: {max_soil_depth:.2f} m (uniform)")
+        print(f"  Core nodes processed: {len(core_nodes)}")
+        
+    elif distribution == 'elevation':
+        # Apply elevation-based soil depth
+        core_elevations = elevation[core_nodes]
+        
+        # Calculate min and max elevation from core nodes
+        min_elevation = np.min(core_elevations)
+        max_elevation = np.max(core_elevations)
+        
+        # Check if there's any elevation variation
+        elevation_range = max_elevation - min_elevation
+        if elevation_range == 0:
+            # If all elevations are the same, assign uniform soil depth
+            soil_depth[core_nodes] = max_soil_depth / 2.0
+            print("Warning: All core nodes have the same elevation. Assigning uniform soil depth.")
+        else:
+            # Calculate normalized elevation (0 = min elevation, 1 = max elevation)
+            normalized_elevation = (elevation - min_elevation) / elevation_range
+            
+            # Apply inverse relationship to all nodes first
+            temp_soil_depth = max_soil_depth * (1.0 - normalized_elevation)
+            
+            # Ensure non-negative values
+            temp_soil_depth = np.maximum(temp_soil_depth, 0.0)
+            
+            # Copy values to the grid field
+            soil_depth[:] = temp_soil_depth
+            
+            # Set boundary nodes to zero
+            boundary_nodes = np.setdiff1d(np.arange(grid.number_of_nodes), core_nodes)
+            soil_depth[boundary_nodes] = 0.0
+        
+        # Print summary statistics
+        print(f"Elevation-based soil depth applied to grid:")
+        print(f"  Elevation range: {min_elevation:.2f} to {max_elevation:.2f} m")
+        print(f"  Soil depth range: 0.00 to {max_soil_depth:.2f} m")
+        print(f"  Core nodes processed: {len(core_nodes)}")
+    
+    else:
+        raise ValueError("Soil distribution can only be 'uniform' or 'elevation'")
+    
+    # Create plot if requested
+    if plot:
+        create_soil_depth_plot(grid, elevation_field, soil_field, uniform)
+    
+    return soil_depth
+
+# Helper function to create plot of soil depth distribution
+def create_soil_depth_plot(grid,
+                           elevation_field,
+                           soil_field,
+                           uniform
+                           ):
+    """
+    Create a scatter plot showing the relationship between elevation and soil depth.
+    
+    Parameters:
+    -----------
+    grid : Landlab grid object
+        The landlab grid with elevation and soil depth fields
+    elevation_field : str
+        Name of the elevation field
+    soil_field : str
+        Name of the soil depth field
+    uniform : bool
+        Whether uniform soil depth was applied
+    """
+    # Get data for core nodes only
+    elevation = grid.at_node[elevation_field]
+    soil_depth = grid.at_node[soil_field]
+    core_nodes = grid.core_nodes
+    
+    core_elevation = elevation[core_nodes]
+    core_soil_depth = soil_depth[core_nodes]
+    
+    # Create the plot
+    plt.figure(figsize=(10, 6))
+    
+    if uniform:
+        # For uniform case, show horizontal line
+        plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue', 
+                   label=f'Core nodes (n={len(core_nodes)})')
+        plt.axhline(y=core_soil_depth[0], color='red', linestyle='--', alpha=0.7,
+                   label=f'Uniform depth = {core_soil_depth[0]:.2f} m')
+        plt.title('Uniform Soil Depth Distribution')
+    else:
+        # For elevation-based case, show scatter with trend line
+        plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue',
+                   label=f'Core nodes (n={len(core_nodes)})')
+        
+        # Add theoretical trend line
+        elev_range = np.linspace(core_elevation.min(), core_elevation.max(), 100)
+        max_depth = core_soil_depth.max()
+        min_elev = core_elevation.min()
+        max_elev = core_elevation.max()
+        
+        if max_elev > min_elev:  # Avoid division by zero
+            normalized_elev = (elev_range - min_elev) / (max_elev - min_elev)
+            theoretical_depth = max_depth * (1.0 - normalized_elev)
+            plt.plot(elev_range, theoretical_depth, 'r--', alpha=0.7, 
+                    label='Theoretical relationship')
+        
+        plt.title('Elevation-Based Soil Depth Distribution')
+    
+    plt.xlabel('Elevation (m)')
+    plt.ylabel('Soil Depth (m)')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # Add statistics text box
+    stats_text = f'Statistics:\n'
+    stats_text += f'Elevation: {core_elevation.min():.2f} - {core_elevation.max():.2f} m\n'
+    stats_text += f'Soil depth: {core_soil_depth.min():.2f} - {core_soil_depth.max():.2f} m\n'
+    stats_text += f'Mean soil depth: {core_soil_depth.mean():.2f} m'
+    
+    plt.text(0.02, 0.22, stats_text, transform=plt.gca().transAxes, 
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.show()
 # %%% Generate earthquakes
 def generate_acceleration_grid(grid, max_horizontal, max_vertical,
                                distribution="uniform", center=None,
@@ -2646,6 +2533,7 @@ def generate_acceleration_grid(grid, max_horizontal, max_vertical,
         horizontal_accel[grid.core_nodes] *= max_horizontal
         vertical_accel[grid.core_nodes] *= max_vertical
     
+    print(f"{distribution} horizontal and vertical PGA arrays generated")
     return horizontal_accel, vertical_accel
 # %%% Calculate Factor of Safety - Infinite slope
 

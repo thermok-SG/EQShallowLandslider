@@ -4,12 +4,14 @@ Created on Tue Apr  8 17:21:12 2025
 
 @author: sghoshal
 """
-
+# %%
 from shallow_landslider_class import ShallowLandslideSimulator
+
 import matplotlib.pyplot as plt
 import numpy as np
 from landlab import imshow_grid, imshowhs_grid  # to plot results
 
+# %%
 config_dict = {
     'dem_info': {
         'dem_type': "SRTMGL1",
@@ -19,29 +21,38 @@ config_dict = {
         'west': 85.04,
         'buffer': 0.01,
         'smooth_num': 4
-    },
+        },
+    'flow_params': {
+        'flow_metric': 'D8',
+        'separate_hill_flow': True,
+        'depression_handling': 'fill',
+        'update_hill_depressions': True,
+        'accumulate_flow': True
+        },
     'soil_params': {
         'angle_int_frict': np.radians(30),
         'cohesion_eff': 15e3,  # Pa
         'submerged_soil_proportion': 0.5,
-        'soil_depth': 1.0  # m
-    },
+        'max_soil_depth': 1.0, # m
+        'distribution': 'uniform',
+        'plot_soil': False,
+        },
     'pga': {
         'horizontal': 0.6,
         'vertical': 0.2,
         'distribution': "uniform"
-    },
+        },
     'simulation': {
         'time_shaking': 10,  # seconds
         'displacement_threshold': 0,
         'aspect_interval': 20,
-    },
+        },
     'output': {
         'save_plots': False,
         'output_dir': None,
         'plot_intermediate': False
+        }
     }
-}
 
 sim = ShallowLandslideSimulator(config=config_dict)
 
@@ -52,8 +63,6 @@ grid, plot_data = sim.run_one_step(landslide_selection_method='pga_weighted')
 
 # %%
 
-
-
 plt.figure(figsize=(12, 8), layout='constrained')
 imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
               drape1=np.ma.masked_invalid(np.ma.masked_greater(plot_data['factor_of_safety'], 2)),
@@ -61,3 +70,14 @@ imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
               cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
 plt.suptitle('Static factor of safety < 2.0')
 plt.show()
+# %%
+plot_data.keys()
+# %%
+plt.figure(figsize=(12, 8), layout='constrained')
+imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
+              drape1=np.ma.masked_invalid(np.ma.masked_equal(plot_data['selected_landslides'], 0)),
+              cmap='jet', allow_colorbar=True, cbar_or='vertical',
+              cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
+plt.suptitle('Static factor of safety < 2.0')
+plt.show()
+# %%

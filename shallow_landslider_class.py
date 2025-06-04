@@ -56,7 +56,7 @@ from landlab.components import PriorityFloodFlowRouter
 try:
     from auxiliary_functions import (
         # General functions
-        get_topo, smooth_elevation_grid,
+        get_topo, smooth_elevation_grid, apply_soil_depth,
         # Functions for Newmark acceleration and displacement
         critical_transient_acceleration, calculate_newmark_displacement, factor_of_safety,
         
@@ -104,30 +104,46 @@ class ShallowLandslideSimulator:
                     'south': 28.18,
                     'west': 85.04,
                     'buffer': 0.01,
-                    'smooth_num': 4
-                },
+                    'smooth_num': 4,
+                    'plot_dem' : False
+                    },
+                'flow_params': {
+                    'flow_metric': 'D8',
+                    'separate_hill_flow': True,
+                    'depression_handling': 'fill',
+                    'update_hill_depressions': True,
+                    'accumulate_flow': True
+                    },
                 'soil_params': {
                     'angle_int_frict': np.radians(30),
                     'cohesion_eff': 15e3,  # Pa
                     'submerged_soil_proportion': 0.5,
-                    'soil_depth': 1.0  # m
-                },
+                    'max_soil_depth': 1.0, # m
+                    'distribution': 'uniform',
+                    'plot_soil': False,
+                    },
                 'pga': {
                     'horizontal': 0.6,
                     'vertical': 0.2,
-                    'distribution': "uniform"
-                },
+                    'distribution': "uniform",
+                    'plot_PGA': False
+                    },
                 'simulation': {
                     'time_shaking': 10,  # seconds
                     'displacement_threshold': 0,
                     'aspect_interval': 20,
+                    },
+                'plot_intermediates':{
+                    'factor_of_safety': False,
+                    'critical_acceleration': False,
+                    'unstable_areas': False,
+                    'filled_and_split': False
                 },
                 'output': {
                     'save_plots': False,
                     'output_dir': None,
-                    'plot_intermediate': False
+                    }
                 }
-            }
         else:
             self.config = config
         
@@ -153,7 +169,7 @@ class ShallowLandslideSimulator:
         self.sliding_array_bool = None
         self.labeled_array = None
         self.labeled_array_filled = None
-        self.aspect_nodes = None
+        self.aspect_nodes_array = None
         self.aspect_subgroups = None
         self.acceleration_horizontal_array = None
         self.acceleration_vertical_array = None
@@ -177,11 +193,15 @@ class ShallowLandslideSimulator:
         """
         # Add soil depth field if it doesn't exist
         if "soil__depth" not in self.grid.at_node:
-            soil_depth = self.grid.add_zeros("node", "soil__depth", clobber=True)
-            soil_depth_value = self.config['soil_params']['soil_depth']
+            self.soil_depth = apply_soil_depth(self.grid, max_soil_depth=self.config['soil_params']['max_soil_depth'],
+                              distribution=self.config['soil_params']['distribution'],
+                              plot=self.config['soil_params']['plot_soil']
+                              )
+            # soil_depth = self.grid.add_zeros("node", "soil__depth", clobber=True)
+            # soil_depth_value = self.config['soil_params']['soil_depth']
             
-            # Set initial soil depth at core nodes
-            self.grid.at_node["soil__depth"][self.grid.core_nodes] = soil_depth_value
+            # # Set initial soil depth at core nodes
+            # self.grid.at_node["soil__depth"][self.grid.core_nodes] = soil_depth_value
             
         # Add bedrock elevation field if it doesn't exist
         if "bedrock__elevation" not in self.grid.at_node:
@@ -197,11 +217,11 @@ class ShallowLandslideSimulator:
         # Initialize and run flow router
         pf = PriorityFloodFlowRouter(
             self.grid, 
-            flow_metric='D8', 
-            separate_hill_flow=True,
-            depression_handler="fill", 
-            update_hill_depressions=True,
-            accumulate_flow=True
+            flow_metric=self.config['flow_params']['flow_metric'], 
+            separate_hill_flow=self.config['flow_params']['separate_hill_flow'],
+            depression_handler=self.config['flow_params']['depression_handling'], 
+            update_hill_depressions=self.config['flow_params']['update_hill_depressions'],
+            accumulate_flow=self.config['flow_params']['accumulate_flow']
         )
         pf.run_one_step()
         
@@ -261,7 +281,9 @@ class ShallowLandslideSimulator:
             left_is_closed=False, bottom_is_closed=False
         )
         
-        # Process the grid (add soil depth, calculate slopes, etc.)
+        # Process the grid
+        # Adds/calculates:
+        #   soil depth, slopes, flow routing
         self._process_grid()
         
         return self.grid
@@ -393,22 +415,22 @@ class ShallowLandslideSimulator:
             Dictionary containing aspect filtering results
         """
         # Calculate topographic aspect
-        self.aspect_nodes = np.array(self.grid.calc_aspect_at_node(
+        aspect_nodes = np.array(self.grid.calc_aspect_at_node(
             elevs='topographic__elevation', 
             unit="degrees",
             ignore_closed_nodes=True
         ))
         
-        self.aspect_nodes[self.grid.boundary_nodes] = np.nan
-        aspect_nodes_array = self.aspect_nodes.reshape(self.grid.shape)
+        aspect_nodes[self.grid.boundary_nodes] = np.nan
+        self.aspect_nodes_array = aspect_nodes.reshape(self.grid.shape)
         
         # Create dictionary of aspect zones
         aspect_intervals = create_zones(interval=self.config['simulation']['aspect_interval'])
         
         # Split groups by aspect
         self.aspect_subgroups, aspect_zones, info = split_groups_by_aspect(
-            self.labeled_array_filled,
-            aspect_nodes_array,
+            groups=self.labeled_array_filled,
+            aspect_array=self.aspect_nodes_array,
             zones=aspect_intervals
         )
         
@@ -437,12 +459,13 @@ class ShallowLandslideSimulator:
         subgroup_props = calculate_region_properties(
             self.grid, 
             self.aspect_subgroups, 
-            slopes=self.slopes_degrees
+            slopes=self.slopes_degrees,
+            aspect_array=self.aspect_nodes_array
         )
         
         # Store results
         self.results['aspect_filtering'] = {
-            'aspect_nodes': self.aspect_nodes,
+            'aspect_nodes_array': self.aspect_nodes_array,
             'aspect_subgroups': self.aspect_subgroups,
             'aspect_zones': aspect_zones,
             'split_aspect_groups': split_aspect_groups,
@@ -490,7 +513,8 @@ class ShallowLandslideSimulator:
             pga_weighted_group_props = calculate_region_properties(
                 self.grid, 
                 labeled_array=self.pga_weighted_groups,
-                slopes=self.slopes_degrees
+                slopes=self.slopes_degrees,
+                aspect_array=self.aspect_nodes_array
             )
             
             # Store results
@@ -533,7 +557,8 @@ class ShallowLandslideSimulator:
             selected_group_props = calculate_region_properties(
                 self.grid, 
                 labeled_array=self.selected_groups, 
-                slopes=self.slopes_degrees
+                slopes=self.slopes_degrees,
+                aspect_array=self.aspect_nodes_array
             )
             
             # Store results
@@ -703,7 +728,7 @@ class ShallowLandslideSimulator:
             'landslide_regions': self.labeled_array_filled,
             'aspect_subgroups': self.aspect_subgroups,
             'selected_landslides': self.selected_groups,
-            'landslide_proportion': self.results['selected_landslides']['selected_proportion'],
+            'landslide_proportion': self.results['selected_landslides']['proportion'],
             
             # Displacements and sediment transport
             'displacements': self.newmark_displacement_select,
