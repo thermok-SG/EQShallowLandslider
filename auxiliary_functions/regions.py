@@ -274,7 +274,7 @@ def split_groups_by_aspect(groups, aspect_array, zones=None,
             if len(neighbor_labels) > 0:
                 # Find the most common neighbor
                 neighbor_counts = [(nl, np.sum(new_groups[neighbor_mask] == nl)) 
-                                  for nl in neighbor_labels]
+                                    for nl in neighbor_labels]
                 best_neighbor = max(neighbor_counts, key=lambda x: x[1])[0]
                 
                 # Merge with best neighbor
@@ -376,14 +376,18 @@ def calculate_region_properties(grid, labeled_array, slopes, aspect_array, min_s
         'slope_direction_length': np.zeros_like(unique_labels, dtype=float),
         'perpendicular_width': np.zeros_like(unique_labels, dtype=float),
         'hybrid_length': np.zeros_like(unique_labels, dtype=float),
-        'hybrid_width': np.zeros_like(unique_labels, dtype=float)
+        'hybrid_width': np.zeros_like(unique_labels, dtype=float),
+        'slope_direction_length_new': np.zeros_like(unique_labels, dtype=float),
+        'perpendicular_width_new': np.zeros_like(unique_labels, dtype=float) 
     }
 
     calculate_topographic_stats(props, unique_labels, working_labeled_array, elevation_grid, slopes_grid, aspect_array)
     region_properties = regionprops(working_labeled_array)
     calculate_geometric_properties(props, unique_labels, working_labeled_array, region_properties, grid)
-    calculate_slope_direction_metrics(props, unique_labels, working_labeled_array, grid)
-    calculate_landslide_shape_metrics(props)
+    
+    calculate_slope_length_old(props, unique_labels, working_labeled_array, grid)
+    calculate_elevation_dir_dims(props, unique_labels, working_labeled_array, 
+                                    elevation_grid, aspect_array, slopes_grid, grid)
 
     props_df = pd.DataFrame(props)
     props_df.set_index('label', inplace=True)
@@ -449,7 +453,8 @@ def handle_small_regions(labeled_array, min_size, method='merge', grid=None):
 def calculate_topographic_stats(props, unique_labels, labeled_array, elevation_grid, slopes_grid, aspect_array):
     props['median_elevation'] = labeled_comprehension(elevation_grid, labeled_array, unique_labels, np.median, float, 0)
     props['max_elevation'] = labeled_comprehension(elevation_grid, labeled_array, unique_labels, np.max, float, 0)
-    props['local_relief'] = props['max_elevation'] - labeled_comprehension(elevation_grid, labeled_array, unique_labels, np.min, float, 0)
+    props['min_elevation'] = labeled_comprehension(elevation_grid, labeled_array, unique_labels, np.min, float, 0)
+    props['local_relief'] = props['max_elevation'] - props['min_elevation']
     props['median_slope'] = labeled_comprehension(slopes_grid, labeled_array, unique_labels, np.median, float, 0)
     props['mean_aspect'] = labeled_comprehension(aspect_array, labeled_array, unique_labels, np.mean, float, 0)
 
@@ -485,29 +490,31 @@ def extract_region_shape_metrics(props, i, region, grid):
     props['eccentricity'][i] = region.eccentricity
 
 
-def calculate_slope_direction_metrics(props, unique_labels, labeled_array, grid):
+def calculate_slope_length_old(props, unique_labels, labeled_array, grid):
+    """
+    Combined function that calculates slope direction metrics and hybrid dimensions.
+    """
     for i, label_num in enumerate(unique_labels):
         region_mask = labeled_array == label_num
         mean_aspect_radians = props['mean_aspect'][i] * (np.pi / 180)
         slope_direction = np.array([np.cos(mean_aspect_radians), np.sin(mean_aspect_radians)])
         slope_direction /= np.linalg.norm(slope_direction)
         perp_direction = np.array([-slope_direction[1], slope_direction[0]])
-
         coords = np.column_stack(np.where(region_mask))
+        
         if len(coords) > 0:
             map_coords = coords * np.array([grid.dy, grid.dx])
             centroid = np.mean(map_coords, axis=0)
             centered_coords = map_coords - centroid
-
             slope_proj = np.dot(centered_coords, slope_direction)
             perp_proj = np.dot(centered_coords, perp_direction)
-
             props['slope_direction_length'][i] = np.max(slope_proj) - np.min(slope_proj)
             props['perpendicular_width'][i] = np.max(perp_proj) - np.min(perp_proj)
-
-
-def calculate_landslide_shape_metrics(props):
-    for i in range(len(props['label'])):
+        else:
+            props['slope_direction_length'][i] = 0
+            props['perpendicular_width'][i] = 0
+        
+        # Calculate hybrid dimensions using the slope direction metrics we just calculated
         length_candidates = [
             props['slope_direction_length'][i],
             props['major_axis_length'][i],
@@ -518,10 +525,108 @@ def calculate_landslide_shape_metrics(props):
             props['minor_axis_length'][i],
             min(props['bbox_height'][i], props['bbox_width'][i])
         ]
-
         props['hybrid_length'][i] = np.median(length_candidates)
         props['hybrid_width'][i] = np.median(width_candidates)
 
+def calculate_elevation_dir_dims(props, unique_labels, labeled_array, elevation_grid, aspect_array, slopes_grid, grid):
+    """
+    Most efficient version that leverages all pre-calculated statistics from props.
+    Only reads elevation_grid once per region and only when needed.
+    """
+    for i, label_num in enumerate(unique_labels):
+        # Use pre-calculated elevation relief to decide if we need elevation-based direction
+        elevation_relief = props['local_relief'][i]
+        relief_threshold = 2.0  # meters - adjust based on your data
+        
+        region_mask = labeled_array == label_num
+        row_coords, col_coords = np.where(region_mask)
+        
+        if len(row_coords) == 0:
+            props['slope_direction_length_new'][i] = 0
+            props['perpendicular_width_new'][i] = 0
+            continue
+            
+        # Convert to real-world coordinates
+        x_coords = col_coords * grid.dx
+        y_coords = row_coords * grid.dy
+        coords = np.column_stack([x_coords, y_coords])
+        
+        gradient_direction = None
+        
+        # Method 1: Use elevation gradient if there's significant relief
+        if elevation_relief > relief_threshold:
+            # Only read elevation data if we're going to use it
+            region_elevations = elevation_grid[region_mask]
+            
+            # Use pre-calculated max/min elevations with small tolerance
+            max_elevation = props['max_elevation'][i]
+            min_elevation = props['min_elevation'][i]
+            elevation_tolerance = 0.1  # meters
+            
+            # Find points at max and min elevations
+            high_indices = region_elevations >= (max_elevation - elevation_tolerance)
+            low_indices = region_elevations <= (min_elevation + elevation_tolerance)
+            
+            high_coords = coords[high_indices]
+            low_coords = coords[low_indices]
+            
+            if len(high_coords) > 0 and len(low_coords) > 0:
+                high_centroid = np.mean(high_coords, axis=0)
+                low_centroid = np.mean(low_coords, axis=0)
+                
+                gradient_vector = low_centroid - high_centroid
+                gradient_length = np.linalg.norm(gradient_vector)
+                
+                if gradient_length > 0:
+                    gradient_direction = gradient_vector / gradient_length
+                    method_used = 'elevation_gradient'
+        
+        # Method 2: Fallback to aspect-based calculation
+        if gradient_direction is None:
+            region_aspects = aspect_array[region_mask]
+            region_slopes = slopes_grid[region_mask]
+            
+            # Use slope-weighted aspect
+            slope_threshold = np.percentile(region_slopes, 25)
+            valid_mask = region_slopes > slope_threshold
+            
+            if np.sum(valid_mask) > 0:
+                valid_aspects = region_aspects[valid_mask]
+                valid_slopes = region_slopes[valid_mask]
+                
+                cos_aspects = np.cos(valid_aspects * np.pi / 180) * valid_slopes
+                sin_aspects = np.sin(valid_aspects * np.pi / 180) * valid_slopes
+                
+                mean_cos = np.sum(cos_aspects) / np.sum(valid_slopes)
+                mean_sin = np.sum(sin_aspects) / np.sum(valid_slopes)
+                mean_aspect_radians = np.arctan2(mean_sin, mean_cos)
+                
+                gradient_direction = np.array([np.cos(mean_aspect_radians), np.sin(mean_aspect_radians)])
+                method_used = 'aspect_weighted'
+            else:
+                # Final fallback to simple aspect mean
+                cos_aspects = np.cos(region_aspects * np.pi / 180)
+                sin_aspects = np.sin(region_aspects * np.pi / 180)
+                mean_aspect_radians = np.arctan2(np.mean(sin_aspects), np.mean(cos_aspects))
+                
+                gradient_direction = np.array([np.cos(mean_aspect_radians), np.sin(mean_aspect_radians)])
+                method_used = 'aspect_simple'
+        
+        # Calculate projections
+        perp_direction = np.array([-gradient_direction[1], gradient_direction[0]])
+        centroid = np.mean(coords, axis=0)
+        centered_coords = coords - centroid
+        
+        gradient_projections = np.dot(centered_coords, gradient_direction)
+        perp_projections = np.dot(centered_coords, perp_direction)
+        
+        props['slope_direction_length_new'][i] = np.max(gradient_projections) - np.min(gradient_projections)
+        props['perpendicular_width_new'][i] = np.max(perp_projections) - np.min(perp_projections)
+        
+        # Store method used for quality control
+        if 'direction_method' not in props:
+            props['direction_method'] = [''] * len(unique_labels)
+        props['direction_method'][i] = method_used
 
 def calculate_perimeter_vectorized(region_mask, dx, dy):
     dilated = binary_dilation(region_mask)

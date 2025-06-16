@@ -260,7 +260,7 @@ def create_soil_depth_plot(grid,
     core_soil_depth = soil_depth[core_nodes]
     
     # Create the plot
-    plt.figure(figsize=(10, 6))
+    plt.figure(layout='constrained')
     
     if uniform:
         # For uniform case, show horizontal line

@@ -231,6 +231,7 @@ def sample_kde_widths(kde_results, transform_info, length_array, n_samples=100):
         expected_widths[i] = np.median(samples_widths)
     
     return expected_widths
+
 # %% Statistical functions
 
 # %%% Bivariate kde

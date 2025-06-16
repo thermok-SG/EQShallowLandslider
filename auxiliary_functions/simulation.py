@@ -11,9 +11,9 @@ from landlab import imshowhs_grid
 
 # %% Generate earthquakes
 def generate_acceleration_grid(grid, horizontal_max, vertical_max,
-                               distribution="uniform", center=None,
-                               random_center=False, seed=None,
-                               plot_grids=False):
+                            distribution="uniform", center=None,
+                            random_center=False, seed=None,
+                            plot_grids=False):
     """
     Generate arrays of horizontal and vertical acceleration values for a landlab grid.
     

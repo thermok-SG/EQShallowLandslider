@@ -62,7 +62,9 @@ from auxiliary_functions import (
         generate_landslide_proportion_from_pga, select_groups_by_proportion_weighted,
         
         # Functions for tracing paths and moving sediment
-        trace_paths_landslides, generate_acceleration_grid, update_soil_depth
+        trace_paths_landslides, generate_acceleration_grid, update_soil_depth,
+        
+        split_wide_regions
     )
 
 class ShallowLandslideSimulator:
@@ -359,9 +361,10 @@ class ShallowLandslideSimulator:
             'num_features': num_features
         }
     
-    def filter_regions_by_aspect(self):
+    def filter_regions_by_aspect(self, split_by_width=None):
         """
         Filter and split regions by aspect.
+        Can also check for widths > length and split regions
         
         Returns:
         --------
@@ -417,17 +420,43 @@ class ShallowLandslideSimulator:
             aspect_array=self.aspect_nodes_array
         )
         
-        # Store results
-        self.results['aspect_filtering'] = {
-            'aspect_nodes_array': self.aspect_nodes_array,
-            'aspect_subgroups': self.aspect_subgroups,
-            'aspect_zones': aspect_zones,
-            'split_aspect_groups': split_aspect_groups,
-            'split_aspect_group_num': split_aspect_group_num,
-            'factor_of_safety_groups': factor_of_safety_groups,
-            'a_transient_groups': a_transient_groups,
-            'subgroup_props': subgroup_props
-        }
+        if split_by_width is not None:
+            kde_data = split_by_width['kde_data']
+            kde_transform = split_by_width['kde_transform']
+            
+            split_subgroups, split_info = split_wide_regions(labeled_array=self.aspect_subgroups, region_df=subgroup_props,
+                                                    kde_results=kde_data, transform_info=kde_transform,
+                                                    length_col='slope_direction_length_new', width_col='perpendicular_width_new',
+                                                    label_col='label',width_threshold=2.0
+                                                    )
+            new_selected_group_props, new_selected_groups_merged = calculate_region_properties(self.grid, labeled_array=split_subgroups,
+                                                slopes=self.slopes_degrees, aspect_array=self.aspect_nodes_array)
+            
+            # Store results
+            self.results['aspect_filtering'] = {
+                'aspect_nodes_array': self.aspect_nodes_array,
+                'aspect_subgroups': self.aspect_subgroups,
+                'aspect_zones': aspect_zones,
+                'split_aspect_groups': split_aspect_groups,
+                'split_aspect_group_num': split_aspect_group_num,
+                'factor_of_safety_groups': factor_of_safety_groups,
+                'a_transient_groups': a_transient_groups,
+                'subgroup_props': subgroup_props,
+                'dim_split_groups': new_selected_groups_merged,
+                'dim_split_props': new_selected_group_props
+            }
+        else:
+            # Store results
+            self.results['aspect_filtering'] = {
+                'aspect_nodes_array': self.aspect_nodes_array,
+                'aspect_subgroups': self.aspect_subgroups,
+                'aspect_zones': aspect_zones,
+                'split_aspect_groups': split_aspect_groups,
+                'split_aspect_group_num': split_aspect_group_num,
+                'factor_of_safety_groups': factor_of_safety_groups,
+                'a_transient_groups': a_transient_groups,
+                'subgroup_props': subgroup_props
+            }
         
         if self.config['plot_intermediates']['filled_and_split']:
             self.plot_intermediate_maps(drape_variable=np.ma.masked_less_equal(self.aspect_subgroups, 0),
@@ -634,7 +663,7 @@ class ShallowLandslideSimulator:
         
         plt.show()
     
-    def run_one_step(self):
+    def run_one_step(self, kde_input=None):
         """
         Run a single timestep of the landslide simulation, executing each step in sequence.
         
@@ -657,7 +686,8 @@ class ShallowLandslideSimulator:
         self.identify_failure_regions()
         
         # Step 5: Filter regions by aspect
-        self.filter_regions_by_aspect()
+        
+        self.filter_regions_by_aspect(split_by_width=kde_input)
         
         # Step 6: Select potential landslides
         self.select_potential_landslides()
