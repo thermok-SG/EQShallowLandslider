@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Apr  8 16:17:46 2025
-
-@author: sghoshal
-"""
-
 """
 Landslide Simulation Module
 
@@ -25,38 +18,37 @@ Functions:
     - update_topography: Update soil depth based on sediment transport
 
 Required parameters:
-    - DEM (projected)
-    - PGA (both horizontal and vertical)
+    - DEM coordinates (four corners)
+        - Downloaded from OpenTopo
+    - Max PGA (both horizontal and vertical; float)
+        - PGA arrays created by function (has a range of distributions)
     - Soil parameters:
-        - Cohesion (float)
-        - Angle of internal friction (float)
+        - Cohesion (float; but can be array)
+        - Angle of internal friction (float; but can be array)
         - Soil saturation proportion (float 0-1)
-        - Soil depth (float or array of floats)
+        - Max soil depth (float)
+            - Soil depth array of floats created by function (can be uniform or vary with elevation)
 
-Original author: sghoshal
+Author: sghoshal
 """
 
 # Core modules
 import numpy as np
-# import pandas as pd
-# import matplotlib.pyplot as plt
-# import geopandas as gpd
-# import seaborn as sns
-# from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 # Scientific computation
 from scipy.ndimage import binary_fill_holes
 from scipy.ndimage import generate_binary_structure
 
 # Landlab components
+from landlab import imshowhs_grid
 from landlab.io import esri_ascii
 from landlab.components import PriorityFloodFlowRouter
 
-# Import auxiliary functions
-try:
-    from auxiliary_functions import (
+from auxiliary_functions import (
         # General functions
-        get_topo, smooth_elevation_grid,
+        get_config, get_topo, smooth_elevation_grid, apply_soil_depth,
+        
         # Functions for Newmark acceleration and displacement
         critical_transient_acceleration, calculate_newmark_displacement, factor_of_safety,
         
@@ -70,11 +62,10 @@ try:
         generate_landslide_proportion_from_pga, select_groups_by_proportion_weighted,
         
         # Functions for tracing paths and moving sediment
-        trace_paths_landslides, generate_acceleration_grid, update_soil_depth
+        trace_paths_landslides, generate_acceleration_grid, update_soil_depth,
+        
+        split_wide_regions
     )
-except ImportError:
-    print("Warning: Could not import auxiliary functions. Make sure they're in your PYTHONPATH.")
-
 
 class ShallowLandslideSimulator:
     """
@@ -84,53 +75,24 @@ class ShallowLandslideSimulator:
     def __init__(self, config=None, grid=None, process_grid=False):
         """
         Initialize landslide simulation with configuration.
-        
+    
         Parameters:
         -----------
-        config : dict, optional
-            Configuration dictionary with simulation parameters.
-            If None, default parameters will be used.
+        config : dict or str or Path, optional
+            Configuration for the simulation. Can be:
+            - dict: Configuration dictionary with simulation parameters
+            - str/Path: Path to JSON configuration file
+            - None: Use default parameters
         grid : landlab.grid.RasterModelGrid, optional
             Pre-loaded Landlab grid with elevation data.
             If provided, this will bypass DEM loading in the load_dem method.
+        process_grid : bool, optional
+            If True and grid is provided, process the grid immediately.
+            Default is False.
         """
-        # Set default config if not provided
-        if config is None:
-            self.config = {
-                'dem_info': {
-                    'dem_type': "SRTMGL1",
-                    'north': 28.29,
-                    'east': 85.20,
-                    'south': 28.18,
-                    'west': 85.04,
-                    'buffer': 0.01,
-                    'smooth_num': 4
-                },
-                'soil_params': {
-                    'angle_int_frict': np.radians(30),
-                    'cohesion_eff': 15e3,  # Pa
-                    'submerged_soil_proportion': 0.5,
-                    'soil_depth': 1.0  # m
-                },
-                'pga': {
-                    'horizontal': 0.6,
-                    'vertical': 0.2,
-                    'distribution': "uniform"
-                },
-                'simulation': {
-                    'time_shaking': 10,  # seconds
-                    'displacement_threshold': 0,
-                    'aspect_interval': 20,
-                },
-                'output': {
-                    'save_plots': False,
-                    'output_dir': None,
-                    'plot_intermediate': False
-                }
-            }
-        else:
-            self.config = config
-        
+        # Handle all configuration types with a single function call
+        self.config = get_config(config)
+    
         # Store the pre-loaded grid if provided
         self.grid = grid
         if self.grid is not None:
@@ -139,7 +101,7 @@ class ShallowLandslideSimulator:
         else:
             self.grid = None
             self.z = None
-            
+        
         # Initialize variables
         self.slopes = None
         self.slopes_degrees = None
@@ -153,7 +115,7 @@ class ShallowLandslideSimulator:
         self.sliding_array_bool = None
         self.labeled_array = None
         self.labeled_array_filled = None
-        self.aspect_nodes = None
+        self.aspect_nodes_array = None
         self.aspect_subgroups = None
         self.acceleration_horizontal_array = None
         self.acceleration_vertical_array = None
@@ -175,13 +137,16 @@ class ShallowLandslideSimulator:
         """
         Process a loaded grid by setting up soil depth, calculating slopes, and running flow router.
         """
+        # Plot DEM
+        if self.config['dem_info']['plot_dem']:
+            self.plot_intermediate_maps(save_path=self.config['output']['output_dir'])
+        
         # Add soil depth field if it doesn't exist
         if "soil__depth" not in self.grid.at_node:
-            soil_depth = self.grid.add_zeros("node", "soil__depth", clobber=True)
-            soil_depth_value = self.config['soil_params']['soil_depth']
-            
-            # Set initial soil depth at core nodes
-            self.grid.at_node["soil__depth"][self.grid.core_nodes] = soil_depth_value
+            self.soil_depth = apply_soil_depth(self.grid, max_soil_depth=self.config['soil_params']['max_soil_depth'],
+                            distribution=self.config['soil_params']['distribution'],
+                            plot=self.config['soil_params']['plot_soil']
+                            )
             
         # Add bedrock elevation field if it doesn't exist
         if "bedrock__elevation" not in self.grid.at_node:
@@ -197,11 +162,11 @@ class ShallowLandslideSimulator:
         # Initialize and run flow router
         pf = PriorityFloodFlowRouter(
             self.grid, 
-            flow_metric='D8', 
-            separate_hill_flow=True,
-            depression_handler="fill", 
-            update_hill_depressions=True,
-            accumulate_flow=True
+            flow_metric=self.config['flow_params']['flow_metric'], 
+            separate_hill_flow=self.config['flow_params']['separate_hill_flow'],
+            depression_handler=self.config['flow_params']['depression_handling'], 
+            update_hill_depressions=self.config['flow_params']['update_hill_depressions'],
+            accumulate_flow=self.config['flow_params']['accumulate_flow']
         )
         pf.run_one_step()
         
@@ -261,10 +226,12 @@ class ShallowLandslideSimulator:
             left_is_closed=False, bottom_is_closed=False
         )
         
-        # Process the grid (add soil depth, calculate slopes, etc.)
+        # Process the grid
+        # Adds/calculates:
+        #   soil depth, slopes, flow routing
         self._process_grid()
         
-        return self.grid
+        # return self.grid
     
     def calculate_instability(self):
         """
@@ -285,9 +252,10 @@ class ShallowLandslideSimulator:
         pga_config = self.config['pga']
         self.acceleration_horizontal_array, self.acceleration_vertical_array = generate_acceleration_grid(
             self.grid,
-            max_horizontal=pga_config['horizontal'],
-            max_vertical=pga_config['vertical'],
-            distribution=pga_config['distribution']
+            horizontal_max=pga_config['horizontal_max'],
+            vertical_max=pga_config['vertical_max'],
+            distribution=pga_config['distribution'],
+            plot_grids=pga_config['plot_grids']
         )
         
         # Calculate factor of safety
@@ -296,6 +264,11 @@ class ShallowLandslideSimulator:
             cohesion_eff, 
             angle_int_frict
         )
+        if self.config['plot_intermediates']['factor_of_safety']:
+            fos_plot_limit = 2.0
+            self.plot_intermediate_maps(drape_variable=np.ma.masked_invalid(np.ma.masked_greater(self.factor_of_safety_vals, fos_plot_limit)),
+                                        drape_variable_name=f'Static factor of safety < {fos_plot_limit}',
+                                        cmap='jet', save_path=self.config['output']['output_dir'])
         
         # Calculate critical acceleration with no earthquake
         self.a_transient_zero, a_sliding_zero, a_diff_zero = critical_transient_acceleration(
@@ -317,6 +290,10 @@ class ShallowLandslideSimulator:
             a_h=self.acceleration_horizontal_array*g, 
             a_v=self.acceleration_vertical_array*g
         )
+        if self.config['plot_intermediates']['critical_acceleration']:
+            self.plot_intermediate_maps(drape_variable=np.ma.masked_invalid(np.ma.masked_less(self.a_diff_EQ, 0)),
+                                        drape_variable_name="Areas where driving acceleration > critical acceleration (m/s2)",
+                                        cmap='Reds', save_path=self.config['output']['output_dir'])
         
         # Areas of instability
         self.sliding_locations_bool = self.a_sliding_EQ > self.a_transient_EQ
@@ -327,6 +304,11 @@ class ShallowLandslideSimulator:
         # Process boundaries
         self.sliding_locations_bool[self.grid.boundary_nodes] = False
         self.sliding_array_bool = self.sliding_locations_bool.reshape(self.grid.shape)
+
+        if self.config['plot_intermediates']['unstable_areas']:
+            self.plot_intermediate_maps(drape_variable=np.ma.masked_invalid(self.sliding_locations_bool),
+                                        drape_variable_name="Unstable pixels",
+                                        cmap='binary', save_path=self.config['output']['output_dir'])
         
         # Store results
         self.results['instability'] = {
@@ -340,9 +322,7 @@ class ShallowLandslideSimulator:
             'sliding_locations': self.sliding_locations,
             'sliding_locations_bool': self.sliding_locations_bool
         }
-        
-        return self.results['instability']
-    
+
     def identify_failure_regions(self):
         """
         Identify regions of instability.
@@ -380,12 +360,11 @@ class ShallowLandslideSimulator:
             'labeled_array_filled': self.labeled_array_filled,
             'num_features': num_features
         }
-        
-        return self.results['regions']
     
-    def filter_regions_by_aspect(self):
+    def filter_regions_by_aspect(self, split_by_width=None):
         """
         Filter and split regions by aspect.
+        Can also check for widths > length and split regions
         
         Returns:
         --------
@@ -393,22 +372,22 @@ class ShallowLandslideSimulator:
             Dictionary containing aspect filtering results
         """
         # Calculate topographic aspect
-        self.aspect_nodes = np.array(self.grid.calc_aspect_at_node(
+        aspect_nodes = np.array(self.grid.calc_aspect_at_node(
             elevs='topographic__elevation', 
             unit="degrees",
             ignore_closed_nodes=True
         ))
         
-        self.aspect_nodes[self.grid.boundary_nodes] = np.nan
-        aspect_nodes_array = self.aspect_nodes.reshape(self.grid.shape)
+        aspect_nodes[self.grid.boundary_nodes] = np.nan
+        self.aspect_nodes_array = aspect_nodes.reshape(self.grid.shape)
         
         # Create dictionary of aspect zones
         aspect_intervals = create_zones(interval=self.config['simulation']['aspect_interval'])
         
         # Split groups by aspect
         self.aspect_subgroups, aspect_zones, info = split_groups_by_aspect(
-            self.labeled_array_filled,
-            aspect_nodes_array,
+            groups=self.labeled_array_filled,
+            aspect_array=self.aspect_nodes_array,
             zones=aspect_intervals
         )
         
@@ -434,44 +413,110 @@ class ShallowLandslideSimulator:
                 a_transient_groups[masked_array] = 0
         
         # Calculate region properties
-        subgroup_props = calculate_region_properties(
+        subgroup_props, self.aspect_subgroups = calculate_region_properties(
             self.grid, 
             self.aspect_subgroups, 
-            slopes=self.slopes_degrees
+            slopes=self.slopes_degrees,
+            aspect_array=self.aspect_nodes_array
         )
         
-        # Store results
-        self.results['aspect_filtering'] = {
-            'aspect_nodes': self.aspect_nodes,
-            'aspect_subgroups': self.aspect_subgroups,
-            'aspect_zones': aspect_zones,
-            'split_aspect_groups': split_aspect_groups,
-            'split_aspect_group_num': split_aspect_group_num,
-            'factor_of_safety_groups': factor_of_safety_groups,
-            'a_transient_groups': a_transient_groups,
-            'subgroup_props': subgroup_props
-        }
+        if split_by_width is not None:
+            kde_data = split_by_width['kde_data']
+            kde_transform = split_by_width['kde_transform']
+            
+            split_subgroups, split_info = split_wide_regions(labeled_array=self.aspect_subgroups, region_df=subgroup_props,
+                                                    kde_results=kde_data, transform_info=kde_transform,
+                                                    length_col='slope_direction_length_new', width_col='perpendicular_width_new',
+                                                    label_col='label',width_threshold=2.0
+                                                    )
+            new_selected_group_props, new_selected_groups_merged = calculate_region_properties(self.grid, labeled_array=split_subgroups,
+                                                slopes=self.slopes_degrees, aspect_array=self.aspect_nodes_array)
+            
+            # Store results
+            self.results['aspect_filtering'] = {
+                'aspect_nodes_array': self.aspect_nodes_array,
+                'aspect_subgroups': self.aspect_subgroups,
+                'aspect_zones': aspect_zones,
+                'split_aspect_groups': split_aspect_groups,
+                'split_aspect_group_num': split_aspect_group_num,
+                'factor_of_safety_groups': factor_of_safety_groups,
+                'a_transient_groups': a_transient_groups,
+                'subgroup_props': subgroup_props,
+                'dim_split_groups': new_selected_groups_merged,
+                'dim_split_props': new_selected_group_props
+            }
+        else:
+            # Store results
+            self.results['aspect_filtering'] = {
+                'aspect_nodes_array': self.aspect_nodes_array,
+                'aspect_subgroups': self.aspect_subgroups,
+                'aspect_zones': aspect_zones,
+                'split_aspect_groups': split_aspect_groups,
+                'split_aspect_group_num': split_aspect_group_num,
+                'factor_of_safety_groups': factor_of_safety_groups,
+                'a_transient_groups': a_transient_groups,
+                'subgroup_props': subgroup_props
+            }
         
-        return self.results['aspect_filtering']
+        if self.config['plot_intermediates']['filled_and_split']:
+            self.plot_intermediate_maps(drape_variable=np.ma.masked_less_equal(self.aspect_subgroups, 0),
+                                        drape_variable_name="Groups split and filtered by aspect",
+                                        cmap='tab20b', save_path=self.config['output']['output_dir'])
     
-    def select_potential_landslides(self, method='pga_weighted'):
+    def select_potential_landslides(self):
         """
         Select potential landslide groups using various methods.
-        
-        Parameters:
-        -----------
-        method : str
-            Method for selecting landslide groups:
-            - 'pga_weighted': Selection based on PGA-weighted probabilities
-            - 'probabilistic': Selection based on critical acceleration
         
         Returns:
         --------
         dict
             Dictionary containing landslide selection results
         """
-        if method == 'pga_weighted':
-            # Method 2: Select groups/proportion from PGA
+        selection_method = self.config['simulation']['selection_method']
+        
+        if selection_method == 'probabilistic':
+            # Method 2: Select groups/proportion based on critical acceleration
+            probabilities, prob_metadata = generate_landslide_probability(
+                self.grid,
+                h_pga_array=self.acceleration_horizontal_array,
+                v_pga_array=self.acceleration_vertical_array,
+                labeled_array=self.aspect_subgroups,
+                slope_array=self.slopes_degrees,
+                soil_array=None,
+                geological_factor_array=None,
+                critical_acceleration_array=self.a_transient_zero,
+                default_critical_acceleration=0.2,
+                random_seed=self.config['simulation']['random_seed'],
+                normalise_final_probs=True
+            )
+            
+            self.selected_groups, selected_proportion = probabilistic_group_selection(
+                probability_array=probabilities,
+                labeled_array=self.aspect_subgroups,
+                proportion_method=self.config['simulation']['proportion_method'],
+                random_seed=self.config['simulation']['random_seed']
+            )
+            
+            # Calculate areas and other parameters for the selected groups
+            selected_group_props, self.selected_groups = calculate_region_properties(
+                self.grid, 
+                labeled_array=self.selected_groups, 
+                slopes=self.slopes_degrees,
+                aspect_array=self.aspect_nodes_array
+            )
+            
+            # Store results
+            self.results['selected_landslides'] = {
+                'method': 'probabilistic',
+                'probabilities': probabilities,
+                'proportion': selected_proportion,
+                'meta': prob_metadata,
+                'groups': self.selected_groups,
+                'group_props': selected_group_props
+            }
+            
+        elif selection_method == 'pga_weighted':
+            # Method 3: Select groups/proportion from PGA
             pga_weighted_probabilities, proportion, pga_meta = generate_landslide_proportion_from_pga(
                 self.grid,
                 h_pga=self.acceleration_horizontal_array,
@@ -487,10 +532,11 @@ class ShallowLandslideSimulator:
             )
             
             # Calculate properties
-            pga_weighted_group_props = calculate_region_properties(
+            pga_weighted_group_props, self.pga_weighted_groups = calculate_region_properties(
                 self.grid, 
                 labeled_array=self.pga_weighted_groups,
-                slopes=self.slopes_degrees
+                slopes=self.slopes_degrees,
+                aspect_array=self.aspect_nodes_array
             )
             
             # Store results
@@ -506,50 +552,8 @@ class ShallowLandslideSimulator:
             
             # Set selected groups for further processing
             self.selected_groups = self.pga_weighted_groups
-            
-        elif method == 'probabilistic':
-            # Method 3: Select groups/proportion based on critical acceleration
-            probabilities, prob_metadata = generate_landslide_probability(
-                self.grid,
-                h_pga_array=self.acceleration_horizontal_array,
-                v_pga_array=self.acceleration_vertical_array,
-                labeled_array=self.aspect_subgroups,
-                slope_array=self.slopes_degrees,
-                soil_array=None,
-                geological_factor_array=None,
-                critical_acceleration_array=self.a_transient_zero,
-                default_critical_acceleration=0.2,
-                random_seed=None,
-                normalise_final_probs=True
-            )
-            
-            self.selected_groups, selected_proportion = probabilistic_group_selection(
-                probability_array=probabilities,
-                labeled_array=self.aspect_subgroups,
-                proportion_method='statistical'
-            )
-            
-            # Calculate areas and other parameters for the selected groups
-            selected_group_props = calculate_region_properties(
-                self.grid, 
-                labeled_array=self.selected_groups, 
-                slopes=self.slopes_degrees
-            )
-            
-            # Store results
-            self.results['selected_landslides'] = {
-                'method': 'probabilistic',
-                'probabilities': probabilities,
-                'proportion': selected_proportion,
-                'meta': prob_metadata,
-                'groups': self.selected_groups,
-                'group_props': selected_group_props
-            }
-        
         else:
-            raise ValueError(f"Unknown method: {method}")
-        
-        return self.results['selected_landslides']
+            raise ValueError(f"Unknown method: {selection_method}")
     
     def calculate_displacements(self):
         """
@@ -597,8 +601,6 @@ class ShallowLandslideSimulator:
             'high_displacement_nodes': self.node_ids,
             'displacement_threshold': displacement_threshold
         }
-        
-        return self.results['displacements']
     
     def trace_sediment_paths(self):
         """
@@ -640,10 +642,28 @@ class ShallowLandslideSimulator:
             'mass_balance': mass_balance,
             'soil_depth_change': delta_soil_depth
         }
-        
-        return self.results['sediment_transport']
     
-    def run_one_step(self, landslide_selection_method='probabilistic'):
+    def plot_intermediate_maps(self, drape_variable=None, drape_variable_name=None,
+                            cmap='jet', save_path=None):
+        plt.figure()
+        
+        if drape_variable is None:
+            imshowhs_grid(self.grid, values=self.grid.at_node['topographic__elevation'],
+                            var_name="Elevation", var_units="m", ticks_km=True, cmap='terrain')
+        
+        else:
+            
+            imshowhs_grid(self.grid, values=self.grid.at_node['topographic__elevation'],
+                            plot_type='Drape1', drape1=drape_variable,
+                            ticks_km=True, cmap=cmap)
+            plt.suptitle(f"{drape_variable_name}")
+            
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        plt.show()
+    
+    def run_one_step(self, kde_input=None):
         """
         Run a single timestep of the landslide simulation, executing each step in sequence.
         
@@ -666,10 +686,11 @@ class ShallowLandslideSimulator:
         self.identify_failure_regions()
         
         # Step 5: Filter regions by aspect
-        self.filter_regions_by_aspect()
+        
+        self.filter_regions_by_aspect(split_by_width=kde_input)
         
         # Step 6: Select potential landslides
-        self.select_potential_landslides(method=landslide_selection_method)
+        self.select_potential_landslides()
         
         # Step 7: Calculate displacements
         self.calculate_displacements()
@@ -690,7 +711,7 @@ class ShallowLandslideSimulator:
         self.slopes_degrees = np.degrees(self.slopes)
         
         # Compile plotting data for return
-        plot_data = {
+        model_grids = {
             # Topography data
             'slopes': self.slopes_degrees,
             
@@ -703,11 +724,11 @@ class ShallowLandslideSimulator:
             'landslide_regions': self.labeled_array_filled,
             'aspect_subgroups': self.aspect_subgroups,
             'selected_landslides': self.selected_groups,
-            'landslide_proportion': self.results['selected_landslides']['selected_proportion'],
+            'landslide_proportion': self.results['selected_landslides']['proportion'],
             
             # Displacements and sediment transport
             'displacements': self.newmark_displacement_select,
             'soil_depth_change': self.results['sediment_transport']['soil_depth_change'],
         }
         
-        return self.grid, plot_data
+        return self.grid, self.results, model_grids
