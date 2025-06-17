@@ -154,10 +154,11 @@ plt.figure(layout='constrained')
 ax_meas_scatter = sns.kdeplot(data=measured_data, x='length_m', y='width_m', color='red',
                         log_scale=(True, True), label='Measured landslide dimensions')
 # sns.scatterplot(data=subgroup_props, x='slope_direction_length', y='perpendicular_width')
-sns.scatterplot(data=split_groups_props, x='slope_direction_length_new', y='perpendicular_width_new',
-                label="Split groups", ax=ax_meas_scatter)
 sns.scatterplot(data=subgroup_props, x='slope_direction_length_new', y='perpendicular_width_new',
                 label='Pre-split groups', ax=ax_meas_scatter)
+sns.scatterplot(data=split_groups_props, x='slope_direction_length_new', y='perpendicular_width_new',
+                label="Split groups", ax=ax_meas_scatter)
+
 plt.axline([0,0],[1,1], label='1:1')
 
 plt.xscale('log')
@@ -180,10 +181,12 @@ RobackData_greaterthan900 = LSshapefile_file["SHAPE_Area"][LSshapefile_file["SHA
 count, bins_Roback = np.histogram(np.log10(RobackData_greaterthan900), 20)
 
 fig_mag_freq, ax_mag_freq = plt.subplots(layout='constrained')
+sns.histplot(data=split_groups_props, x="area", label="Model - All split areas",
+            legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
 sns.histplot(data=selected_group_props, x="area", label="Model - All unstable areas",
             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
-sns.histplot(x=RobackData_greaterthan900, label="Roback et al. (>900 $m^2$)",# bins=bins_Roback,
-            legend=True, ax=ax_mag_freq, log_scale=True, bins=bins_Roback, stat='density')
+# sns.histplot(x=RobackData_greaterthan900, label="Roback et al. (>900 $m^2$)",# bins=bins_Roback,
+#             legend=True, ax=ax_mag_freq, log_scale=True, bins=bins_Roback, stat='density')
 
 # ax_mag_freq.set_xscale("log")
 ax_mag_freq.legend()

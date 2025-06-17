@@ -64,7 +64,7 @@ from auxiliary_functions import (
         # Functions for tracing paths and moving sediment
         trace_paths_landslides, generate_acceleration_grid, update_soil_depth,
         
-        split_wide_regions
+        split_wide_regions, recursive_split_wide_regions
     )
 
 class ShallowLandslideSimulator:
@@ -424,12 +424,18 @@ class ShallowLandslideSimulator:
             kde_data = split_by_width['kde_data']
             kde_transform = split_by_width['kde_transform']
             
-            split_subgroups, split_info = split_wide_regions(labeled_array=self.aspect_subgroups, region_df=subgroup_props,
-                                                    kde_results=kde_data, transform_info=kde_transform,
-                                                    length_col='slope_direction_length_new', width_col='perpendicular_width_new',
-                                                    label_col='label',width_threshold=2.0
-                                                    )
-            new_selected_group_props, new_selected_groups_merged = calculate_region_properties(self.grid, labeled_array=split_subgroups,
+            # split_subgroups, split_info = split_wide_regions(labeled_array=self.aspect_subgroups, region_df=subgroup_props,
+            #                                         kde_results=kde_data, transform_info=kde_transform,
+            #                                         length_col='slope_direction_length_new', width_col='perpendicular_width_new',
+            #                                         label_col='label',width_threshold=2.0
+            #                                         )
+            
+            self.split_subgroups, split_info = recursive_split_wide_regions(grid=self.grid, labeled_array=self.aspect_subgroups,
+                                                                    aspect_array=self.aspect_nodes_array, slopes_grid=self.slopes_degrees,
+                                                                    kde_results=kde_data, transform_info=kde_transform, width_threshold=1.5,
+                                                                    max_iterations=10, min_region_size=10, convergence_threshold=0.95, verbose=True)
+            
+            split_subgroup_props, self.split_subgroups = calculate_region_properties(self.grid, labeled_array=self.split_subgroups,
                                                 slopes=self.slopes_degrees, aspect_array=self.aspect_nodes_array)
             
             # Store results
@@ -442,8 +448,8 @@ class ShallowLandslideSimulator:
                 'factor_of_safety_groups': factor_of_safety_groups,
                 'a_transient_groups': a_transient_groups,
                 'subgroup_props': subgroup_props,
-                'dim_split_groups': new_selected_groups_merged,
-                'dim_split_props': new_selected_group_props
+                'dim_split_groups': self.split_subgroups,
+                'dim_split_props': split_subgroup_props
             }
         else:
             # Store results
@@ -474,13 +480,18 @@ class ShallowLandslideSimulator:
         """
         selection_method = self.config['simulation']['selection_method']
         
+        try:
+            subgroup_array = self.split_subgroups.copy()
+        except NameError:
+            subgroup_array = self.aspect_subgroups.copy()
+        
         if selection_method == 'probabilistic':
             # Method 2: Select groups/proportion based on critical acceleration
             probabilities, prob_metadata = generate_landslide_probability(
                 self.grid,
                 h_pga_array=self.acceleration_horizontal_array,
                 v_pga_array=self.acceleration_vertical_array,
-                labeled_array=self.aspect_subgroups,
+                labeled_array=subgroup_array,
                 slope_array=self.slopes_degrees,
                 soil_array=None,
                 geological_factor_array=None,
