@@ -423,13 +423,7 @@ class ShallowLandslideSimulator:
         if split_by_width is not None:
             kde_data = split_by_width['kde_data']
             kde_transform = split_by_width['kde_transform']
-            
-            # split_subgroups, split_info = split_wide_regions(labeled_array=self.aspect_subgroups, region_df=subgroup_props,
-            #                                         kde_results=kde_data, transform_info=kde_transform,
-            #                                         length_col='slope_direction_length_new', width_col='perpendicular_width_new',
-            #                                         label_col='label',width_threshold=2.0
-            #                                         )
-            
+                        
             self.split_subgroups, split_info = recursive_split_wide_regions(grid=self.grid, labeled_array=self.aspect_subgroups,
                                                                     aspect_array=self.aspect_nodes_array, slopes_grid=self.slopes_degrees,
                                                                     kde_results=kde_data, transform_info=kde_transform, width_threshold=1.5,
@@ -503,7 +497,7 @@ class ShallowLandslideSimulator:
             
             self.selected_groups, selected_proportion = probabilistic_group_selection(
                 probability_array=probabilities,
-                labeled_array=self.aspect_subgroups,
+                labeled_array=subgroup_array,
                 proportion_method=self.config['simulation']['proportion_method'],
                 random_seed=self.config['simulation']['random_seed']
             )

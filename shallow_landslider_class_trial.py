@@ -19,13 +19,17 @@ from scipy.stats import (
     wasserstein_distance,
     gaussian_kde
     )
+from scipy.ndimage import (
+    binary_fill_holes, generate_binary_structure
+    )
 
 from landlab import imshowhs_grid  # to plot results
 
 from auxiliary_functions import (
     fit_bivariate_kde,
     split_wide_regions,
-    calculate_region_properties
+    calculate_region_properties,
+    calculate_regions
     )
 
 from inverse_gamma_script import compare_inverse_gamma
@@ -101,7 +105,7 @@ config_dict = {'dem_info': {
                     'submerged_soil_proportion': 0.5,
                     'max_soil_depth': 1.5, # m
                     'distribution': 'elevation', # 'uniform' or 'elevation'
-                    'plot_soil': True,
+                    'plot_soil': False,
                     },
                 'pga': {
                     'horizontal_max': 0.6,
@@ -118,8 +122,8 @@ config_dict = {'dem_info': {
                     'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
                     },
                 'plot_intermediates':{
-                    'factor_of_safety': True,
-                    'critical_acceleration': True,
+                    'factor_of_safety': False,
+                    'critical_acceleration': False,
                     'unstable_areas': False, # Issue here
                     'filled_and_split': True
                 },
@@ -134,21 +138,29 @@ sim = ShallowLandslideSimulator(config=config_dict)
 
 # Loads DEM for the class
 sim.load_dem()
-# %%% Run component
+
+# Load measured KDE for sampling
 kde_dict = {
     'kde_data': kde_data,
     'kde_transform': kde_transform
     }
+# %%% Run component
 
 grid, model_results, model_grids = sim.run_one_step(kde_input=kde_dict)
 
 # %% ### Plot results ###
+
+# Group properties after aspect splitting
 subgroup_props = model_results['aspect_filtering']['subgroup_props']
+
+# Group properties after width-splitting
 split_groups_props = model_results['aspect_filtering']['dim_split_props']
+
+# Groups after selection
 selected_group_props = model_results['selected_landslides']['group_props']
 
 
-# %% 
+# %% Post-run length-width plot
 plt.figure(layout='constrained')
 
 ax_meas_scatter = sns.kdeplot(data=measured_data, x='length_m', y='width_m', color='red',
@@ -156,8 +168,10 @@ ax_meas_scatter = sns.kdeplot(data=measured_data, x='length_m', y='width_m', col
 # sns.scatterplot(data=subgroup_props, x='slope_direction_length', y='perpendicular_width')
 sns.scatterplot(data=subgroup_props, x='slope_direction_length_new', y='perpendicular_width_new',
                 label='Pre-split groups', ax=ax_meas_scatter)
-sns.scatterplot(data=split_groups_props, x='slope_direction_length_new', y='perpendicular_width_new',
-                label="Split groups", ax=ax_meas_scatter)
+# sns.scatterplot(data=split_groups_props, x='slope_direction_length_new', y='perpendicular_width_new',
+#                 label="Split groups", ax=ax_meas_scatter)
+sns.scatterplot(data=selected_group_props, x='slope_direction_length_new', y='perpendicular_width_new',
+                label=f"Selected groups - {len(selected_group_props)}", ax=ax_meas_scatter)
 
 plt.axline([0,0],[1,1], label='1:1')
 
@@ -176,22 +190,45 @@ imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
 plt.suptitle('Predicted landslides')
 plt.show()
 
+# %%%% Map of soil depth change
+plt.figure(layout='constrained')
+imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
+            drape1=np.ma.masked_equal(model_grids['soil_depth_change'], 0.0),
+            allow_colorbar=False, cmap='viridis', altdeg=45, azdeg=315)
+plt.suptitle('Deposition')
+
 # %%%%  Plot magnitude-frequency for selected landslides
 RobackData_greaterthan900 = LSshapefile_file["SHAPE_Area"][LSshapefile_file["SHAPE_Area"]>900]
 count, bins_Roback = np.histogram(np.log10(RobackData_greaterthan900), 20)
 
 fig_mag_freq, ax_mag_freq = plt.subplots(layout='constrained')
+sns.histplot(data=subgroup_props, x="area", label="Model - All areas",
+            legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
 sns.histplot(data=split_groups_props, x="area", label="Model - All split areas",
             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
-sns.histplot(data=selected_group_props, x="area", label="Model - All unstable areas",
+sns.histplot(data=selected_group_props, x="area", label="Model - Selected areas",
             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
-# sns.histplot(x=RobackData_greaterthan900, label="Roback et al. (>900 $m^2$)",# bins=bins_Roback,
-#             legend=True, ax=ax_mag_freq, log_scale=True, bins=bins_Roback, stat='density')
+sns.histplot(x=RobackData_greaterthan900, label="Roback et al. (>900 $m^2$)",
+            legend=True, ax=ax_mag_freq, log_scale=True, bins=bins_Roback, stat='density')
 
 # ax_mag_freq.set_xscale("log")
 ax_mag_freq.legend()
 ax_mag_freq.set_xlabel("Area")
 
+# %%%%% Plot KDE for magnitude-frequency
+fig_mag_freq_2, ax_mag_freq_2 = plt.subplots(layout='constrained')
+sns.kdeplot(data=subgroup_props, x="area", label=f"Model - All areas ({len(subgroup_props)})",
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
+sns.kdeplot(data=split_groups_props, x="area", label=f"Model - All split areas ({len(split_groups_props)})",
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
+sns.kdeplot(data=selected_group_props, x="area", label=f"Model - Selected areas ({len(selected_group_props)})",
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
+sns.kdeplot(x=RobackData_greaterthan900, label="Roback et al. (>900 $m^2$)",
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
+
+# ax_mag_freq.set_xscale("log")
+ax_mag_freq_2.legend()
+ax_mag_freq_2.set_xlabel("Area")
 # %%%% Plot other parameter distributions
 # Elevation
 plt.figure(layout='constrained')
