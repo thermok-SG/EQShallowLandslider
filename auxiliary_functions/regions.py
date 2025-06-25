@@ -166,8 +166,8 @@ def zone_aspects(aspect_array, zones=None):
     
     return zone_array
 
-def split_groups_by_aspect(groups, aspect_array, zones=None, 
-                           min_size=2, handle_small='merge'):
+def split_groups_by_aspect(groups, aspect_array, zones=None,
+                        min_size=2, handle_small='merge'):
     """
     Split connected component groups based on aspect zones.
     Each group that spans multiple aspect zones will be split into separate groups.
@@ -336,7 +336,6 @@ def calculate_region_properties(grid, labeled_array, slopes, aspect_array, min_s
         Raised if array of labeled regions is not the same size as the landlab grid
     """
 
-
     if labeled_array.shape != (grid.number_of_node_rows, grid.number_of_node_columns):
         raise ValueError("Labeled array must match grid dimensions")
 
@@ -351,7 +350,7 @@ def calculate_region_properties(grid, labeled_array, slopes, aspect_array, min_s
 
     if len(unique_labels) == 0:
         return pd.DataFrame(), working_labeled_array
-
+    
     elevation_grid = grid.at_node['topographic__elevation'].reshape(grid.shape)
     slopes_grid = slopes.reshape(grid.shape)
 
@@ -488,7 +487,6 @@ def extract_region_shape_metrics(props, i, region, grid):
 
     props['orientation'][i] = region.orientation * (180 / np.pi)
     props['eccentricity'][i] = region.eccentricity
-
 
 def calculate_slope_length_old(props, unique_labels, labeled_array, grid):
     """

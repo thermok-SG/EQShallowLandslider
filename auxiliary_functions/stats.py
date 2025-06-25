@@ -9,7 +9,7 @@ import seaborn as sns
 from tqdm import tqdm
 from scipy import stats
 import pandas as pd
-from skimage.measure import regionprops_table, regionprops
+from skimage.measure import regionprops
 
 # %% Split regions by width
 def split_wide_regions(labeled_array, region_df, kde_results, transform_info, width_threshold=1.5,
@@ -238,7 +238,7 @@ def sample_kde_widths(kde_results, transform_info, length_array, n_samples=100):
 def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slopes_grid, grid, unique_labels=None):
     """
     Calculate length and width dimensions for labeled regions using elevation-based methods.
-    Adapted from calculate_elevation_dir_dims to work as a standalone function.
+    Fixed version that properly handles coordinate systems and slope directions.
     
     Parameters:
     -----------
@@ -247,7 +247,7 @@ def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slo
     elevation_grid : numpy.ndarray
         2D array of elevation values
     aspect_array : numpy.ndarray
-        2D array of aspect values in degrees
+        2D array of aspect values in degrees (geographic convention: 0=North, 90=East)
     slopes_grid : numpy.ndarray
         2D array of slope values
     grid : object
@@ -268,7 +268,7 @@ def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slo
         unique_labels = np.unique(labeled_array)
         unique_labels = unique_labels[unique_labels != 0]  # Remove background
     
-    # Get basic region properties using regionprops (not regionprops_table) for access to coords
+    # Get basic region properties using regionprops
     regions = regionprops(labeled_array)
     
     # Extract properties manually
@@ -323,13 +323,16 @@ def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slo
         
         if len(row_coords) == 0:
             continue
-            
-        # Convert to real-world coordinates
-        x_coords = col_coords * grid.dx
-        y_coords = row_coords * grid.dy
-        coords = np.column_stack([x_coords, y_coords])
+        
+        # FIXED: Proper coordinate conversion
+        # In numpy arrays: rows = y-direction, cols = x-direction
+        # Convert to real-world coordinates (assuming y increases northward, x increases eastward)
+        x_coords = col_coords * grid.dx  # East-West direction
+        y_coords = row_coords * grid.dy  # North-South direction
+        coords = np.column_stack([x_coords, y_coords])  # [x, y] pairs
         
         gradient_direction = None
+        method_used = None
         
         # Method 1: Use elevation gradient if there's significant relief
         if elevation_relief > relief_threshold:
@@ -337,7 +340,7 @@ def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slo
             
             max_elevation = result_props['max_elevation'][prop_idx]
             min_elevation = result_props['min_elevation'][prop_idx]
-            elevation_tolerance = 0.1  # meters
+            elevation_tolerance = 0.1 * elevation_relief  # Scale tolerance with relief
             
             # Find points at max and min elevations
             high_indices = region_elevations >= (max_elevation - elevation_tolerance)
@@ -350,11 +353,14 @@ def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slo
                 high_centroid = np.mean(high_coords, axis=0)
                 low_centroid = np.mean(low_coords, axis=0)
                 
-                gradient_vector = low_centroid - high_centroid
-                gradient_length = np.linalg.norm(gradient_vector)
+                # FIXED: Calculate gradient vector (points downslope)
+                downslope_vector = low_centroid - high_centroid
+                gradient_length = np.linalg.norm(downslope_vector)
                 
                 if gradient_length > 0:
-                    gradient_direction = gradient_vector / gradient_length
+                    # Use the downslope direction as the primary direction
+                    # This assumes regions are elongated along the slope direction
+                    gradient_direction = downslope_vector / gradient_length
                     method_used = 'elevation_gradient'
         
         # Method 2: Fallback to aspect-based calculation
@@ -362,31 +368,70 @@ def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slo
             region_aspects = aspect_array[region_mask]
             region_slopes = slopes_grid[region_mask]
             
-            # Use slope-weighted aspect
-            slope_threshold = np.percentile(region_slopes, 25)
+            # Filter out low-slope areas for more reliable aspect calculation
+            slope_threshold = max(np.percentile(region_slopes, 25), 1.0)  # At least 1 degree
             valid_mask = region_slopes > slope_threshold
             
             if np.sum(valid_mask) > 0:
                 valid_aspects = region_aspects[valid_mask]
                 valid_slopes = region_slopes[valid_mask]
                 
-                cos_aspects = np.cos(valid_aspects * np.pi / 180) * valid_slopes
-                sin_aspects = np.sin(valid_aspects * np.pi / 180) * valid_slopes
+                # FIXED: Proper aspect to direction conversion
+                # Geographic aspect: 0° = North, 90° = East, 180° = South, 270° = West
+                # Convert to mathematical convention for consistent coordinate system
+                # Aspect is the direction the slope faces (upslope direction)
+                # We want the downslope direction (opposite of aspect)
+                
+                # Convert aspect to downslope direction in radians
+                downslope_aspects_rad = (valid_aspects + 180) * np.pi / 180  # Add 180° for downslope
+                
+                # Calculate slope-weighted mean direction
+                cos_aspects = np.cos(downslope_aspects_rad) * valid_slopes
+                sin_aspects = np.sin(downslope_aspects_rad) * valid_slopes
                 
                 mean_cos = np.sum(cos_aspects) / np.sum(valid_slopes)
                 mean_sin = np.sum(sin_aspects) / np.sum(valid_slopes)
-                mean_aspect_radians = np.arctan2(mean_sin, mean_cos)
                 
-                gradient_direction = np.array([np.cos(mean_aspect_radians), np.sin(mean_aspect_radians)])
+                # FIXED: Convert from geographic to cartesian coordinates
+                # Geographic: 0° = North (positive y), 90° = East (positive x)
+                # Cartesian: 0° = East (positive x), 90° = North (positive y)
+                mean_direction_rad = np.arctan2(mean_sin, mean_cos)
+                
+                # Convert from geographic convention to cartesian (x=East, y=North)
+                # Geographic angle to cartesian: subtract from π/2
+                cartesian_angle = np.pi/2 - mean_direction_rad
+                
+                gradient_direction = np.array([np.cos(cartesian_angle), np.sin(cartesian_angle)])
                 method_used = 'aspect_weighted'
             else:
                 # Final fallback to simple aspect mean
-                cos_aspects = np.cos(region_aspects * np.pi / 180)
-                sin_aspects = np.sin(region_aspects * np.pi / 180)
-                mean_aspect_radians = np.arctan2(np.mean(sin_aspects), np.mean(cos_aspects))
-                
-                gradient_direction = np.array([np.cos(mean_aspect_radians), np.sin(mean_aspect_radians)])
-                method_used = 'aspect_simple'
+                # Remove any NaN values
+                valid_aspects = region_aspects[~np.isnan(region_aspects)]
+                if len(valid_aspects) > 0:
+                    # Convert to downslope direction
+                    downslope_aspects_rad = (valid_aspects + 180) * np.pi / 180
+                    
+                    cos_aspects = np.cos(downslope_aspects_rad)
+                    sin_aspects = np.sin(downslope_aspects_rad)
+                    mean_direction_rad = np.arctan2(np.mean(sin_aspects), np.mean(cos_aspects))
+                    
+                    # Convert to cartesian
+                    cartesian_angle = np.pi/2 - mean_direction_rad
+                    gradient_direction = np.array([np.cos(cartesian_angle), np.sin(cartesian_angle)])
+                    method_used = 'aspect_simple'
+                else:
+                    # Ultimate fallback: use the major axis of the region
+                    region_props = regionprops(labeled_array == label_num)[0]
+                    orientation = region_props.orientation  # Angle in radians
+                    gradient_direction = np.array([np.cos(orientation), np.sin(orientation)])
+                    method_used = 'region_orientation'
+        
+        # If we still don't have a direction, use region orientation
+        if gradient_direction is None:
+            region_props = regionprops(labeled_array == label_num)[0]
+            orientation = region_props.orientation
+            gradient_direction = np.array([np.cos(orientation), np.sin(orientation)])
+            method_used = 'region_orientation_fallback'
         
         # Calculate projections
         perp_direction = np.array([-gradient_direction[1], gradient_direction[0]])
@@ -971,6 +1016,7 @@ def plot_bivariate_kde(dataframe, x_col, y_col, category_col=None,
         height=8,
         alpha=0.4,
     )
+    plt.axline([1,1],[10,10], label='1:1', linestyle='--', color='black')
     
     # Set log scales if needed
     if log_x:
