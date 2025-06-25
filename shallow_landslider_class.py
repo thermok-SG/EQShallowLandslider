@@ -62,9 +62,11 @@ from auxiliary_functions import (
         generate_landslide_proportion_from_pga, select_groups_by_proportion_weighted,
         
         # Functions for tracing paths and moving sediment
-        trace_paths_landslides, generate_acceleration_grid, update_soil_depth,
+        trace_paths_landslides, update_soil_depth,
         
-        split_wide_regions
+        generate_acceleration_grid, 
+        
+        recursive_split_wide_regions
     )
 
 class ShallowLandslideSimulator:
@@ -92,7 +94,7 @@ class ShallowLandslideSimulator:
         """
         # Handle all configuration types with a single function call
         self.config = get_config(config)
-    
+
         # Store the pre-loaded grid if provided
         self.grid = grid
         if self.grid is not None:
@@ -423,13 +425,17 @@ class ShallowLandslideSimulator:
         if split_by_width is not None:
             kde_data = split_by_width['kde_data']
             kde_transform = split_by_width['kde_transform']
+                        
+            self.split_subgroups, split_info = recursive_split_wide_regions(
+                grid=self.grid, labeled_array=self.aspect_subgroups,
+                aspect_array=self.aspect_nodes_array, slopes_grid=self.slopes_degrees,
+                kde_results=kde_data, transform_info=kde_transform, width_threshold=1.5, max_iterations=10,
+                min_region_size=self.config['simulation']['min_region_size'],
+                convergence_threshold=self.config['simulation']['split_convergence'],
+                verbose=True
+                )
             
-            split_subgroups, split_info = split_wide_regions(labeled_array=self.aspect_subgroups, region_df=subgroup_props,
-                                                    kde_results=kde_data, transform_info=kde_transform,
-                                                    length_col='slope_direction_length_new', width_col='perpendicular_width_new',
-                                                    label_col='label',width_threshold=2.0
-                                                    )
-            new_selected_group_props, new_selected_groups_merged = calculate_region_properties(self.grid, labeled_array=split_subgroups,
+            split_subgroup_props, self.split_subgroups = calculate_region_properties(self.grid, labeled_array=self.split_subgroups,
                                                 slopes=self.slopes_degrees, aspect_array=self.aspect_nodes_array)
             
             # Store results
@@ -442,8 +448,8 @@ class ShallowLandslideSimulator:
                 'factor_of_safety_groups': factor_of_safety_groups,
                 'a_transient_groups': a_transient_groups,
                 'subgroup_props': subgroup_props,
-                'dim_split_groups': new_selected_groups_merged,
-                'dim_split_props': new_selected_group_props
+                'dim_split_groups': self.split_subgroups,
+                'dim_split_props': split_subgroup_props
             }
         else:
             # Store results
@@ -474,13 +480,18 @@ class ShallowLandslideSimulator:
         """
         selection_method = self.config['simulation']['selection_method']
         
+        try:
+            subgroup_array = self.split_subgroups.copy()
+        except AttributeError:
+            subgroup_array = self.aspect_subgroups.copy()
+        
         if selection_method == 'probabilistic':
             # Method 2: Select groups/proportion based on critical acceleration
             probabilities, prob_metadata = generate_landslide_probability(
                 self.grid,
                 h_pga_array=self.acceleration_horizontal_array,
                 v_pga_array=self.acceleration_vertical_array,
-                labeled_array=self.aspect_subgroups,
+                labeled_array=subgroup_array,
                 slope_array=self.slopes_degrees,
                 soil_array=None,
                 geological_factor_array=None,
@@ -492,7 +503,7 @@ class ShallowLandslideSimulator:
             
             self.selected_groups, selected_proportion = probabilistic_group_selection(
                 probability_array=probabilities,
-                labeled_array=self.aspect_subgroups,
+                labeled_array=subgroup_array,
                 proportion_method=self.config['simulation']['proportion_method'],
                 random_seed=self.config['simulation']['random_seed']
             )
@@ -612,7 +623,7 @@ class ShallowLandslideSimulator:
             Dictionary containing sediment transport results
         """
         # Calculate paths and update soil depth
-        self.landslide_paths, landslide_proportions, path_details = trace_paths_landslides(
+        self.landslide_paths, landslide_proportions, self.path_details = trace_paths_landslides(
             self.grid,
             starting_nodes=self.node_ids,
             newmark_distances=self.newmark_displacement_select,
@@ -633,14 +644,168 @@ class ShallowLandslideSimulator:
         
         delta_soil_depth = self.updated_soil_depth - self.grid.at_node['soil__depth']
         
+        print(f"Grid number of nodes: {self.grid.number_of_nodes}")
+        print(f"Selected groups shape: {self.selected_groups.shape}")
+        print(f"Node IDs range: {np.min(self.node_ids)} to {np.max(self.node_ids)}")
+        print(f"Number of high displacement nodes: {len(self.node_ids)}")
+        
+        transport_zones_info = self._create_transport_zones(delta_soil_depth)
+        
+        self.transport_zones_grid = transport_zones_info['extended_zones'].reshape(self.grid.shape)
+
+        transport_zone_props, self.transport_zones_grid = calculate_region_properties(grid=self.grid, 
+            labeled_array=self.transport_zones_grid, 
+            slopes=self.slopes_degrees,
+            aspect_array=self.aspect_nodes_array
+        )
+        
         # Store results
         self.results['sediment_transport'] = {
             'landslide_paths': self.landslide_paths,
             'landslide_proportions': landslide_proportions,
-            'path_details': path_details,
+            'path_details': self.path_details,
             'updated_soil_depth': self.updated_soil_depth,
             'mass_balance': mass_balance,
-            'soil_depth_change': delta_soil_depth
+            'soil_depth_change': delta_soil_depth,
+            'transport_zone_info': transport_zones_info,
+            'transport_zone_props': transport_zone_props
+        }
+    
+    def _create_transport_zones(self, delta_soil_depth):
+        """
+        Create labeled zones showing extended regions that include original selected groups
+        plus their sediment transport pathways.
+        
+        Parameters:
+        -----------
+        delta_soil_depth : numpy.ndarray
+            Change in soil depth at each node
+        
+        Returns:
+        --------
+        dict
+            Dictionary containing transport zone information
+        """
+        # Convert selected_groups to 1D if it's 2D
+        if len(self.selected_groups.shape) == 2:
+            selected_groups_1d = self.selected_groups.flatten()
+        else:
+            selected_groups_1d = self.selected_groups.copy()
+        
+        # Group starting nodes by their selected_groups region
+        nodes_by_region = {}
+        for start_node in self.node_ids:
+            if start_node >= len(selected_groups_1d):
+                print(f"Warning: start_node {start_node} is out of bounds for selected_groups")
+                continue
+            
+            region_id = selected_groups_1d[start_node]
+            if region_id > 0:  # Only process valid regions (assuming 0 means no group)
+                if region_id not in nodes_by_region:
+                    nodes_by_region[region_id] = []
+                nodes_by_region[region_id].append(start_node)
+        
+        # Initialize arrays for the extended zones
+        extended_zones = np.zeros(self.grid.number_of_nodes, dtype=int)
+        erosion_zones = np.zeros(self.grid.number_of_nodes, dtype=int)
+        deposition_zones = np.zeros(self.grid.number_of_nodes, dtype=int)
+        
+        # Dictionary to store zone details for each extended region
+        zone_details = {}
+        
+        # Process each original selected region
+        for region_id, start_nodes in nodes_by_region.items():
+            # Start with the original selected region
+            original_region_mask = (selected_groups_1d == region_id)
+            extended_zones[original_region_mask] = region_id
+            
+            # Collect all transport paths from this region
+            all_transport_nodes = set()
+            all_path_info = []
+            
+            for start_node in start_nodes:
+                if start_node in self.path_details:
+                    path_info_list = self.path_details[start_node]
+                    all_path_info.extend(path_info_list)
+                    
+                    # Collect all nodes from all paths originating from this region
+                    for path, proportion in path_info_list:
+                        valid_path_nodes = [node for node in path if node < len(selected_groups_1d)]
+                        all_transport_nodes.update(valid_path_nodes)
+            
+            # Convert to list for easier handling
+            transport_nodes = list(all_transport_nodes)
+            
+            # Extend the zone to include transport pathways
+            if len(transport_nodes) > 0:
+                transport_mask = np.isin(np.arange(len(selected_groups_1d)), transport_nodes)
+                # Only extend to nodes not already assigned to other regions
+                unassigned_transport = transport_mask & (extended_zones == 0)
+                extended_zones[unassigned_transport] = region_id
+            
+            # Identify erosion and deposition within this extended zone
+            zone_mask = (extended_zones == region_id)
+            
+            # Erosion: negative soil depth change within the zone
+            erosion_in_zone = zone_mask & (delta_soil_depth < 0)
+            erosion_zones[erosion_in_zone] = region_id
+            
+            # Deposition: positive soil depth change within the zone
+            deposition_in_zone = zone_mask & (delta_soil_depth > 0)
+            deposition_zones[deposition_in_zone] = region_id
+            
+            # Calculate statistics for this extended region
+            original_nodes = np.where(original_region_mask)[0]
+            transport_only_nodes = np.where(zone_mask & ~original_region_mask)[0]
+            erosion_nodes = np.where(erosion_in_zone)[0]
+            deposition_nodes = np.where(deposition_in_zone)[0]
+            
+            total_eroded = np.sum(np.abs(delta_soil_depth[erosion_in_zone])) if np.any(erosion_in_zone) else 0.0
+            total_deposited = np.sum(delta_soil_depth[deposition_in_zone]) if np.any(deposition_in_zone) else 0.0
+            
+            # Calculate transport distances (could be max, mean, or total path length)
+            max_transport_distance = 0
+            total_path_length = 0
+            if all_path_info:
+                for path, proportion in all_path_info:
+                    path_length = len(path)
+                    total_path_length += path_length * proportion
+                    max_transport_distance = max(max_transport_distance, path_length)
+            
+            # Store details for this extended region
+            zone_details[region_id] = {
+                'original_region_id': region_id,
+                'start_nodes': start_nodes,
+                'original_nodes': original_nodes,
+                'transport_nodes': transport_only_nodes,
+                'all_zone_nodes': np.where(zone_mask)[0],
+                'erosion_nodes': erosion_nodes,
+                'deposition_nodes': deposition_nodes,
+                'total_eroded_volume': total_eroded,
+                'total_deposited_volume': total_deposited,
+                'max_transport_distance': max_transport_distance,
+                'weighted_avg_transport_distance': total_path_length,
+                'mass_balance': total_deposited - total_eroded,
+                'num_source_nodes': len(start_nodes),
+                'num_paths': len(all_path_info),
+                'original_area': np.sum(original_region_mask),
+                'extended_area': np.sum(zone_mask),
+                'area_expansion_ratio': np.sum(zone_mask) / np.sum(original_region_mask) if np.sum(original_region_mask) > 0 else 0
+            }
+        
+        # Create a process map distinguishing erosion vs deposition
+        process_map = np.zeros(self.grid.number_of_nodes, dtype=int)
+        process_map[erosion_zones > 0] = -1  # Erosion = -1
+        process_map[deposition_zones > 0] = 1  # Deposition = 1
+        
+        return {
+            'extended_zones': extended_zones,  # Main result: original regions + transport paths
+            'erosion_zones': erosion_zones,
+            'deposition_zones': deposition_zones,
+            'process_map': process_map,
+            'zone_details': zone_details,
+            'num_zones': len(zone_details),
+            'original_regions': list(nodes_by_region.keys())
         }
     
     def plot_intermediate_maps(self, drape_variable=None, drape_variable_name=None,
@@ -729,6 +894,7 @@ class ShallowLandslideSimulator:
             # Displacements and sediment transport
             'displacements': self.newmark_displacement_select,
             'soil_depth_change': self.results['sediment_transport']['soil_depth_change'],
+            'transport_zones': self.transport_zones_grid
         }
         
         return self.grid, self.results, model_grids

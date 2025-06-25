@@ -92,55 +92,57 @@ def get_default_config() -> Dict[str, Any]:
     """
     return {
         'dem_info': {
-            'dem_type': "SRTMGL1",
-            'north': 28.29,
-            'east': 85.20,
-            'south': 28.18,
-            'west': 85.04,
-            'buffer': 0.01,
-            'smooth_num': 4,
-            'plot_dem': True
-        },
-        'flow_params': {
-            'flow_metric': 'D8',
-            'separate_hill_flow': True,
-            'depression_handling': 'fill',
-            'update_hill_depressions': True,
-            'accumulate_flow': True
-        },
-        'soil_params': {
-            'angle_int_frict': np.radians(30),
-            'cohesion_eff': 15e3,  # Pa
-            'submerged_soil_proportion': 0.5,
-            'max_soil_depth': 1.0,  # m
-            'distribution': 'uniform',
-            'plot_soil': False,
-        },
-        'pga': {
-            'horizontal_max': 0.6,
-            'vertical_max': 0.2,
-            'distribution': "uniform",
-            'plot_grids': False
-        },
-        'simulation': {
-            'time_shaking': 10,  # seconds
-            'displacement_threshold': 0,
-            'aspect_interval': 20,
-            'random_seed': 5000, # for reproducibility
-            'selection_method': 'probabilistic', # or 'pga_weighted'
-            'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
-        },
-        'plot_intermediates': {
-            'factor_of_safety': False,
-            'critical_acceleration': False,
-            'unstable_areas': False,
-            'filled_and_split': True
-        },
-        'output': {
-            'save_plots': False,
-            'output_dir': None,
-        }
-    }
+                    'dem_type': "SRTMGL1",
+                    'north': 28.29, #31.34,# 28.29,
+                    'east': 85.20, # 85.00, #103.70,
+                    'south': 28.18, #31.23, # 28.18,
+                    'west': 85.04, # 84.84, #103.56,
+                    'buffer': 0.01,
+                    'smooth_num': 4,
+                    'plot_dem' : True
+                    },
+                'flow_params': {
+                    'flow_metric': 'D8',
+                    'separate_hill_flow': True,
+                    'depression_handling': 'fill',
+                    'update_hill_depressions': True,
+                    'accumulate_flow': True
+                    },
+                'soil_params': {
+                    'angle_int_frict': np.radians(30),
+                    'cohesion_eff': 15e3,  # Pa
+                    'submerged_soil_proportion': 0.5,
+                    'max_soil_depth': 1.5, # m
+                    'distribution': 'elevation', # 'uniform' or 'elevation'
+                    'plot_soil': False,
+                    },
+                'pga': {
+                    'horizontal_max': 0.6,
+                    'vertical_max': 0.2,
+                    'distribution': "uniform",
+                    'plot_grids': False
+                    },
+                'simulation': {
+                    'time_shaking': 10,  # seconds
+                    'displacement_threshold': 0,
+                    'aspect_interval': 20,
+                    'random_seed': 5000, # for reproducibility
+                    'split_convergence': 0.75, # threshold for splitting iterations
+                    'min_region_size': 10, # minimum size of region to split
+                    'selection_method': 'probabilistic', # or 'pga_weighted'
+                    'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
+                    },
+                'plot_intermediates':{
+                    'factor_of_safety': False,
+                    'critical_acceleration': False,
+                    'unstable_areas': False, # Issue here
+                    'filled_and_split': True
+                },
+                'output': {
+                    'save_plots': False,
+                    'output_dir': None,
+                    }
+                }
 
 
 def load_config_from_json(json_file: Union[str, Path]) -> Dict[str, Any]:
