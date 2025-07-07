@@ -46,3 +46,8 @@ from .stats import (
     fit_bivariate_kde, plot_bivariate_kde,
     conditional_sample, plot_conditional_samples
     )
+
+from .topographic_functions import (
+    # Excess topography
+    calculate_excess_topography
+)

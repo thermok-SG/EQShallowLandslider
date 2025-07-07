@@ -22,7 +22,7 @@ from scipy.stats import (
 from landlab import imshowhs_grid  # to plot results
 
 from auxiliary_functions import (
-    fit_bivariate_kde
+    fit_bivariate_kde, calculate_excess_topography
     )
 
 from inverse_gamma_script import compare_inverse_gamma
@@ -142,6 +142,18 @@ kde_dict = {
 # %%% Run component
 
 grid, model_results, model_grids = sim.run_one_step(kde_input=kde_dict)
+
+# %%% Calculate excess topography
+excess = calculate_excess_topography(grid=grid, method='morphological', )
+
+# %%%% plot excess topography
+plt.figure(layout='constrained')
+imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
+            drape1=np.ma.masked_invalid(excess),
+            cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
+            cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
+# plt.suptitle(f'Predicted landslides - {len(split_groups_props)}')
+plt.show()
 
 # %% ### Plot results ###
 
@@ -483,7 +495,7 @@ def create_comparison_plots(observed_df, modeled_df, column_mapping, log_scale=N
             axes[1, i].set_xlabel('Weibull Theoretical Quantiles')
             axes[1, i].set_ylabel('Sample Quantiles')
             
-        except Exception as e:
+        except Exception:
             # Fallback to empirical Q-Q plot if Weibull fitting fails
             print(f"Warning: Weibull fitting failed for {obs_col}, using empirical Q-Q plot")
             obs_sorted = np.sort(obs_sample)
@@ -559,8 +571,6 @@ create_comparison_plots(measured_spatial_stats_900greater, selected_group_props,
 # %%
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import stats
-from scipy.optimize import minimize
 from scipy.stats import ks_2samp
 import warnings
 
