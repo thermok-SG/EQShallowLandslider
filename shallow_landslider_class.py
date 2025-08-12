@@ -146,7 +146,8 @@ class ShallowLandslideSimulator:
         # Add soil depth field if it doesn't exist
         if "soil__depth" not in self.grid.at_node:
             self.soil_depth = apply_soil_depth(self.grid, max_soil_depth=self.config['soil_params']['max_soil_depth'],
-                            distribution=self.config['soil_params']['distribution'],
+                            distribution=self.config['soil_params']['distribution'], relationship=self.config['soil_params']['relationship'],
+                            decay_rate=self.config['soil_params']['decay_rate'], exponent=self.config['soil_params']['exponent'],
                             plot=self.config['soil_params']['plot_soil']
                             )
             
@@ -851,7 +852,6 @@ class ShallowLandslideSimulator:
         self.identify_failure_regions()
         
         # Step 5: Filter regions by aspect
-        
         self.filter_regions_by_aspect(split_by_width=kde_input)
         
         # Step 6: Select potential landslides

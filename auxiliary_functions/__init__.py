@@ -8,7 +8,7 @@ from .io import get_config
 
 from .terrain import (
     get_topo, smooth_elevation_grid,
-    apply_soil_depth, 
+    apply_soil_depth, compare_soil_relationships
     )
 
 from .newmark import (

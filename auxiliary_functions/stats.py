@@ -234,7 +234,7 @@ def sample_kde_widths(kde_results, transform_info, length_array, n_samples=100):
     
     return expected_widths
 
-# %% 
+# %% Region dimension calculation
 def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slopes_grid, grid, unique_labels=None):
     """
     Calculate length and width dimensions for labeled regions using elevation-based methods.
@@ -447,131 +447,8 @@ def calculate_region_dimensions(labeled_array, elevation_grid, aspect_array, slo
     
     return result_props
 
-def split_wide_regions_single_iteration(labeled_array, region_df, kde_results, transform_info, 
-                                        width_threshold=1.5, label_col='label', 
-                                        length_col='length_m', width_col='width_m'):
-    """
-    Perform a single iteration of region splitting.
-    Modified version of the original split_wide_regions function.
-    """
-    region_df = region_df.reset_index(drop=True)
-    
-    # Verify the column names exist in the DataFrame
-    for col_name, col_desc in [(label_col, "label"), (length_col, "length"), (width_col, "width")]:
-        if col_name not in region_df.columns:
-            raise ValueError(f"Column '{col_name}' specified for {col_desc} not found in the DataFrame. " 
-                            f"Available columns are: {list(region_df.columns)}")
-    
-    # Start with a copy of the original labeled array
-    new_labels = labeled_array.copy()
-    next_label = np.max(labeled_array) + 1 if labeled_array.size > 0 else 1
-    split_info = []
-    
-    # Get KDE information
-    kde = kde_results['overall']
-    log_x = transform_info.get('log_x', False)
-    log_y = transform_info.get('log_y', False)
-    
-    # Identify which regions need splitting
-    regions_to_split = []
-    
-    for _, row in region_df.iterrows():
-        label_id = row[label_col]
-        if label_id == 0:  # Skip background
-            continue
-            
-        length = row[length_col]
-        actual_width = row[width_col]
-        
-        # Skip if length or width are invalid
-        if length <= 0 or actual_width <= 0:
-            continue
-        
-        # Transform length value if needed (to match KDE space)
-        if log_x:
-            length_t = np.log(length)
-        else:
-            length_t = length
-            
-        # Sample from KDE to get expected width for this length
-        num_samples = 200
-        samples = []
-        attempts = 0
-        max_attempts = 500
-        
-        while len(samples) < num_samples and attempts < max_attempts:
-            attempts += 1
-            kde_samples = kde.resample(1).T
-            # Keep only samples with length close to our target
-            if abs(kde_samples[0, 0] - length_t) < 0.05 * (1 + abs(length_t)):
-                samples.append(kde_samples[0, 1])
-        
-        # If we couldn't get enough samples, use what we have
-        if len(samples) < 10:
-            samples = kde.resample(num_samples)[1, :]
-            
-        # Convert back from transformed space if needed
-        if log_y:
-            expected_widths = np.exp(samples)
-        else:
-            expected_widths = samples
-            
-        expected_width = np.median(expected_widths)
-        
-        # Check if this region needs splitting
-        width_ratio = actual_width / expected_width
-        if width_ratio > width_threshold:
-            regions_to_split.append({
-                'label': label_id,
-                'actual_width': actual_width,
-                'expected_width': expected_width,
-                'ratio': width_ratio
-            })
-    
-    # Split the identified regions
-    for region in regions_to_split:
-        label_id = region['label']
-        
-        # Get region mask
-        mask = labeled_array == label_id
-        
-        # Find coordinates and centroid
-        y_coords, x_coords = np.where(mask)
-        if len(y_coords) == 0:
-            continue  # Skip empty regions
-            
-        centroid_x = np.mean(x_coords)
-        
-        # Create the split using array indices
-        rows, cols = np.indices(labeled_array.shape)
-        
-        # Create left and right masks
-        left_mask = mask & (cols < centroid_x)
-        right_mask = mask & (cols >= centroid_x)
-        
-        # Ensure both parts have pixels
-        if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
-            continue  # Skip if one half would be empty
-        
-        # Replace with new labels
-        new_labels[left_mask] = next_label
-        left_label = next_label
-        next_label += 1
-        
-        new_labels[right_mask] = next_label
-        right_label = next_label
-        next_label += 1
-        
-        # Record the split
-        region['left_label'] = left_label
-        region['right_label'] = right_label
-        region['original_size'] = len(x_coords)
-        region['left_size'] = np.sum(left_mask)
-        region['right_size'] = np.sum(right_mask)
-        split_info.append(region)
-    
-    return new_labels, split_info
-
+# %% Splitting regions based on length/width ratio
+# %%% Splitting - main function
 def recursive_split_wide_regions(grid, labeled_array, aspect_array, slopes_grid, 
                                 kde_results, transform_info, width_threshold=1.5,
                                 max_iterations=10, min_region_size=10, 
@@ -652,7 +529,7 @@ def recursive_split_wide_regions(grid, labeled_array, aspect_array, slopes_grid,
         
         # Perform one iteration of splitting
         new_labels, split_info = split_wide_regions_single_iteration(
-            current_labels, region_df, kde_results, transform_info, width_threshold
+            grid, current_labels, region_df, kde_results, transform_info, width_threshold
         )
         
         # Check for convergence
@@ -694,6 +571,372 @@ def recursive_split_wide_regions(grid, labeled_array, aspect_array, slopes_grid,
         print(f"Final number of regions: {len(final_unique_labels)}")
     
     return current_labels, all_split_info
+# %%% Splitting each region
+def split_wide_regions_single_iteration(grid, labeled_array, region_df, kde_results, transform_info, 
+                                        width_threshold=1.5, label_col='label', 
+                                        length_col='length_m', width_col='width_m'):
+    """
+    Perform a single iteration of region splitting.
+    Modified to split perpendicular to the region's main axis using pre-calculated directions.
+    
+    The region_df should include direction information from calculate_region_dimensions.
+    """
+    
+    # Verify the column names exist in the DataFrame
+    required_cols = [label_col, length_col, width_col]
+    for col_name, col_desc in zip(required_cols, ["label", "length", "width"]):
+        if col_name not in region_df.columns:
+            raise ValueError(f"Column '{col_name}' specified for {col_desc} not found in the DataFrame. " 
+                            f"Available columns are: {list(region_df.columns)}")
+    
+    # Start with a copy of the original labeled array
+    new_labels = labeled_array.copy()
+    next_label = np.max(labeled_array) + 1 if labeled_array.size > 0 else 1
+    split_info = []
+    
+    # Get KDE information
+    kde = kde_results['overall']
+    log_x = transform_info.get('log_x', False)
+    log_y = transform_info.get('log_y', False)
+    
+    # Identify which regions need splitting and get their directions
+    regions_to_split = []
+    
+    for _, row in region_df.iterrows():
+        label_id = row[label_col]
+        if label_id == 0:  # Skip background
+            continue
+            
+        length = row[length_col]
+        actual_width = row[width_col]
+        
+        # Skip if length or width are invalid
+        if length <= 0 or actual_width <= 0:
+            continue
+        
+        # Transform length value if needed (to match KDE space)
+        if log_x:
+            length_t = np.log(length)
+        else:
+            length_t = length
+            
+        # Sample from KDE to get expected width for this length
+        num_samples = 200
+        samples = []
+        attempts = 0
+        max_attempts = 500
+        
+        while len(samples) < num_samples and attempts < max_attempts:
+            attempts += 1
+            kde_samples = kde.resample(1).T
+            # Keep only samples with length close to our target
+            if abs(kde_samples[0, 0] - length_t) < 0.05 * (1 + abs(length_t)):
+                samples.append(kde_samples[0, 1])
+        
+        # If we couldn't get enough samples, use what we have
+        if len(samples) < 10:
+            samples = kde.resample(num_samples)[1, :]
+            
+        # Convert back from transformed space if needed
+        if log_y:
+            expected_widths = np.exp(samples)
+        else:
+            expected_widths = samples
+            
+        expected_width = np.median(expected_widths)
+        
+        # Check if this region needs splitting
+        width_ratio = actual_width / expected_width
+        if width_ratio > width_threshold:
+            # Extract the main axis direction from calculate_region_dimensions
+            main_direction = extract_direction_from_region_data(row, labeled_array, grid)
+            
+            regions_to_split.append({
+                'label': label_id,
+                'actual_width': actual_width,
+                'expected_width': expected_width,
+                'ratio': width_ratio,
+                'main_direction': main_direction,
+                'direction_method': row.get('direction_method', 'unknown')
+            })
+    
+    # Split the identified regions
+    for region in regions_to_split:
+        label_id = region['label']
+        main_direction = region['main_direction']
+        
+        # Get region mask
+        mask = labeled_array == label_id
+        
+        # Find coordinates
+        row_coords, col_coords = np.where(mask)
+        if len(row_coords) == 0:
+            continue  # Skip empty regions
+        
+        # Convert to real-world coordinates
+        x_coords = col_coords * grid.dx  # East-West direction
+        y_coords = row_coords * grid.dy  # North-South direction
+        coords = np.column_stack([x_coords, y_coords])  # [x, y] pairs
+        
+        # The split should be perpendicular to the main axis direction
+        if main_direction is not None:
+            split_direction = np.array([-main_direction[1], main_direction[0]])
+        else:
+            # Fallback to PCA if no direction available
+            split_direction = get_pca_split_direction(coords)
+        
+        # Calculate centroid
+        centroid = np.mean(coords, axis=0)
+        
+        # Project all points onto the split direction to determine which side they're on
+        centered_coords = coords - centroid
+        split_projections = np.dot(centered_coords, split_direction)
+        
+        # Create masks for the two parts
+        split_mask = split_projections >= 0
+        
+        # Convert back to 2D indices
+        part1_rows = row_coords[split_mask]
+        part1_cols = col_coords[split_mask] 
+        part2_rows = row_coords[~split_mask]
+        part2_cols = col_coords[~split_mask]
+        
+        # Ensure both parts have pixels
+        if len(part1_rows) == 0 or len(part2_rows) == 0:
+            continue  # Skip if one half would be empty
+        
+        # Create masks for the new labels
+        part1_mask = np.zeros_like(mask, dtype=bool)
+        part2_mask = np.zeros_like(mask, dtype=bool)
+        
+        part1_mask[part1_rows, part1_cols] = True
+        part2_mask[part2_rows, part2_cols] = True
+        
+        # Assign new labels
+        new_labels[part1_mask] = next_label
+        part1_label = next_label
+        next_label += 1
+        
+        new_labels[part2_mask] = next_label
+        part2_label = next_label 
+        next_label += 1
+        
+        # Record the split
+        region['part1_label'] = part1_label
+        region['part2_label'] = part2_label
+        region['original_size'] = len(row_coords)
+        region['part1_size'] = len(part1_rows)
+        region['part2_size'] = len(part2_rows)
+        region['split_direction'] = split_direction.tolist() if main_direction is not None else None
+        split_info.append(region)
+    
+    return new_labels, split_info
+
+# %%%% Splitting - helper functions
+def extract_direction_from_region_data(region_row, labeled_array, grid):
+    """
+    Extract the main axis direction from the region data calculated by calculate_region_dimensions.
+    
+    This function reconstructs the direction vector from the region's geometry,
+    using the same coordinate system as calculate_region_dimensions.
+    """
+    label_id = region_row['label']
+    direction_method = region_row.get('direction_method', '')
+    
+    # Get region coordinates
+    mask = labeled_array == label_id
+    row_coords, col_coords = np.where(mask)
+    
+    if len(row_coords) == 0:
+        return None
+    
+    # Convert to real-world coordinates (same as calculate_region_dimensions)
+    x_coords = col_coords * grid.dx  # East-West direction
+    y_coords = row_coords * grid.dy  # North-South direction
+    coords = np.column_stack([x_coords, y_coords])
+    
+    # For most direction methods, we can reconstruct the direction from the region's shape
+    # This is more reliable than trying to store/pass the direction vector
+    
+    if 'elevation_gradient' in direction_method:
+        # The direction was based on elevation gradient - use region's major axis
+        # as it should align with the gradient direction
+        return get_region_major_axis(coords)
+    
+    elif 'aspect' in direction_method:
+        # Direction was based on aspect - use region's major axis
+        return get_region_major_axis(coords)
+    
+    elif 'orientation' in direction_method:
+        # Direction was based on region orientation - use major axis directly
+        return get_region_major_axis(coords)
+    
+    else:
+        # Unknown method - use major axis as fallback
+        return get_region_major_axis(coords)
+
+def get_region_major_axis(coords):
+    """
+    Calculate the major axis direction of a set of coordinates using PCA.
+    Returns a unit vector pointing along the major axis.
+    """
+    if len(coords) < 2:
+        return np.array([1, 0])  # Default to east-west
+    
+    # Center the coordinates
+    centroid = np.mean(coords, axis=0)
+    centered_coords = coords - centroid
+    
+    # Calculate covariance matrix
+    cov_matrix = np.cov(centered_coords.T)
+    
+    # Get eigenvalues and eigenvectors
+    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+    
+    # The eigenvector with the largest eigenvalue is the major axis
+    major_axis_idx = np.argmax(eigenvalues)
+    major_axis = eigenvectors[:, major_axis_idx]
+    
+    # Ensure consistent orientation (optional - you might want to remove this)
+    if major_axis[0] < 0:
+        major_axis = -major_axis
+    
+    return major_axis
+
+def get_pca_split_direction(coords):
+    """
+    Fallback function to get split direction when no main direction is available.
+    Returns the direction perpendicular to the major axis.
+    """
+    major_axis = get_region_major_axis(coords)
+    # Return perpendicular direction
+    return np.array([-major_axis[1], major_axis[0]])
+
+# Old
+# def split_wide_regions_single_iteration(labeled_array, region_df, kde_results, transform_info, 
+#                                         width_threshold=1.5, label_col='label', 
+#                                         length_col='length_m', width_col='width_m'):
+#     """
+#     Perform a single iteration of region splitting.
+#     Modified version of the original split_wide_regions function.
+#     """
+#     region_df = region_df.reset_index(drop=True)
+    
+#     # Verify the column names exist in the DataFrame
+#     for col_name, col_desc in [(label_col, "label"), (length_col, "length"), (width_col, "width")]:
+#         if col_name not in region_df.columns:
+#             raise ValueError(f"Column '{col_name}' specified for {col_desc} not found in the DataFrame. " 
+#                             f"Available columns are: {list(region_df.columns)}")
+    
+#     # Start with a copy of the original labeled array
+#     new_labels = labeled_array.copy()
+#     next_label = np.max(labeled_array) + 1 if labeled_array.size > 0 else 1
+#     split_info = []
+    
+#     # Get KDE information
+#     kde = kde_results['overall']
+#     log_x = transform_info.get('log_x', False)
+#     log_y = transform_info.get('log_y', False)
+    
+#     # Identify which regions need splitting
+#     regions_to_split = []
+    
+#     for _, row in region_df.iterrows():
+#         label_id = row[label_col]
+#         if label_id == 0:  # Skip background
+#             continue
+            
+#         length = row[length_col]
+#         actual_width = row[width_col]
+        
+#         # Skip if length or width are invalid
+#         if length <= 0 or actual_width <= 0:
+#             continue
+        
+#         # Transform length value if needed (to match KDE space)
+#         if log_x:
+#             length_t = np.log(length)
+#         else:
+#             length_t = length
+            
+#         # Sample from KDE to get expected width for this length
+#         num_samples = 200
+#         samples = []
+#         attempts = 0
+#         max_attempts = 500
+        
+#         while len(samples) < num_samples and attempts < max_attempts:
+#             attempts += 1
+#             kde_samples = kde.resample(1).T
+#             # Keep only samples with length close to our target
+#             if abs(kde_samples[0, 0] - length_t) < 0.05 * (1 + abs(length_t)):
+#                 samples.append(kde_samples[0, 1])
+        
+#         # If we couldn't get enough samples, use what we have
+#         if len(samples) < 10:
+#             samples = kde.resample(num_samples)[1, :]
+            
+#         # Convert back from transformed space if needed
+#         if log_y:
+#             expected_widths = np.exp(samples)
+#         else:
+#             expected_widths = samples
+            
+#         expected_width = np.median(expected_widths)
+        
+#         # Check if this region needs splitting
+#         width_ratio = actual_width / expected_width
+#         if width_ratio > width_threshold:
+#             regions_to_split.append({
+#                 'label': label_id,
+#                 'actual_width': actual_width,
+#                 'expected_width': expected_width,
+#                 'ratio': width_ratio
+#             })
+    
+#     # Split the identified regions
+#     for region in regions_to_split:
+#         label_id = region['label']
+        
+#         # Get region mask
+#         mask = labeled_array == label_id
+        
+#         # Find coordinates and centroid
+#         y_coords, x_coords = np.where(mask)
+#         if len(y_coords) == 0:
+#             continue  # Skip empty regions
+            
+#         centroid_x = np.mean(x_coords)
+        
+#         # Create the split using array indices
+#         rows, cols = np.indices(labeled_array.shape)
+        
+#         # Create left and right masks
+#         left_mask = mask & (cols < centroid_x)
+#         right_mask = mask & (cols >= centroid_x)
+        
+#         # Ensure both parts have pixels
+#         if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
+#             continue  # Skip if one half would be empty
+        
+#         # Replace with new labels
+#         new_labels[left_mask] = next_label
+#         left_label = next_label
+#         next_label += 1
+        
+#         new_labels[right_mask] = next_label
+#         right_label = next_label
+#         next_label += 1
+        
+#         # Record the split
+#         region['left_label'] = left_label
+#         region['right_label'] = right_label
+#         region['original_size'] = len(x_coords)
+#         region['left_size'] = np.sum(left_mask)
+#         region['right_size'] = np.sum(right_mask)
+#         split_info.append(region)
+    
+#     return new_labels, split_info
 
 def analyze_split_results(split_history, final_df, kde_results, transform_info):
     """

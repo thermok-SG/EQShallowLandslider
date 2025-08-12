@@ -15,14 +15,15 @@ import pandas as pd
 import geopandas as gpd
 
 import scipy.stats as stats
-from scipy.stats import (
-    wasserstein_distance
-    )
+# from scipy.stats import (
+#     wasserstein_distance
+#     )
 
 from landlab import imshowhs_grid  # to plot results
 
 from auxiliary_functions import (
-    fit_bivariate_kde, calculate_excess_topography
+    fit_bivariate_kde,
+    calculate_excess_topography
     )
 
 from inverse_gamma_script import compare_inverse_gamma
@@ -70,63 +71,69 @@ plt.xlabel('Landslide length (m)')
 plt.ylabel('Landslide width (m)')
 # %%% Fitting bivariate data
 kde_data, kde_transform = fit_bivariate_kde(dataframe=measured_data, x_col="length_m", 
-                                y_col="width_m", category_col=None)
+                                y_col="width_m", category_col=None, plot_results=False)
+
+# kde_plotter = create_kde_plotter(kde_data, kde_transform)
 
 # %% ### Initialise and run ShallowLandslider
 
 # %%% Initialise landslider
-config_dict = {'dem_info': {
-                    'dem_type': "SRTMGL1",
-                    'north': 28.29, #31.34,# 28.29,
-                    'east': 85.20, # 85.00, #103.70,
-                    'south': 28.18, #31.23, # 28.18,
-                    'west': 85.04, # 84.84, #103.56,
-                    'buffer': 0.01,
-                    'smooth_num': 4,
-                    'plot_dem' : True
-                    },
-                'flow_params': {
-                    'flow_metric': 'D8',
-                    'separate_hill_flow': True,
-                    'depression_handling': 'fill',
-                    'update_hill_depressions': True,
-                    'accumulate_flow': True
-                    },
-                'soil_params': {
-                    'angle_int_frict': np.radians(30),
-                    'cohesion_eff': 15e3,  # Pa
-                    'submerged_soil_proportion': 0.5,
-                    'max_soil_depth': 1.5, # m
-                    'distribution': 'elevation', # 'uniform' or 'elevation'
-                    'plot_soil': False,
-                    },
-                'pga': {
-                    'horizontal_max': 0.6,
-                    'vertical_max': 0.2,
-                    'distribution': "uniform",
-                    'plot_grids': False
-                    },
-                'simulation': {
-                    'time_shaking': 10,  # seconds
-                    'displacement_threshold': 0,
-                    'aspect_interval': 20,
-                    'random_seed': 5000, # for reproducibility
-                    'split_convergence': 0.75, # threshold for splitting iterations
-                    'min_region_size': 10, # minimum size of region to split
-                    'selection_method': 'probabilistic', # or 'pga_weighted'
-                    'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
-                    },
-                'plot_intermediates':{
-                    'factor_of_safety': False,
-                    'critical_acceleration': False,
-                    'unstable_areas': False, # Issue here
-                    'filled_and_split': True
-                },
-                'output': {
-                    'save_plots': False,
-                    'output_dir': None,
-                    }
-                }
+config_dict = {
+    'dem_info': {
+        'dem_type': "SRTMGL1",
+        'north': 28.29, #31.34,# 28.29,
+        'east': 85.20, # 85.00, #103.70,
+        'south': 28.18, #31.23, # 28.18,
+        'west': 85.04, # 84.84, #103.56,
+        'buffer': 0.01,
+        'smooth_num': 4,
+        'plot_dem' : True
+        },
+    'flow_params': {
+        'flow_metric': 'D8',
+        'separate_hill_flow': True,
+        'depression_handling': 'fill',
+        'update_hill_depressions': True,
+        'accumulate_flow': True
+        },
+    'soil_params': {
+        'angle_int_frict': np.radians(30),
+        'cohesion_eff': 15e3,  # Pa
+        'submerged_soil_proportion': 0.5,
+        'max_soil_depth': 1.5, # m
+        'distribution': 'uniform', # 'uniform' or 'elevation'
+        'relationship': 'sigmoid', # 'linear', 'exponential', 'power', 'sigmoid'
+        'decay_rate': 1.0, # rate of decay of exponential function
+        'exponent': 2.0, # exponent for when relationship == 'power'
+        'plot_soil': True,
+        },
+    'pga': {
+        'horizontal_max': 0.6,
+        'vertical_max': 0.2,
+        'distribution': "uniform",
+        'plot_grids': False
+        },
+    'simulation': {
+        'time_shaking': 10,  # seconds
+        'displacement_threshold': 0,
+        'aspect_interval': 20,
+        'random_seed': 5000, # for reproducibility
+        'split_convergence': 0.75, # threshold for splitting iterations
+        'min_region_size': 10, # minimum size of region to split
+        'selection_method': 'probabilistic', # or 'pga_weighted'
+        'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
+        },
+    'plot_intermediates':{
+        'factor_of_safety': False,
+        'critical_acceleration': False,
+        'unstable_areas': False, # Issue here
+        'filled_and_split': True
+    },
+    'output': {
+        'save_plots': False,
+        'output_dir': None,
+        }
+    }
 
 # Initialise component with given parameters
 sim = ShallowLandslideSimulator(config=config_dict)
@@ -144,7 +151,7 @@ kde_dict = {
 grid, model_results, model_grids = sim.run_one_step(kde_input=kde_dict)
 
 # %%% Calculate excess topography
-excess = calculate_excess_topography(grid=grid, method='morphological', )
+excess = calculate_excess_topography(grid=grid, method='morphological')
 
 # %%%% plot excess topography
 plt.figure(layout='constrained')
@@ -171,10 +178,13 @@ displacement_zones = model_grids['transport_zones']
 displacement_zone_props = model_results['sediment_transport']['transport_zone_props']
 
 # %% Post-run length-width plot
-plt.figure(layout='constrained')
+fig_meas_scatter, ax_meas_scatter = plt.subplots(layout='constrained')
 
-ax_meas_scatter = sns.kdeplot(data=measured_data, x='length_m', y='width_m', color='red',
-                        log_scale=(True, True), label='Measured landslide dimensions')
+# Add KDE background first (so it's behind the points)
+# kde_plotter.add_kde_background(ax_meas_scatter, category=None, levels=15, alpha=0.3, colors='gray')
+
+sns.kdeplot(data=measured_data, x='length_m', y='width_m', color='red',
+                        log_scale=(True, True), label='Measured landslide dimensions', ax=ax_meas_scatter)
 # sns.scatterplot(data=subgroup_props, x='slope_direction_length', y='perpendicular_width')
 sns.scatterplot(data=subgroup_props, x='slope_direction_length_new', y='perpendicular_width_new',
                 label='Pre-split groups', ax=ax_meas_scatter)
@@ -193,24 +203,25 @@ plt.legend()
 plt.xlabel('Landslide length (m)')
 plt.ylabel('Landslide width (m)')
 
-# %%% Map of predicted landslides
+# %%% Maps of predicted landslides
+# Post-displacement landslides
 plt.figure(layout='constrained')
 imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
             drape1=np.ma.masked_invalid(np.ma.masked_equal(model_results['aspect_filtering']['dim_split_groups'], 0)),
             cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
             cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
 plt.suptitle(f'Predicted landslides - {len(split_groups_props)}')
-plt.show()
 
-# %%
-
+# Selected landslides
 plt.figure(layout='constrained')
 imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
             drape1=np.ma.masked_invalid(np.ma.masked_equal(model_grids['selected_landslides'], 0)),
             cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
             cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
-plt.suptitle(f'Predicted landslides - {len(selected_group_props)}')
+plt.suptitle(f'Predicted & selected landslides - {len(selected_group_props)}')
+
 plt.show()
+
 # %%
 plt.figure(layout='constrained')
 imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
@@ -219,8 +230,6 @@ imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
             cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
 plt.suptitle('Predicted landslides - post-displacement')
 plt.show()
-
-
 
 # %%%% Map of soil depth change
 plt.figure(layout='constrained')
@@ -234,15 +243,15 @@ RobackData_greaterthan900 = LSshapefile_file["SHAPE_Area"][LSshapefile_file["SHA
 count, bins_Roback = np.histogram(np.log10(RobackData_greaterthan900), 20)
 
 fig_mag_freq, ax_mag_freq = plt.subplots(layout='constrained')
-sns.histplot(data=subgroup_props, x="area", label="Model - All areas",
+sns.histplot(data=subgroup_props, x="area", label=f"Model - All areas ({len(subgroup_props)})",
             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
 # sns.histplot(data=split_groups_props, x="area", label="Model - All split areas",
 #             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
-sns.histplot(data=selected_group_props, x="area", label="Model - Selected areas",
+sns.histplot(data=selected_group_props, x="area", label=f"Model - Selected areas ({len(selected_group_props)})",
             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
 # sns.histplot(data=displacement_zone_props, x="area", label="Model - displaced areas",
 #             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
-sns.histplot(x=RobackData_greaterthan900, label="Roback et al. (>900 $m^2$)",
+sns.histplot(x=RobackData_greaterthan900, label=f"Roback et al. (>900 $m^2$; {len(RobackData_greaterthan900)})",
             legend=True, ax=ax_mag_freq, log_scale=True, bins=bins_Roback, stat='density')
 
 # ax_mag_freq.set_xscale("log")
@@ -252,15 +261,15 @@ ax_mag_freq.set_xlabel("Area")
 # %%%%% Plot KDE for magnitude-frequency
 fig_mag_freq_2, ax_mag_freq_2 = plt.subplots(layout='constrained')
 sns.kdeplot(data=subgroup_props, x="area", label=f"Model - All areas ({len(subgroup_props)})",
-            legend=True, ax=ax_mag_freq_2, log_scale=True, color='grey')
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
 sns.kdeplot(data=split_groups_props, x="area", label=f"Model - All split areas ({len(split_groups_props)})",
-            legend=True, ax=ax_mag_freq_2, log_scale=True, color='grey')
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
 sns.kdeplot(data=selected_group_props, x="area", label=f"Model - Selected areas ({len(selected_group_props)})",
-            legend=True, ax=ax_mag_freq_2, log_scale=True, color='grey')
-sns.kdeplot(data=displacement_zone_props, x="area", label=f"Model - Displaced areas ({len(displacement_zone_props)})",
-            legend=True, ax=ax_mag_freq_2, log_scale=True, color='red')
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
+# sns.kdeplot(data=displacement_zone_props, x="area", label=f"Model - Displaced areas ({len(displacement_zone_props)})",
+#             legend=True, ax=ax_mag_freq_2, log_scale=True, color='red')
 sns.kdeplot(x=RobackData_greaterthan900, label="Roback et al. (>900 $m^2$)",
-            legend=True, ax=ax_mag_freq_2, log_scale=True, color='grey')
+            legend=True, ax=ax_mag_freq_2, log_scale=True)
 
 # ax_mag_freq.set_xscale("log")
 ax_mag_freq_2.legend()
@@ -517,7 +526,7 @@ def create_comparison_plots(observed_df, modeled_df, column_mapping, log_scale=N
         x_mod, y_mod = ecdf(mod_data)
         axes[2, i].step(x_obs, y_obs, label='Observed', where='post', color='blue')
         axes[2, i].step(x_mod, y_mod, label='Modeled', where='post', color='red')
-        wassert_dist = wasserstein_distance(obs_data, mod_data)
+        wassert_dist = stats.wasserstein_distance(obs_data, mod_data)
         axes[2, i].set_title(f'{obs_col} vs {mod_col}\nEmpirical CDF\nWasserstein Distance: {wassert_dist:.4f}')
         axes[2, i].set_xlabel(obs_col)
         axes[2, i].set_ylabel('CDF')
