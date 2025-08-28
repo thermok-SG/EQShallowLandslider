@@ -6,11 +6,16 @@ Functions that allow import and output of data
 
 # %% Required packages
 
+import os
 import json
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 import copy
+import pickle
+import pandas as pd
+import geopandas as gpd
+from .stats import fit_bivariate_kde
 
 # %% Handle JSON config files
 # %%% Main function
@@ -117,6 +122,8 @@ def get_default_config() -> Dict[str, Any]:
             'relationship': 'exponential', # 'linear', 'exponential', 'power', 'logarithmic', 'sigmoid'
             'decay_rate': 5.0, # rate of decay of exponential function
             'exponent': 1.0, # exponent for when relationship == 'power'
+            'drainage_transform': 'log', # transformation for drainage area values
+            'drainage_threshold': None, # drainage area threshold when  'drainage_transform'=='threshold'
             'plot_soil': True,
             },
         'pga': {
@@ -130,6 +137,7 @@ def get_default_config() -> Dict[str, Any]:
             'displacement_threshold': 0,
             'aspect_interval': 20,
             'random_seed': 5000, # for reproducibility
+            'handle_small_regions': 'merge', # what happens to 1px regions: 'keep', 'merge', or 'remove'
             'split_convergence': 0.75, # threshold for splitting iterations
             'min_region_size': 10, # minimum size of region to split
             'selection_method': 'probabilistic', # or 'pga_weighted'
@@ -278,3 +286,86 @@ def validate_config(config: Dict[str, Any]) -> bool:
         raise ValueError("Shaking time must be positive")
     
     return True
+
+# %% Pickling datasets
+
+# %% Import measured data
+# # Import area, length and width data for all measured landslides in region
+# file_name = "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/measuredLandslides_all.csv"
+# measured_data = pd.read_csv(file_name)
+
+# # Import zonal statistics for Roback et al. 2017 landslides
+# file_name2 = "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_spatialStats.csv"
+# file_name3 = "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv"
+# measured_spatial_stats = pd.read_csv(file_name2)
+# measured_spatial_stats_clipped = pd.read_csv(file_name3)
+
+# # Remove all landslides below 1000 m^2
+# measured_spatial_stats_900greater = measured_spatial_stats.drop(measured_spatial_stats[measured_spatial_stats['Area']<1000].index)
+
+# plot_order = ["Roback2017_Gorkha", "Jones2021_ASM"]
+
+# # Import Roback et al. 2017 landslide shapefile for test area
+# LSshapefile_name = 'C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp'
+# LSshapefile_file = gpd.read_file(LSshapefile_name)
+
+def pickle_or_not_to_pickle(pickle_path="measured_data.pkl"):
+    """
+    Load processed data (DataFrames, shapefile, KDEs) from pickle if it exists.
+    Otherwise, build from source files, save, and return.
+    """
+    
+    if os.path.exists(pickle_path):
+        print(f"Loading preprocessed data from {pickle_path}...")
+        with open(pickle_path, "rb") as f:
+            bundle = pickle.load(f)
+        return bundle
+    
+    print("Pickle not found, building from CSVs and shapefile...")
+
+    # --- Load CSVs ---
+    measured_data = pd.read_csv(
+        "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/measuredLandslides_all.csv"
+        )
+    measured_spatial_stats = pd.read_csv(
+        "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv"
+        )
+    measured_spatial_stats_clipped = pd.read_csv(
+        "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv"
+        )
+
+    measured_spatial_stats_900greater = measured_spatial_stats.drop(
+        measured_spatial_stats[measured_spatial_stats['Area_m2'] < 1000].index
+    )
+
+    # --- Load shapefile ---
+    LSshapefile_file = gpd.read_file(
+        "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp"
+        )
+
+    # --- Fit KDE ---
+    kde_data, kde_transform = fit_bivariate_kde(
+        dataframe=measured_data,
+        x_col="length_m",
+        y_col="width_m",
+        category_col=None,
+        plot_results=False
+    )
+
+    # --- Bundle everything ---
+    bundle = {
+        "measured_data": measured_data,
+        "measured_spatial_stats": measured_spatial_stats,
+        "measured_spatial_stats_clipped": measured_spatial_stats_clipped,
+        "measured_spatial_stats_900greater": measured_spatial_stats_900greater,
+        "LSshapefile_file": LSshapefile_file,
+        "kde_data": kde_data,
+        "kde_transform": kde_transform
+    }
+
+    # Save to pickle for next time
+    with open(pickle_path, "wb") as f:
+        pickle.dump(bundle, f)
+    print(f"Saved preprocessed data to {pickle_path}")
+
+    return bundle

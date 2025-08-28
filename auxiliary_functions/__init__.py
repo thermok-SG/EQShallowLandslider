@@ -4,7 +4,9 @@ Auxiliary functions for the ShallowLandslider component
 author: sghoshal
 """
 
-from .io import get_config
+from .io import (
+    get_config, pickle_or_not_to_pickle
+    )
 
 from .terrain import (
     get_topo, smooth_elevation_grid,

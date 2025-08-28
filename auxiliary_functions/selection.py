@@ -3,7 +3,8 @@ Functions for landslide selection
 """
 # %% Required components
 import numpy as np
-
+from scipy import ndimage
+from scipy.special import expit
 
 # %% ### Region selection functions ###
 # %%% Method 2: Select groups/proportion based on a_c
@@ -24,11 +25,18 @@ def _calculate_acceleration_probability(pga_ratio, critical_acceleration):
     float
         Probability of slope failure
     """
-    # Base probability increases as critical acceleration decreases
-    base_probability = 1 - np.exp(-5 * (1 / critical_acceleration))
+    if critical_acceleration <= 0:
+        return 1.0
     
+    else:
+        epsilon = 1e-3
+        # Base probability increases as critical acceleration decreases
+        exponent = -5 * (1.0 / max(critical_acceleration, epsilon))
+        exponent = np.clip(exponent, -700, 700)
+        base_probability = 1 - np.exp(exponent)
+        
     # PGA ratio effect
-    pga_effect = 1 / (1 + np.exp(-5 * (pga_ratio - 1)))
+    pga_effect = expit(5 * (pga_ratio -1 ))
     
     # Combined probability
     combined_probability = base_probability * pga_effect
@@ -71,8 +79,8 @@ Return (probability_array, metadata)
 """
 # Calculates probabilities for each group
 def calculate_group_probability(h_pga_grid, v_pga_grid, critical_acceleration_grid, 
-                               mask, slope_grid=None, soil_array=None, 
-                               geological_factor_array=None):
+                                mask, slope_grid=None, soil_array=None, 
+                                geological_factor_array=None):
     """
     Calculate the landslide probability for a specific group/region.
     
@@ -390,337 +398,368 @@ def generate_landslide_probability(grid, h_pga_array, v_pga_array, labeled_array
     return probability_array, metadata
 
 # %%%%% Proportion calculation and group selection
-def calculate_landslide_proportion_old(probability_array, method='empirical'):
+def calculate_landslide_proportion(group_probs, method='empirical'):
     """
     Dynamically calculate an appropriate proportion of landslide groups.
-    
-    Parameters:
-    -----------
-    probability_array : numpy.ndarray
-        Array of failure probabilities
+
+    Parameters
+    ----------
+    group_probs : numpy.ndarray
+        Mean failure probabilities per group (already aggregated)
     method : str, optional
         Method for proportion calculation
-    
-    Returns:
-    --------
+
+    Returns
+    -------
     float
         Recommended proportion of landslide groups
     """
-    # Remove zero probabilities
-    valid_probs = np.unique(probability_array[probability_array > 0])
-    
-    if method == 'empirical':
-        # Method 1: Based on probability distribution percentiles
-        # Uses 75th percentile as a natural breaking point
-        proportion = np.percentile(valid_probs, 75)
-        normalized_proportion = proportion / np.max(valid_probs)
-        
-        return normalized_proportion
-    
-    elif method == 'statistical':
-        # Method 2: Using statistical distribution characteristics
-        mean_prob = np.mean(valid_probs)
-        std_prob = np.std(valid_probs)
-        
-        # One standard deviation above the mean as a threshold
-        threshold = mean_prob + std_prob
-        proportion = np.sum(probability_array >= threshold) / probability_array.size
-        
-        return proportion
-    
-    elif method == 'risk_profile':
-        # Method 3: Multi-factor risk assessment
-        # Considers both probability and variability
-        mean_prob = np.mean(valid_probs)
-        median_prob = np.median(valid_probs)
-        std_prob = np.std(valid_probs)
-        
-        # Combine metrics with weights and ensure result is between 0 and 1
-        risk_score = (
-            0.4 * (mean_prob / np.max(valid_probs)) + 
-            0.3 * (median_prob / np.max(valid_probs)) + 
-            0.3 * np.clip(std_prob / mean_prob, 0, 1)
-        )
-        
-        # Ensure the final proportion is between 0 and 1
-        return np.clip(risk_score, 0, 1)
-    
-    else:
-        raise ValueError("Invalid method. Choose 'empirical', 'statistical', or 'risk_profile'.")
-    
-def calculate_landslide_proportion(probability_array, method='empirical'):
-    """
-    Dynamically calculate an appropriate proportion of landslide groups.
-    
-    Parameters:
-    -----------
-    probability_array : numpy.ndarray
-        Array of failure probabilities
-    method : str, optional
-        Method for proportion calculation
-    
-    Returns:
-    --------
-    float
-        Recommended proportion of landslide groups
-    """
-    # Remove zero probabilities
-    valid_probs = np.unique(probability_array[probability_array > 0])
-    
+    valid_probs = group_probs[group_probs > 0]
     if len(valid_probs) == 0:
         return 0.0
-    
+
     print(f"Debug: Valid probs range: {np.min(valid_probs):.4f} to {np.max(valid_probs):.4f}")
-    print(f"Debug: Number of unique valid probabilities: {len(valid_probs)}")
-    
+    print(f"Debug: Number of valid groups: {len(valid_probs)}")
+
     if method == 'empirical':
-        # PROBLEM: This method returns probability values (0-1) as proportions
-        # But proportions should represent fraction of groups to select
-        
-        # ORIGINAL (problematic):
-        # proportion = np.percentile(valid_probs, 75)
-        # normalized_proportion = proportion / np.max(valid_probs)
-        
-        # FIXED VERSION 1: Based on probability thresholds
-        # Select groups with probabilities above 75th percentile
         threshold = np.percentile(valid_probs, 75)
-        high_prob_groups = np.sum(probability_array >= threshold)
-        total_groups = len(np.unique(probability_array[probability_array > 0]))
-        proportion = high_prob_groups / len(np.unique(probability_array)) if len(np.unique(probability_array)) > 0 else 0
-        
-        # Alternative: Use a fixed reasonable proportion based on risk level
-        # Higher risk = select more groups
+        high_prob_fraction = np.sum(valid_probs >= threshold) / len(valid_probs)
         mean_risk = np.mean(valid_probs)
+
         if mean_risk > 0.7:
-            proportion = 0.6  # High risk: select 60% of groups
+            base_proportion = 0.6
         elif mean_risk > 0.5:
-            proportion = 0.4  # Medium risk: select 40% of groups
+            base_proportion = 0.4
         elif mean_risk > 0.3:
-            proportion = 0.25  # Low-medium risk: select 25% of groups
+            base_proportion = 0.25
         else:
-            proportion = 0.15  # Low risk: select 15% of groups
-        
-        print(f"Debug: Empirical method - mean_risk={mean_risk:.4f}, proportion={proportion:.4f}")
+            base_proportion = 0.15
+
+        proportion = max(high_prob_fraction, base_proportion)
+        print(f"Debug: Empirical - mean_risk={mean_risk:.4f}, proportion={proportion:.4f}")
         return proportion
-    
+
     elif method == 'statistical':
-        # PROBLEM: This calculates proportion of pixels, not proportion of groups
-        
-        # ORIGINAL (problematic):
-        # mean_prob = np.mean(valid_probs)
-        # std_prob = np.std(valid_probs)
-        # threshold = mean_prob + std_prob
-        # proportion = np.sum(probability_array >= threshold) / probability_array.size
-        
-        # FIXED VERSION: Calculate proportion of groups above threshold
         mean_prob = np.mean(valid_probs)
         std_prob = np.std(valid_probs)
-        threshold = mean_prob + std_prob
-        
-        # Count unique groups (not pixels) above threshold
-        unique_probs_above_threshold = valid_probs[valid_probs >= threshold]
-        proportion = len(unique_probs_above_threshold) / len(valid_probs)
-        
-        # Ensure minimum selection
-        proportion = max(proportion, 0.1)  # At least 10% of groups
-        
-        print(f"Debug: Statistical method - threshold={threshold:.4f}, proportion={proportion:.4f}")
+
+        # Hybrid threshold: more adaptive than mean+std alone
+        threshold = max(np.percentile(valid_probs, 75), mean_prob + std_prob)
+        proportion = np.sum(valid_probs >= threshold) / len(valid_probs)
+
+        proportion = max(proportion, 0.1)
+        print(f"Debug: Statistical - threshold={threshold:.4f}, proportion={proportion:.4f}")
         return proportion
-    
+
     elif method == 'risk_profile':
-        # This method has the right idea but values are often too small
-        
         mean_prob = np.mean(valid_probs)
         median_prob = np.median(valid_probs)
         std_prob = np.std(valid_probs)
         max_prob = np.max(valid_probs)
-        
-        # ORIGINAL (often too small):
-        # risk_score = (
-        #     0.4 * (mean_prob / max_prob) + 
-        #     0.3 * (median_prob / max_prob) + 
-        #     0.3 * np.clip(std_prob / mean_prob, 0, 1)
-        # )
-        
-        # IMPROVED VERSION: More aggressive scaling
+
         base_score = (
-            0.4 * (mean_prob / max_prob) + 
-            0.3 * (median_prob / max_prob) + 
+            0.4 * (mean_prob / max_prob) +
+            0.3 * (median_prob / max_prob) +
             0.3 * np.clip(std_prob / mean_prob, 0, 1)
         )
-        
-        # Apply scaling factor based on overall risk level
-        if mean_prob > 0.6:
-            scaling_factor = 2.0
-        elif mean_prob > 0.4:
-            scaling_factor = 1.5
-        else:
-            scaling_factor = 1.2
-            
+
+        scaling_factor = 2.0 if mean_prob > 0.6 else (1.5 if mean_prob > 0.4 else 1.2)
         proportion = np.clip(base_score * scaling_factor, 0.1, 0.8)
-        
-        print(f"Debug: Risk profile method - base_score={base_score:.4f}, scaling_factor={scaling_factor:.2f}, proportion={proportion:.4f}")
+        print(f"Debug: Risk profile - base_score={base_score:.4f}, scaling_factor={scaling_factor:.2f}, proportion={proportion:.4f}")
         return proportion
-    
+
     elif method == 'adaptive':
-        # NEW METHOD: Adaptive based on probability distribution shape
-        
-        # Analyze distribution characteristics
         q25 = np.percentile(valid_probs, 25)
         q75 = np.percentile(valid_probs, 75)
         iqr = q75 - q25
         mean_prob = np.mean(valid_probs)
-        
-        # If probabilities are tightly clustered (small IQR), select fewer groups
-        # If probabilities are spread out (large IQR), select more groups
+
         if iqr < 0.1:
-            # Tight distribution - select based on mean
             proportion = 0.2 + (mean_prob * 0.3)
         else:
-            # Spread distribution - select more groups
             proportion = 0.3 + (iqr * 0.5)
-        
+
         proportion = np.clip(proportion, 0.15, 0.7)
-        
-        print(f"Debug: Adaptive method - mean={mean_prob:.4f}, IQR={iqr:.4f}, proportion={proportion:.4f}")
+        print(f"Debug: Adaptive - mean={mean_prob:.4f}, IQR={iqr:.4f}, proportion={proportion:.4f}")
         return proportion
-    
+
     else:
         raise ValueError("Invalid method. Choose 'empirical', 'statistical', 'risk_profile', or 'adaptive'.")
 
-def probabilistic_group_selection_old(labeled_array, probability_array, proportion_method='empirical', 
-                                custom_proportion=None, random_seed=5000):
-    """
-    Enhanced probabilistic group selection with dynamic proportion calculation.
-    
-    Parameters:
-    -----------
-    probability_array : ndarray
-        Array of failure probabilities
-    proportion_method : str, optional
-        Method to calculate proportion
-    custom_proportion : float, optional
-        Override calculated proportion with a specific value
-    random_seed : int, optional
-        Seed for reproducibility, default: 5000
-    
-    Returns:
-    --------
-    selected_groups : ndarray
-        Selected groups matching input array shape
-    metadata : dict
-        Metadata about proportion selection
-    """
-    
-    unique_labels = np.unique(labeled_array)
-    unique_labels = unique_labels[unique_labels != 0]
-    num_groups = len(unique_labels)
-    
-    if random_seed is not None:
-        np.random.seed(random_seed)
-    
-    # Determine proportion
-    if custom_proportion is not None:
-        proportion = custom_proportion
-        method = 'user_defined'
-    else:
-        proportion = calculate_landslide_proportion(
-            probability_array, 
-            method=proportion_method
-        )
-    
-    # Get probabilities for each group
-    group_probs = []
-    for label_name in unique_labels:
-        mask = (labeled_array == label_name)
-        group_prob = np.mean(probability_array[mask])
-        group_probs.append(group_prob)
-    
-    group_probs = np.array(group_probs)
-    # Normalize probabilities
-    group_probs = group_probs / np.sum(group_probs)
-    
-    num_to_select = int(np.ceil(num_groups*proportion))
-    
-    # Select groups based on probabilities
-    selected_labels = np.random.choice(
-        unique_labels, num_to_select, replace=False, p=group_probs)
-    
-    selected_groups = np.isin(labeled_array, selected_labels) * labeled_array
-    
-    return selected_groups, proportion
 
 def probabilistic_group_selection(labeled_array, probability_array, proportion_method='empirical', 
-                                  custom_proportion=None, random_seed=5000):
+                                custom_proportion=None, random_seed=5000, reproducible=True):
     """
     Enhanced probabilistic group selection with dynamic proportion calculation.
     """
-    
     unique_labels = np.unique(labeled_array)
     unique_labels = unique_labels[unique_labels != 0]
     num_groups = len(unique_labels)
-    
-    if random_seed is not None:
+
+    if reproducible and random_seed is not None:
         np.random.seed(random_seed)
-    
+
     print(f"Debug: Total groups available: {num_groups}")
-    
+
+    # Compute group-level mean probabilities efficiently
+    group_probs = ndimage.mean(probability_array, labels=labeled_array, index=unique_labels)
+    group_probs = np.array(group_probs)
+
     # Determine proportion
     if custom_proportion is not None:
         proportion = custom_proportion
         method = 'user_defined'
         print(f"Debug: Using custom proportion: {proportion}")
     else:
-        proportion = calculate_landslide_proportion(
-            probability_array, 
-            method=proportion_method
-        )
+        proportion = calculate_landslide_proportion(group_probs, method=proportion_method)
         method = proportion_method
-    
-    # Get probabilities for each group
-    group_probs = []
-    group_mean_probs = []  # Store actual probability values for debugging
-    for label_name in unique_labels:
-        mask = (labeled_array == label_name)
-        group_prob = np.mean(probability_array[mask])
-        group_probs.append(group_prob)
-        group_mean_probs.append(group_prob)
-    
-    group_probs = np.array(group_probs)
-    print(f"Debug: Group probability range: {np.min(group_probs):.4f} to {np.max(group_probs):.4f}")
-    
-    # Handle edge case where all probabilities are zero
+
     if np.sum(group_probs) == 0:
         print("Warning: All group probabilities are zero!")
-        return np.zeros_like(labeled_array), 0.0
-    
-    # Normalize probabilities for selection
+        return np.zeros_like(labeled_array), {
+            'method_used': method,
+            'proportion_calculated': 0.0,
+            'num_groups_total': num_groups,
+            'num_groups_selected': 0,
+            'selected_labels': [],
+            'group_probabilities': {},
+            'selection_probabilities': {}
+        }
+
     normalized_probs = group_probs / np.sum(group_probs)
-    
-    # Calculate number to select
-    num_to_select = max(1, int(np.ceil(num_groups * proportion)))  # Ensure at least 1
-    num_to_select = min(num_to_select, num_groups)  # Don't exceed available groups
-    
+    num_to_select = max(1, int(np.ceil(num_groups * proportion)))
+    num_to_select = min(num_to_select, num_groups)
+
     print(f"Debug: Proportion={proportion:.4f}, Selecting {num_to_select} out of {num_groups} groups")
-    
-    # Select groups based on probabilities
-    selected_labels = np.random.choice(
-        unique_labels, num_to_select, replace=False, p=normalized_probs)
-    
+
+    selected_labels = np.random.choice(unique_labels, num_to_select, replace=False, p=normalized_probs)
     selected_groups = np.isin(labeled_array, selected_labels) * labeled_array
-    
-    # Enhanced metadata
+
     metadata = {
         'method_used': method,
         'proportion_calculated': proportion,
         'num_groups_total': num_groups,
         'num_groups_selected': num_to_select,
         'selected_labels': selected_labels.tolist(),
-        'group_probabilities': dict(zip(unique_labels.tolist(), group_mean_probs)),
+        'group_probabilities': dict(zip(unique_labels.tolist(), group_probs.tolist())),
         'selection_probabilities': dict(zip(unique_labels.tolist(), normalized_probs.tolist()))
     }
-    
+
     return selected_groups, metadata
+
+
+# def calculate_landslide_proportion(probability_array, method='empirical'):
+#     """
+#     Dynamically calculate an appropriate proportion of landslide groups.
+    
+#     Parameters:
+#     -----------
+#     probability_array : numpy.ndarray
+#         Array of failure probabilities
+#     method : str, optional
+#         Method for proportion calculation
+    
+#     Returns:
+#     --------
+#     float
+#         Recommended proportion of landslide groups
+#     """
+#     # Remove zero probabilities
+#     valid_probs = np.unique(probability_array[probability_array > 0])
+    
+#     if len(valid_probs) == 0:
+#         return 0.0
+    
+#     print(f"Debug: Valid probs range: {np.min(valid_probs):.4f} to {np.max(valid_probs):.4f}")
+#     print(f"Debug: Number of unique valid probabilities: {len(valid_probs)}")
+    
+#     if method == 'empirical':
+#         # PROBLEM: This method returns probability values (0-1) as proportions
+#         # But proportions should represent fraction of groups to select
+        
+#         # ORIGINAL (problematic):
+#         # proportion = np.percentile(valid_probs, 75)
+#         # normalized_proportion = proportion / np.max(valid_probs)
+        
+#         # FIXED VERSION 1: Based on probability thresholds
+#         # Select groups with probabilities above 75th percentile
+#         threshold = np.percentile(valid_probs, 75)
+#         high_prob_groups = np.sum(probability_array >= threshold)
+#         total_groups = len(np.unique(probability_array[probability_array > 0]))
+#         proportion = high_prob_groups / len(np.unique(probability_array)) if len(np.unique(probability_array)) > 0 else 0
+        
+#         # Alternative: Use a fixed reasonable proportion based on risk level
+#         # Higher risk = select more groups
+#         mean_risk = np.mean(valid_probs)
+#         if mean_risk > 0.7:
+#             proportion = 0.6  # High risk: select 60% of groups
+#         elif mean_risk > 0.5:
+#             proportion = 0.4  # Medium risk: select 40% of groups
+#         elif mean_risk > 0.3:
+#             proportion = 0.25  # Low-medium risk: select 25% of groups
+#         else:
+#             proportion = 0.15  # Low risk: select 15% of groups
+        
+#         print(f"Debug: Empirical method - mean_risk={mean_risk:.4f}, proportion={proportion:.4f}")
+#         return proportion
+    
+#     elif method == 'statistical':
+#         # PROBLEM: This calculates proportion of pixels, not proportion of groups
+        
+#         # ORIGINAL (problematic):
+#         # mean_prob = np.mean(valid_probs)
+#         # std_prob = np.std(valid_probs)
+#         # threshold = mean_prob + std_prob
+#         # proportion = np.sum(probability_array >= threshold) / probability_array.size
+        
+#         # FIXED VERSION: Calculate proportion of groups above threshold
+#         mean_prob = np.mean(valid_probs)
+#         std_prob = np.std(valid_probs)
+#         threshold = mean_prob + std_prob
+        
+#         # Count unique groups (not pixels) above threshold
+#         unique_probs_above_threshold = valid_probs[valid_probs >= threshold]
+#         proportion = len(unique_probs_above_threshold) / len(valid_probs)
+#         print(f"Debug: Statistical method - threshold={threshold:.4f}, proportion={proportion:.4f}")
+        
+#         # Ensure minimum selection
+#         proportion = max(proportion, 0.1)  # At least 10% of groups
+        
+#         print(f"Debug: Statistical method - threshold={threshold:.4f}, proportion={proportion:.4f}")
+#         return proportion
+    
+#     elif method == 'risk_profile':
+#         # This method has the right idea but values are often too small
+        
+#         mean_prob = np.mean(valid_probs)
+#         median_prob = np.median(valid_probs)
+#         std_prob = np.std(valid_probs)
+#         max_prob = np.max(valid_probs)
+        
+#         # ORIGINAL (often too small):
+#         # risk_score = (
+#         #     0.4 * (mean_prob / max_prob) + 
+#         #     0.3 * (median_prob / max_prob) + 
+#         #     0.3 * np.clip(std_prob / mean_prob, 0, 1)
+#         # )
+        
+#         # IMPROVED VERSION: More aggressive scaling
+#         base_score = (
+#             0.4 * (mean_prob / max_prob) + 
+#             0.3 * (median_prob / max_prob) + 
+#             0.3 * np.clip(std_prob / mean_prob, 0, 1)
+#         )
+        
+#         # Apply scaling factor based on overall risk level
+#         if mean_prob > 0.6:
+#             scaling_factor = 2.0
+#         elif mean_prob > 0.4:
+#             scaling_factor = 1.5
+#         else:
+#             scaling_factor = 1.2
+            
+#         proportion = np.clip(base_score * scaling_factor, 0.1, 0.8)
+        
+#         print(f"Debug: Risk profile method - base_score={base_score:.4f}, scaling_factor={scaling_factor:.2f}, proportion={proportion:.4f}")
+#         return proportion
+    
+#     elif method == 'adaptive':
+#         # NEW METHOD: Adaptive based on probability distribution shape
+        
+#         # Analyze distribution characteristics
+#         q25 = np.percentile(valid_probs, 25)
+#         q75 = np.percentile(valid_probs, 75)
+#         iqr = q75 - q25
+#         mean_prob = np.mean(valid_probs)
+        
+#         # If probabilities are tightly clustered (small IQR), select fewer groups
+#         # If probabilities are spread out (large IQR), select more groups
+#         if iqr < 0.1:
+#             # Tight distribution - select based on mean
+#             proportion = 0.2 + (mean_prob * 0.3)
+#         else:
+#             # Spread distribution - select more groups
+#             proportion = 0.3 + (iqr * 0.5)
+        
+#         proportion = np.clip(proportion, 0.15, 0.7)
+        
+#         print(f"Debug: Adaptive method - mean={mean_prob:.4f}, IQR={iqr:.4f}, proportion={proportion:.4f}")
+#         return proportion
+    
+#     else:
+#         raise ValueError("Invalid method. Choose 'empirical', 'statistical', 'risk_profile', or 'adaptive'.")
+
+# def probabilistic_group_selection(labeled_array, probability_array, proportion_method='empirical', 
+#                                   custom_proportion=None, random_seed=5000):
+#     """
+#     Enhanced probabilistic group selection with dynamic proportion calculation.
+#     """
+    
+#     unique_labels = np.unique(labeled_array)
+#     unique_labels = unique_labels[unique_labels != 0]
+#     num_groups = len(unique_labels)
+    
+#     if random_seed is not None:
+#         np.random.seed(random_seed)
+    
+#     print(f"Debug: Total groups available: {num_groups}")
+    
+#     # Determine proportion
+#     if custom_proportion is not None:
+#         proportion = custom_proportion
+#         method = 'user_defined'
+#         print(f"Debug: Using custom proportion: {proportion}")
+#     else:
+#         proportion = calculate_landslide_proportion(
+#             probability_array, 
+#             method=proportion_method
+#         )
+#         method = proportion_method
+    
+#     # Get probabilities for each group
+#     group_probs = []
+#     group_mean_probs = []  # Store actual probability values for debugging
+#     for label_name in unique_labels:
+#         mask = (labeled_array == label_name)
+#         group_prob = np.mean(probability_array[mask])
+#         group_probs.append(group_prob)
+#         group_mean_probs.append(group_prob)
+    
+#     group_probs = np.array(group_probs)
+#     print(f"Debug: Group probability range: {np.min(group_probs):.4f} to {np.max(group_probs):.4f}")
+    
+#     # Handle edge case where all probabilities are zero
+#     if np.sum(group_probs) == 0:
+#         print("Warning: All group probabilities are zero!")
+#         return np.zeros_like(labeled_array), 0.0
+    
+#     # Normalize probabilities for selection
+#     normalized_probs = group_probs / np.sum(group_probs)
+    
+#     # Calculate number to select
+#     num_to_select = max(1, int(np.ceil(num_groups * proportion)))  # Ensure at least 1
+#     num_to_select = min(num_to_select, num_groups)  # Don't exceed available groups
+    
+#     print(f"Debug: Proportion={proportion:.4f}, Selecting {num_to_select} out of {num_groups} groups")
+    
+#     # Select groups based on probabilities
+#     selected_labels = np.random.choice(
+#         unique_labels, num_to_select, replace=False, p=normalized_probs)
+    
+#     selected_groups = np.isin(labeled_array, selected_labels) * labeled_array
+    
+#     # Enhanced metadata
+#     metadata = {
+#         'method_used': method,
+#         'proportion_calculated': proportion,
+#         'num_groups_total': num_groups,
+#         'num_groups_selected': num_to_select,
+#         'selected_labels': selected_labels.tolist(),
+#         'group_probabilities': dict(zip(unique_labels.tolist(), group_mean_probs)),
+#         'selection_probabilities': dict(zip(unique_labels.tolist(), normalized_probs.tolist()))
+#     }
+    
+#     return selected_groups, metadata
 
 # %%% Method 3: Select groups/proportion from PGA
 def generate_landslide_proportion_from_pga(grid, h_pga, v_pga, labeled_array, 

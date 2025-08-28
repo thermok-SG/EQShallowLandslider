@@ -7,6 +7,7 @@ Functions to set up the grid
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 from landlab import RasterModelGrid
 from landlab.io import esri_ascii
@@ -133,226 +134,532 @@ def smooth_elevation_grid(grid, method='mean', smooth_num=1):
     return smoothed_elevation_1d
 
 # %% Generate soil depth array
+# def apply_soil_depth(grid,
+#                     elevation_field='topographic__elevation', 
+#                     soil_field='soil__depth',
+#                     max_soil_depth=1.0,
+#                     distribution='uniform',
+#                     relationship='linear',
+#                     decay_rate=5.0,
+#                     exponent=1.0,
+#                     plot=False
+#                     ):
+#     """
+#     Apply soil depth to core nodes based on elevation or uniform distribution.
+    
+#     Parameters:
+#     -----------
+#     grid : Landlab grid object
+#         The landlab grid (RasterModelGrid, HexModelGrid, etc.)
+#     elevation_field : str, default 'topographic__elevation'
+#         Name of the field containing elevation data
+#     soil_field : str, default 'soil__depth'
+#         Name of the field to store soil depth data
+#     max_soil_depth : float, default 1.0
+#         Maximum soil depth in meters. For elevation-based: applied to minimum elevation.
+#         For uniform: applied to all core nodes.
+#     distribution : str, default 'uniform'
+#         When 'uniform' : 
+#         - All core nodes get the same soil depth (max_soil_depth)
+#         - Boundary nodes get zero soil depth 
+#         When 'elevation' :
+#         - Soil depth varies inversely with elevation according to specified relationships
+#     relationship : str, default 'linear'
+#         Type of relationship between elevation and soil depth (only used when distribution='elevation'):
+#         - 'linear': Linear inverse relationship (original behavior)
+#         - 'exponential': Exponential decay with elevation
+#         - 'power': Power law relationship using exponent parameter
+#         - 'logarithmic': Logarithmic relationship (gentle at low elevations, steep at high)
+#         - 'sigmoid': S-shaped curve (smooth transition)
+#     decay_rate : float, default 5.0
+#         Rate of decay of exponential relationship
+#         Higher values mean more soil concentrated at lower elevations
+#     exponent : float, default 1.0
+#         Exponent for power law relationship. Only used when relationship='power'.
+#         - exponent > 1: More soil at low elevations (concave down)
+#         - exponent < 1: More gradual decrease (concave up)
+#         - exponent = 1: Linear relationship
+#     plot : bool, default False
+#         If True, creates a scatter plot showing soil depth vs elevation relationship.
+    
+#     Returns:
+#     --------
+#     soil_depth : ndarray
+#         1D array of soil depth values, associated with the grid 'soil__depth' field
+        
+#     """
+#     # Get elevation data and core nodes
+#     elevation = grid.at_node[elevation_field]
+#     core_nodes = grid.core_nodes
+    
+#     # Initialize soil depth field on the grid (zeros everywhere)
+#     soil_depth = grid.add_zeros("node", soil_field, clobber=True)
+    
+#     if distribution == 'uniform':
+#         # Apply uniform soil depth to core nodes only
+#         max_soil_depth = 1.0 # meter
+#         soil_depth[core_nodes] = max_soil_depth
+#         print("Uniform soil depth applied to grid:")
+#         print(f"  Soil depth: {max_soil_depth:.2f} m (uniform)")
+#         print(f"  Core nodes processed: {len(core_nodes)}")
+        
+#     elif distribution == 'elevation':
+#         # Apply elevation-based soil depth
+#         core_elevations = elevation[core_nodes]
+        
+#         # Calculate min and max elevation from core nodes
+#         min_elevation = np.min(core_elevations)
+#         max_elevation = np.max(core_elevations)
+        
+#         # Check if there's any elevation variation
+#         elevation_range = max_elevation - min_elevation
+#         if elevation_range == 0:
+#             # If all elevations are the same, assign uniform soil depth
+#             soil_depth[core_nodes] = max_soil_depth / 2.0
+#             print("Warning: All core nodes have the same elevation. Assigning uniform soil depth.")
+#         else:
+#             # Calculate normalized elevation (0 = min elevation, 1 = max elevation)
+#             normalized_elevation = (elevation - min_elevation) / elevation_range
+            
+#             if relationship == 'linear':
+#                 # Original linear inverse relationship
+#                 temp_soil_depth = max_soil_depth * (1.0 - normalized_elevation)
+            
+#             elif relationship == 'exponential':
+#                 # Normalized exponential decay: more soil concentrated at low elevations
+#                 # Ensures 0 m soil at max elevation
+#                 top_term = np.exp(-decay_rate)
+#                 temp_soil_depth = max_soil_depth * (np.exp(-decay_rate * normalized_elevation) - top_term) / (1 - top_term)
+            
+#             elif relationship == 'power':
+#                 # Power law relationship using exponent parameter
+#                 temp_soil_depth = max_soil_depth * (1.0 - normalized_elevation) ** exponent
+            
+#             # Better to just use exponential
+#             # elif relationship == 'logarithmic':
+#             #     # Logarithmic relationship: gentle decrease at low elevations, steep at high
+#             #     epsilon = 0.001
+#             #     temp_soil_depth = max_soil_depth * (1.0 - np.log(normalized_elevation + epsilon) / np.log(1.0 + epsilon))
+            
+#             elif relationship == 'sigmoid':
+#                 # Sigmoid relationship: S-shaped curve
+#                 # Maps normalized elevation through sigmoid function
+#                 sigmoid_input = 6.0 * (normalized_elevation - 0.5)  # Scale to reasonable range
+#                 sigmoid_output = 1.0 / (1.0 + np.exp(sigmoid_input))
+#                 temp_soil_depth = max_soil_depth * sigmoid_output
+            
+#             else:
+#                 raise ValueError(f"Unknown relationship type: {relationship}. Must be one of: 'linear', 'exponential', 'power', 'logarithmic', 'sigmoid'")
+            
+#             # Ensure non-negative values
+#             temp_soil_depth = np.maximum(temp_soil_depth, 0.0)
+            
+#             # Copy values to the grid field
+#             soil_depth[:] = temp_soil_depth
+            
+#             # Set boundary nodes to zero
+#             boundary_nodes = np.setdiff1d(np.arange(grid.number_of_nodes), core_nodes)
+#             soil_depth[boundary_nodes] = 0.0
+        
+#         # Print summary statistics
+#         print("Elevation-based soil depth applied to grid:")
+#         print(f"  Elevation range: {min_elevation:.2f} to {max_elevation:.2f} m")
+#         print(f"  Soil depth range: 0.00 to {max_soil_depth:.2f} m")
+#         print(f"  Core nodes processed: {len(core_nodes)}")
+    
+#     else:
+#         raise ValueError("Soil distribution can only be 'uniform' or 'elevation'")
+    
+#     # Create plot if requested
+#     if plot:
+#         create_soil_depth_plot(grid, elevation_field, soil_field,
+#                                 distribution, relationship)
+    
+#     return soil_depth
+
 def apply_soil_depth(grid,
                     elevation_field='topographic__elevation', 
                     soil_field='soil__depth',
-                    max_soil_depth=1.0,
+                    max_soil_depth=1.5,
                     distribution='uniform',
                     relationship='linear',
                     decay_rate=5.0,
                     exponent=1.0,
+                    drainage_transform='log',
+                    drainage_threshold=None,
+                    drainage_power=0.3,
                     plot=False
                     ):
     """
-    Apply soil depth to core nodes based on elevation or uniform distribution.
-    
+    Apply soil depth to core nodes based on elevation, uniform distribution, or curvature.
+
     Parameters:
     -----------
     grid : Landlab grid object
         The landlab grid (RasterModelGrid, HexModelGrid, etc.)
-    elevation_field : str, default 'topographic__elevation'
+    elevation_field : str
         Name of the field containing elevation data
-    soil_field : str, default 'soil__depth'
+    soil_field : str
         Name of the field to store soil depth data
-    max_soil_depth : float, default 1.0
-        Maximum soil depth in meters. For elevation-based: applied to minimum elevation.
-        For uniform: applied to all core nodes.
-    distribution : str, default 'uniform'
-        When 'uniform' : 
-        - All core nodes get the same soil depth (max_soil_depth)
-        - Boundary nodes get zero soil depthapplies the max_soil_depth uniformly across entire grid
-        When 'elevation' :
-        - Soil depth varies inversely with elevation according to specified relationships
-    relationship : str, default 'linear'
-        Type of relationship between elevation and soil depth (only used when distribution='elevation'):
-        - 'linear': Linear inverse relationship (original behavior)
-        - 'exponential': Exponential decay with elevation
-        - 'power': Power law relationship using exponent parameter
-        - 'logarithmic': Logarithmic relationship (gentle at low elevations, steep at high)
-        - 'sigmoid': S-shaped curve (smooth transition)
-    decay_rate : float, default 5.0
-        Rate of decay of exponential relationship
-        Higher values mean more soil concentrated at lower elevations
-    exponent : float, default 1.0
-        Exponent for power law relationship. Only used when relationship='power'.
-        - exponent > 1: More soil at low elevations (concave down)
-        - exponent < 1: More gradual decrease (concave up)
-        - exponent = 1: Linear relationship
-    plot : bool, default False
-        If True, creates a scatter plot showing soil depth vs elevation relationship.
-    
+    max_soil_depth : float
+        Maximum soil depth in meters (used differently by each method)
+    distribution : {'uniform', 'elevation', 'curvature'}
+        Soil depth distribution method
+    relationship : str
+        Relationship for 'elevation' distribution
+    decay_rate : float
+        Decay rate for exponential elevation relationship
+    exponent : float
+        Exponent for power-law elevation relationship
+    drainage_transform : str
+        Transformation of drainage area to handle large orders of magnitude
+    drainage_threshold : float
+        Fixed drainage_area threshold above which nodes get the max_soil_depth.
+        Requires drainage_transform='threshold', default None (will use median as threshold)
+    plot : bool
+        If True, creates a scatter plot showing soil depth vs controlling variable
+
     Returns:
     --------
     soil_depth : ndarray
         1D array of soil depth values, associated with the grid 'soil__depth' field
-        
     """
-    # Get elevation data and core nodes
+    
     elevation = grid.at_node[elevation_field]
     core_nodes = grid.core_nodes
-    
-    # Initialize soil depth field on the grid (zeros everywhere)
+
+    # Initialize soil depth field (zeros)
     soil_depth = grid.add_zeros("node", soil_field, clobber=True)
-    
+
     if distribution == 'uniform':
-        # Apply uniform soil depth to core nodes only
-        max_soil_depth = 1.0 # meter
         soil_depth[core_nodes] = max_soil_depth
-        print("Uniform soil depth applied to grid:")
-        print(f"  Soil depth: {max_soil_depth:.2f} m (uniform)")
-        print(f"  Core nodes processed: {len(core_nodes)}")
-        
+        print(f"Uniform soil depth applied: {max_soil_depth:.2f} m to {len(core_nodes)} core nodes.")
+
     elif distribution == 'elevation':
-        # Apply elevation-based soil depth
         core_elevations = elevation[core_nodes]
-        
-        # Calculate min and max elevation from core nodes
         min_elevation = np.min(core_elevations)
-        max_elevation = np.max(core_elevations)
-        
-        # Check if there's any elevation variation
-        elevation_range = max_elevation - min_elevation
+        max_elevation_core = np.max(core_elevations)
+        elevation_range = max_elevation_core - min_elevation
+
         if elevation_range == 0:
-            # If all elevations are the same, assign uniform soil depth
             soil_depth[core_nodes] = max_soil_depth / 2.0
             print("Warning: All core nodes have the same elevation. Assigning uniform soil depth.")
         else:
-            # Calculate normalized elevation (0 = min elevation, 1 = max elevation)
             normalized_elevation = (elevation - min_elevation) / elevation_range
-            
             if relationship == 'linear':
-                # Original linear inverse relationship
                 temp_soil_depth = max_soil_depth * (1.0 - normalized_elevation)
-            
             elif relationship == 'exponential':
-                # Normalized exponential decay: more soil concentrated at low elevations
-                # Ensures 0 m soil at max elevation
                 top_term = np.exp(-decay_rate)
                 temp_soil_depth = max_soil_depth * (np.exp(-decay_rate * normalized_elevation) - top_term) / (1 - top_term)
-            
             elif relationship == 'power':
-                # Power law relationship using exponent parameter
                 temp_soil_depth = max_soil_depth * (1.0 - normalized_elevation) ** exponent
-            
-            # Better to just use exponential
-            # elif relationship == 'logarithmic':
-            #     # Logarithmic relationship: gentle decrease at low elevations, steep at high
-            #     epsilon = 0.001
-            #     temp_soil_depth = max_soil_depth * (1.0 - np.log(normalized_elevation + epsilon) / np.log(1.0 + epsilon))
-            
             elif relationship == 'sigmoid':
-                # Sigmoid relationship: S-shaped curve
-                # Maps normalized elevation through sigmoid function
-                sigmoid_input = 6.0 * (normalized_elevation - 0.5)  # Scale to reasonable range
+                sigmoid_input = 6.0 * (normalized_elevation - 0.5)
                 sigmoid_output = 1.0 / (1.0 + np.exp(sigmoid_input))
                 temp_soil_depth = max_soil_depth * sigmoid_output
-            
             else:
-                raise ValueError(f"Unknown relationship type: {relationship}. Must be one of: 'linear', 'exponential', 'power', 'logarithmic', 'sigmoid'")
+                raise ValueError(f"Unknown relationship type: {relationship}")
             
-            # Ensure non-negative values
             temp_soil_depth = np.maximum(temp_soil_depth, 0.0)
-            
-            # Copy values to the grid field
             soil_depth[:] = temp_soil_depth
-            
-            # Set boundary nodes to zero
-            boundary_nodes = np.setdiff1d(np.arange(grid.number_of_nodes), core_nodes)
-            soil_depth[boundary_nodes] = 0.0
+            soil_depth[np.setdiff1d(np.arange(grid.number_of_nodes), core_nodes)] = 0.0
+
+        print(f"Elevation-based soil depth applied: elevation range {min_elevation:.2f}–{max_elevation_core:.2f} m.")
+
+    elif distribution == 'drainage_area':
+        if 'drainage_area' not in grid.at_node:
+            raise ValueError("Drainage area field not found in grid. Run flow routing first.")
         
-        # Print summary statistics
-        print("Elevation-based soil depth applied to grid:")
-        print(f"  Elevation range: {min_elevation:.2f} to {max_elevation:.2f} m")
-        print(f"  Soil depth range: 0.00 to {max_soil_depth:.2f} m")
-        print(f"  Core nodes processed: {len(core_nodes)}")
+        core_drainage_area = grid.at_node['drainage_area'][core_nodes]
+        grid_area = grid.dx ** 2
+        
+        # Handle zero or very small drainage areas
+        min_drainage = np.maximum(np.min(core_drainage_area[core_drainage_area > 0]), 1e-10)
+        core_drainage_area = np.maximum(core_drainage_area, min_drainage)
+        
+        # Apply transformation to handle multiple orders of magnitude
+        if drainage_transform == 'log':
+            # Logarithmic transformation
+            log_drainage = np.log10(core_drainage_area)
+            min_log = np.min(log_drainage)
+            max_log = np.max(log_drainage)
+            if max_log > min_log:
+                normalized_drainage = (log_drainage - min_log) / (max_log - min_log)
+            else:
+                normalized_drainage = np.ones_like(log_drainage) * 0.5
+            print(f"Log drainage area range: {min_log:.2f} to {max_log:.2f}")
+            
+        elif drainage_transform == 'sqrt':
+            # Square root transformation
+            sqrt_drainage = np.sqrt(core_drainage_area)
+            min_sqrt = np.min(sqrt_drainage)
+            max_sqrt = np.max(sqrt_drainage)
+            if max_sqrt > min_sqrt:
+                normalized_drainage = (sqrt_drainage - min_sqrt) / (max_sqrt - min_sqrt)
+            else:
+                normalized_drainage = np.ones_like(sqrt_drainage) * 0.5
+            print(f"Sqrt drainage area range: {min_sqrt:.2f} to {max_sqrt:.2f}")
+            
+        elif drainage_transform == 'power':
+            # Power transformation (similar to sqrt but adjustable)
+            power_drainage = core_drainage_area ** drainage_power
+            min_power = np.min(power_drainage)
+            max_power = np.max(power_drainage)
+            if max_power > min_power:
+                normalized_drainage = (power_drainage - min_power) / (max_power - min_power)
+            else:
+                normalized_drainage = np.ones_like(power_drainage) * 0.5
+            print(f"Power ({drainage_power}) drainage area range: {min_power:.2f} to {max_power:.2f}")
+            
+        elif drainage_transform == 'threshold':
+            # Threshold-based approach
+            if drainage_threshold is None:
+                # Use median as default threshold
+                drainage_threshold = max(grid_area * 100, np.percentile(core_drainage_area, 75))
+            
+            # Binary classification: above threshold gets max depth, below gets scaled
+            above_threshold = core_drainage_area >= drainage_threshold
+            normalized_drainage = np.zeros_like(core_drainage_area)
+            
+            # Nodes above threshold → maximum soil depth
+            normalized_drainage[above_threshold] = 1.0
+            
+            # Nodes below threshold → log-scaled depth
+            below_mask = ~above_threshold
+            if np.any(below_mask):
+                below_drainage = core_drainage_area[below_mask]
+                log_below = np.log10(below_drainage)
+                min_log = np.min(log_below)
+                max_log = np.log10(drainage_threshold)
+                
+                # Normalize log values to [0, 1), leaving 1.0 for above-threshold nodes
+                norm_vals = (log_below - min_log) / (max_log - min_log)
+                normalized_drainage[below_mask] = np.clip(norm_vals, 0.0, 0.999)
+            
+            print(f"Threshold drainage area: {drainage_threshold:.2f}")
+            print(f"Nodes above threshold: {np.sum(above_threshold)}")
+            
+        elif drainage_transform == 'linear':
+            # Original linear approach (for comparison)
+            max_drainage_area = np.max(core_drainage_area)
+            if max_drainage_area > 0:
+                normalized_drainage = core_drainage_area / max_drainage_area
+            else:
+                normalized_drainage = np.ones_like(core_drainage_area) * 0.5
+            print(f"Linear drainage area range: 0 to {max_drainage_area:.2f}")
+            
+        else:
+            raise ValueError(f"Unknown drainage_transform: {drainage_transform}")
+        
+        # Apply soil depth
+        soil_depth[core_nodes] = normalized_drainage * max_soil_depth
+        
+        print(f"Drainage area-based soil depth applied using '{drainage_transform}' transformation.")
+        print(f"Soil depth range: {np.min(soil_depth[core_nodes]):.3f} to {np.max(soil_depth[core_nodes]):.3f} m")
     
     else:
-        raise ValueError("Soil distribution can only be 'uniform' or 'elevation'")
-    
-    # Create plot if requested
+        raise ValueError("Soil distribution must be 'uniform', 'elevation', or 'drainage_area'.")
+
     if plot:
-        create_soil_depth_plot(grid, elevation_field, soil_field,
-                                distribution, relationship)
-    
+        create_soil_depth_plot(grid, elevation_field, soil_field, distribution, relationship)
+
     return soil_depth
+
 
 # %%% Helper functions to create plot of soil depth distribution
 def create_soil_depth_plot(grid,
                             elevation_field,
                             soil_field,
                             distribution,
-                            relationship
-                            ):
+                            relationship):
     """
-    Create a scatter plot showing the relationship between elevation and soil depth.
-    
-    Parameters:
-    -----------
-    grid : Landlab grid object
-        The landlab grid with elevation and soil depth fields
-    elevation_field : str
-        Name of the elevation field
-    soil_field : str
-        Name of the soil depth field
-    distribution : str
-        How soil depth was applied across the grid
-    relationship : str
-        Mathematical relationship between elevation and soil depth
+    Create scatter plots showing the relationship between soil depth and 
+    elevation (and drainage area if applicable).
     """
+
     # Get data for core nodes only
     elevation = grid.at_node[elevation_field]
     soil_depth = grid.at_node[soil_field]
     core_nodes = grid.core_nodes
-    
+
     core_elevation = elevation[core_nodes]
     core_soil_depth = soil_depth[core_nodes]
-    
-    # Create the plot
-    plt.figure(layout='constrained')
-    
-    if distribution == 'uniform':
-        # For uniform case, show horizontal line
-        plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue',
-                    label=f'Core nodes (n={len(core_nodes)})')
-        plt.axhline(y=core_soil_depth[0], color='red', linestyle='--', alpha=0.7,
-                    label=f'Uniform depth = {core_soil_depth[0]:.2f} m')
-        plt.title('Uniform Soil Depth Distribution')
+
+    if distribution == 'drainage_area':
+        if 'drainage_area' not in grid.at_node:
+            raise ValueError("Drainage area field not found. Run flow routing first.")
+        drainage_area = grid.at_node['drainage_area'][core_nodes]
+
+        fig, axes = plt.subplots(1, 3, figsize=(12, 5), layout='constrained')
+
+        # Subplot 1: Soil depth vs drainage area
+        axes[0].scatter(drainage_area, core_soil_depth, alpha=0.6, s=30, color='blue',
+                        label=f'Core nodes (n={len(core_nodes)})')
+        axes[0].set_xlabel('Drainage Area (m²)')
+        axes[0].set_xscale('log')
+        axes[0].set_ylabel('Soil Depth (m)')
+        axes[0].set_title('Soil Depth vs Drainage Area')
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend()
+
+        # Subplot 2: Soil depth vs elevation
+        axes[1].scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='green',
+                        label=f'Core nodes (n={len(core_nodes)})')
+        axes[1].set_xlabel('Elevation (m)')
+        axes[1].set_ylabel('Soil Depth (m)')
+        axes[1].set_title('Soil Depth vs Elevation')
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend()
+
+        # Stats box on second subplot
+        stats_text = (
+            f'Elevation: {core_elevation.min():.2f} - {core_elevation.max():.2f} m\n'
+            f'Soil depth: {core_soil_depth.min():.2f} - {core_soil_depth.max():.2f} m\n'
+            f'Mean soil depth: {core_soil_depth.mean():.2f} m\n'
+            f'Drainage area: {drainage_area.min():.2f} - {drainage_area.max():.2f} m²'
+        )
+        axes[1].text(0.02, 0.98, stats_text, transform=axes[1].transAxes,
+                    verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        # Subplot 3: Histogram of drainage area with percentile markers
+        log_drainage = np.log10(drainage_area)
+
+        axes[2].hist(log_drainage, bins=50, color='purple', alpha=0.7)
+        axes[2].set_xlabel('log10 Drainage Area (m²)')
+        axes[2].set_ylabel('Count')
+        axes[2].set_title('Distribution of log10(Drainage Area)')
+        axes[2].grid(True, alpha=0.3)
+
+        # Percentiles to mark
+        percentiles = [25, 50, 75, 90, 95]
+        perc_values = np.percentile(log_drainage, percentiles)
+
+        for p, val in zip(percentiles, perc_values):
+            axes[2].axvline(val, color='red', linestyle='--', alpha=0.7)
+            axes[2].text(val, axes[2].get_ylim()[1]*0.9,
+                        f'{p}%', rotation=90, va='top', ha='center',
+                        color='red', fontsize=8)
+
+        plt.show()
+
     else:
-        # For elevation-based case, show scatter with trend line
-        plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue',
-                    label=f'Core nodes (n={len(core_nodes)})')
-        plt.title(f'{relationship.capitalize()}-based soil depth distribution')
+        # Original single-plot behavior
+        plt.figure(layout='constrained')
+        if distribution == 'uniform':
+            plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue',
+                        label=f'Core nodes (n={len(core_nodes)})')
+            plt.axhline(y=core_soil_depth[0], color='red', linestyle='--', alpha=0.7,
+                        label=f'Uniform depth = {core_soil_depth[0]:.2f} m')
+            plt.title('Uniform Soil Depth Distribution')
+        else:
+            plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue',
+                        label=f'Core nodes (n={len(core_nodes)})')
+            plt.title(f'{relationship.capitalize()}-based soil depth distribution')
+
+            elev_range = np.linspace(core_elevation.min(), core_elevation.max(), 100)
+            max_depth = core_soil_depth.max()
+            min_elev = core_elevation.min()
+            max_elev = core_elevation.max()
+
+            if max_elev > min_elev:  # Avoid division by zero
+                normalized_elev = (elev_range - min_elev) / (max_elev - min_elev)
+                theoretical_depth = max_depth * (1.0 - normalized_elev)
+                plt.plot(elev_range, theoretical_depth, 'r--', alpha=0.7,
+                        label='Theoretical relationship')
+
+        plt.xlabel('Elevation (m)')
+        plt.ylabel('Soil Depth (m)')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+
+        stats_text = (
+            f'Elevation: {core_elevation.min():.2f} - {core_elevation.max():.2f} m\n'
+            f'Soil depth: {core_soil_depth.min():.2f} - {core_soil_depth.max():.2f} m\n'
+            f'Mean soil depth: {core_soil_depth.mean():.2f} m'
+        )
+        plt.text(0.02, 0.22, stats_text, transform=plt.gca().transAxes,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+        plt.tight_layout()
+        plt.show()
+
+# def create_soil_depth_plot(grid,
+#                             elevation_field,
+#                             soil_field,
+#                             distribution,
+#                             relationship
+#                             ):
+#     """
+#     Create a scatter plot showing the relationship between elevation and soil depth.
+    
+#     Parameters:
+#     -----------
+#     grid : Landlab grid object
+#         The landlab grid with elevation and soil depth fields
+#     elevation_field : str
+#         Name of the elevation field
+#     soil_field : str
+#         Name of the soil depth field
+#     distribution : str
+#         How soil depth was applied across the grid
+#     relationship : str
+#         Mathematical relationship between elevation and soil depth
+#     """
+#     # Get data for core nodes only
+#     elevation = grid.at_node[elevation_field]
+#     soil_depth = grid.at_node[soil_field]
+#     core_nodes = grid.core_nodes
+    
+#     core_elevation = elevation[core_nodes]
+#     core_soil_depth = soil_depth[core_nodes]
+    
+#     # Create the plot
+#     plt.figure(layout='constrained')
+    
+#     if distribution == 'uniform':
+#         # For uniform case, show horizontal line
+#         plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue',
+#                     label=f'Core nodes (n={len(core_nodes)})')
+#         plt.axhline(y=core_soil_depth[0], color='red', linestyle='--', alpha=0.7,
+#                     label=f'Uniform depth = {core_soil_depth[0]:.2f} m')
+#         plt.title('Uniform Soil Depth Distribution')
+#     else:
+#         # For elevation-based case, show scatter with trend line
+#         plt.scatter(core_elevation, core_soil_depth, alpha=0.6, s=30, color='blue',
+#                     label=f'Core nodes (n={len(core_nodes)})')
+#         plt.title(f'{relationship.capitalize()}-based soil depth distribution')
         
-        # Add theoretical trend line
-        elev_range = np.linspace(core_elevation.min(), core_elevation.max(), 100)
-        max_depth = core_soil_depth.max()
-        min_elev = core_elevation.min()
-        max_elev = core_elevation.max()
+#         # Add theoretical trend line
+#         elev_range = np.linspace(core_elevation.min(), core_elevation.max(), 100)
+#         max_depth = core_soil_depth.max()
+#         min_elev = core_elevation.min()
+#         max_elev = core_elevation.max()
         
-        if max_elev > min_elev:  # Avoid division by zero
-            normalized_elev = (elev_range - min_elev) / (max_elev - min_elev)
-            theoretical_depth = max_depth * (1.0 - normalized_elev)
-            plt.plot(elev_range, theoretical_depth, 'r--', alpha=0.7, 
-                    label='Theoretical relationship')
+#         if max_elev > min_elev:  # Avoid division by zero
+#             normalized_elev = (elev_range - min_elev) / (max_elev - min_elev)
+#             theoretical_depth = max_depth * (1.0 - normalized_elev)
+#             plt.plot(elev_range, theoretical_depth, 'r--', alpha=0.7, 
+#                     label='Theoretical relationship')
         
-        plt.title('Elevation-Based Soil Depth Distribution')
+#         plt.title('Elevation-Based Soil Depth Distribution')
     
-    plt.xlabel('Elevation (m)')
-    plt.ylabel('Soil Depth (m)')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
+#     plt.xlabel('Elevation (m)')
+#     plt.ylabel('Soil Depth (m)')
+#     plt.grid(True, alpha=0.3)
+#     plt.legend()
     
-    # Add statistics text box
-    stats_text = 'Statistics:\n'
-    stats_text += f'Elevation: {core_elevation.min():.2f} - {core_elevation.max():.2f} m\n'
-    stats_text += f'Soil depth: {core_soil_depth.min():.2f} - {core_soil_depth.max():.2f} m\n'
-    stats_text += f'Mean soil depth: {core_soil_depth.mean():.2f} m'
+#     # Add statistics text box
+#     stats_text = 'Statistics:\n'
+#     stats_text += f'Elevation: {core_elevation.min():.2f} - {core_elevation.max():.2f} m\n'
+#     stats_text += f'Soil depth: {core_soil_depth.min():.2f} - {core_soil_depth.max():.2f} m\n'
+#     stats_text += f'Mean soil depth: {core_soil_depth.mean():.2f} m'
     
-    plt.text(0.02, 0.22, stats_text, transform=plt.gca().transAxes, 
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+#     plt.text(0.02, 0.22, stats_text, transform=plt.gca().transAxes, 
+#             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    plt.tight_layout()
-    plt.show()
+#     plt.tight_layout()
+#     plt.show()
 
 # %%% Helper functions to compare soil depth distributions
 def compare_soil_relationships(grid, elevation_field='topographic__elevation', max_soil_depth=1.0, 

@@ -29,6 +29,11 @@ Required parameters:
         - Max soil depth (float)
             - Soil depth array of floats created by function (can be uniform or vary with elevation)
 
+TODO:
+- Config dict/file
+    1. Add open/close boolean list for boundary nodes
+    2. Steadily merge this with main config file for all components
+
 Author: sghoshal
 """
 
@@ -143,11 +148,25 @@ class ShallowLandslideSimulator:
         if self.config['dem_info']['plot_dem']:
             self.plot_intermediate_maps(save_path=self.config['output']['output_dir'])
         
+                # Initialize and run flow router
+        pf = PriorityFloodFlowRouter(
+            self.grid, 
+            flow_metric=self.config['flow_params']['flow_metric'], 
+            separate_hill_flow=self.config['flow_params']['separate_hill_flow'],
+            depression_handler=self.config['flow_params']['depression_handling'], 
+            update_hill_depressions=self.config['flow_params']['update_hill_depressions'],
+            accumulate_flow=self.config['flow_params']['accumulate_flow']
+        )
+        pf.run_one_step()
+        
         # Add soil depth field if it doesn't exist
         if "soil__depth" not in self.grid.at_node:
             self.soil_depth = apply_soil_depth(self.grid, max_soil_depth=self.config['soil_params']['max_soil_depth'],
                             distribution=self.config['soil_params']['distribution'], relationship=self.config['soil_params']['relationship'],
                             decay_rate=self.config['soil_params']['decay_rate'], exponent=self.config['soil_params']['exponent'],
+                            drainage_transform=self.config['soil_params']['drainage_transform'],
+                            drainage_threshold=self.config['soil_params']['drainage_threshold'],
+                            drainage_power=self.config['soil_params']['drainage_power'],
                             plot=self.config['soil_params']['plot_soil']
                             )
             
@@ -161,17 +180,6 @@ class ShallowLandslideSimulator:
         # Calculate slopes
         self.slopes = self.grid.calc_slope_at_node(elevs='topographic__elevation')
         self.slopes_degrees = np.degrees(self.slopes)
-        
-        # Initialize and run flow router
-        pf = PriorityFloodFlowRouter(
-            self.grid, 
-            flow_metric=self.config['flow_params']['flow_metric'], 
-            separate_hill_flow=self.config['flow_params']['separate_hill_flow'],
-            depression_handler=self.config['flow_params']['depression_handling'], 
-            update_hill_depressions=self.config['flow_params']['update_hill_depressions'],
-            accumulate_flow=self.config['flow_params']['accumulate_flow']
-        )
-        pf.run_one_step()
         
         # Store results
         self.results['dem'] = {
@@ -420,7 +428,8 @@ class ShallowLandslideSimulator:
             self.grid, 
             self.aspect_subgroups, 
             slopes=self.slopes_degrees,
-            aspect_array=self.aspect_nodes_array
+            aspect_array=self.aspect_nodes_array,
+            handle_small=self.config['simulation']['handle_small_regions']
         )
         
         if split_by_width is not None:
@@ -436,8 +445,11 @@ class ShallowLandslideSimulator:
                 verbose=True
                 )
             
-            split_subgroup_props, self.split_subgroups = calculate_region_properties(self.grid, labeled_array=self.split_subgroups,
-                                                slopes=self.slopes_degrees, aspect_array=self.aspect_nodes_array)
+            split_subgroup_props, self.split_subgroups = calculate_region_properties(self.grid,
+                                                                labeled_array=self.split_subgroups,
+                                                                slopes=self.slopes_degrees,
+                                                                aspect_array=self.aspect_nodes_array,
+                                                                handle_small=self.config['simulation']['handle_small_regions'])
             
             # Store results
             self.results['aspect_filtering'] = {
@@ -514,7 +526,8 @@ class ShallowLandslideSimulator:
                 self.grid, 
                 labeled_array=self.selected_groups, 
                 slopes=self.slopes_degrees,
-                aspect_array=self.aspect_nodes_array
+                aspect_array=self.aspect_nodes_array,
+                handle_small=self.config['simulation']['handle_small_regions']
             )
             
             # Store results
@@ -548,7 +561,8 @@ class ShallowLandslideSimulator:
                 self.grid, 
                 labeled_array=self.pga_weighted_groups,
                 slopes=self.slopes_degrees,
-                aspect_array=self.aspect_nodes_array
+                aspect_array=self.aspect_nodes_array,
+                handle_small=self.config['simulation']['handle_small_regions']
             )
             
             # Store results
@@ -657,7 +671,8 @@ class ShallowLandslideSimulator:
         transport_zone_props, self.transport_zones_grid = calculate_region_properties(grid=self.grid, 
             labeled_array=self.transport_zones_grid, 
             slopes=self.slopes_degrees,
-            aspect_array=self.aspect_nodes_array
+            aspect_array=self.aspect_nodes_array,
+            handle_small=self.config['simulation']['handle_small_regions']
         )
         
         # Store results
@@ -857,14 +872,14 @@ class ShallowLandslideSimulator:
         # Step 6: Select potential landslides
         self.select_potential_landslides()
         
-        # Step 7: Calculate displacements
-        self.calculate_displacements()
+        # # Step 7: Calculate displacements
+        # self.calculate_displacements()
         
-        # Step 8: Trace sediment paths and update topography
-        self.trace_sediment_paths()
+        # # Step 8: Trace sediment paths and update topography
+        # self.trace_sediment_paths()
         
-        # Update the grid with new soil depth
-        self.grid.at_node['soil__depth'] = self.updated_soil_depth
+        # # Update the grid with new soil depth
+        # self.grid.at_node['soil__depth'] = self.updated_soil_depth
         
         # Update topographic elevation based on new soil depth
         self.grid.at_node['topographic__elevation'] = (
@@ -891,10 +906,10 @@ class ShallowLandslideSimulator:
             'selected_landslides': self.selected_groups,
             'landslide_proportion': self.results['selected_landslides']['proportion'],
             
-            # Displacements and sediment transport
-            'displacements': self.newmark_displacement_select,
-            'soil_depth_change': self.results['sediment_transport']['soil_depth_change'],
-            'transport_zones': self.transport_zones_grid
+            # # Displacements and sediment transport
+            # 'displacements': self.newmark_displacement_select,
+            # 'soil_depth_change': self.results['sediment_transport']['soil_depth_change'],
+            # 'transport_zones': self.transport_zones_grid
         }
         
         return self.grid, self.results, model_grids
