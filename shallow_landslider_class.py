@@ -8,7 +8,7 @@ This module calculates:
     4. Shifts sediment downslope using multi-flow approach
 
 Functions:
-    - run_simulation: Main function to run the complete landslide simulation
+    - run_one_step: Main function to run the complete landslide simulation
     - load_dem: Load digital elevation model
     - calculate_instability: Calculate static and seismic stability
     - identify_failure_regions: Identify regions of instability
@@ -38,15 +38,18 @@ Author: sghoshal
 """
 
 # Core modules
+import os
+from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
+import pickle
 
 # Scientific computation
 from scipy.ndimage import binary_fill_holes
 from scipy.ndimage import generate_binary_structure
 
 # Landlab components
-from landlab import imshowhs_grid
+from landlab import imshowhs_grid, RasterModelGrid
 from landlab.io import esri_ascii
 from landlab.components import PriorityFloodFlowRouter
 
@@ -71,7 +74,9 @@ from auxiliary_functions import (
         
         generate_acceleration_grid, 
         
-        recursive_split_wide_regions
+        recursive_split_wide_regions,
+        
+        calculate_terrain_attribute
     )
 
 class ShallowLandslideSimulator:
@@ -110,7 +115,6 @@ class ShallowLandslideSimulator:
             self.z = None
         
         # Initialize variables
-        self.slopes = None
         self.slopes_degrees = None
         self.factor_of_safety_vals = None
         self.a_transient_zero = None
@@ -159,14 +163,27 @@ class ShallowLandslideSimulator:
         )
         pf.run_one_step()
         
+        curv = calculate_terrain_attribute(grid=self.grid, field_name="topographic__elevation", attrib="planform_curvature")
+        
         # Add soil depth field if it doesn't exist
         if "soil__depth" not in self.grid.at_node:
             self.soil_depth = apply_soil_depth(self.grid, max_soil_depth=self.config['soil_params']['max_soil_depth'],
                             distribution=self.config['soil_params']['distribution'], relationship=self.config['soil_params']['relationship'],
+                            
+                            # kwargs for various elevation-based soil depths
                             decay_rate=self.config['soil_params']['decay_rate'], exponent=self.config['soil_params']['exponent'],
+                            
+                            # kwargs for various drainage area-based soil depths
                             drainage_transform=self.config['soil_params']['drainage_transform'],
                             drainage_threshold=self.config['soil_params']['drainage_threshold'],
                             drainage_power=self.config['soil_params']['drainage_power'],
+                            
+                            # kwargs for curvature-based soil depth
+                            P0=self.config['soil_params']['P0'],
+                            h_star=self.config['soil_params']['h_star'],
+                            D=self.config['soil_params']['D'],
+                            h_min=self.config['soil_params']['h_min'],
+                            h_no_ss=self.config['soil_params']['h_no_ss'],
                             plot=self.config['soil_params']['plot_soil']
                             )
             
@@ -178,15 +195,24 @@ class ShallowLandslideSimulator:
             self.grid.at_node["bedrock__elevation"][:] = self.grid.at_node["topographic__elevation"] - self.grid.at_node["soil__depth"]
         
         # Calculate slopes
-        self.slopes = self.grid.calc_slope_at_node(elevs='topographic__elevation')
-        self.slopes_degrees = np.degrees(self.slopes)
+        slopes = self.grid.calc_slope_at_node(elevs='topographic__elevation')
+        self.slopes_degrees = np.degrees(slopes)
+        
+        # Calculate topographic aspect
+        aspect_nodes = np.array(self.grid.calc_aspect_at_node(
+            elevs='topographic__elevation', 
+            unit="degrees",
+            ignore_closed_nodes=True
+        ))
+        
+        aspect_nodes[self.grid.boundary_nodes] = np.nan
+        self.aspect_nodes_array = aspect_nodes.reshape(self.grid.shape)
         
         # Store results
         self.results['dem'] = {
-            'grid': self.grid,
             'z': self.z,
-            'slopes': self.slopes,
-            'slopes_degrees': self.slopes_degrees
+            'slopes_degrees': self.slopes_degrees,
+            'aspect': aspect_nodes
         }
         
     def load_dem(self, file_path=None):
@@ -372,7 +398,8 @@ class ShallowLandslideSimulator:
             'num_features': num_features
         }
     
-    def filter_regions_by_aspect(self, split_by_width=None):
+    def filter_regions_by_aspect(self,
+                                split_by_width=None):
         """
         Filter and split regions by aspect.
         Can also check for widths > length and split regions
@@ -382,15 +409,6 @@ class ShallowLandslideSimulator:
         dict
             Dictionary containing aspect filtering results
         """
-        # Calculate topographic aspect
-        aspect_nodes = np.array(self.grid.calc_aspect_at_node(
-            elevs='topographic__elevation', 
-            unit="degrees",
-            ignore_closed_nodes=True
-        ))
-        
-        aspect_nodes[self.grid.boundary_nodes] = np.nan
-        self.aspect_nodes_array = aspect_nodes.reshape(self.grid.shape)
         
         # Create dictionary of aspect zones
         aspect_intervals = create_zones(interval=self.config['simulation']['aspect_interval'])
@@ -449,7 +467,8 @@ class ShallowLandslideSimulator:
                                                                 labeled_array=self.split_subgroups,
                                                                 slopes=self.slopes_degrees,
                                                                 aspect_array=self.aspect_nodes_array,
-                                                                handle_small=self.config['simulation']['handle_small_regions'])
+                                                                handle_small=self.config['simulation']['handle_small_regions']
+                                                                )
             
             # Store results
             self.results['aspect_filtering'] = {
@@ -676,16 +695,16 @@ class ShallowLandslideSimulator:
         )
         
         # Store results
-        self.results['sediment_transport'] = {
-            'landslide_paths': self.landslide_paths,
-            'landslide_proportions': landslide_proportions,
-            'path_details': self.path_details,
-            'updated_soil_depth': self.updated_soil_depth,
-            'mass_balance': mass_balance,
-            'soil_depth_change': delta_soil_depth,
-            'transport_zone_info': transport_zones_info,
-            'transport_zone_props': transport_zone_props
-        }
+        # self.results['sediment_transport'] = {
+        #     'landslide_paths': self.landslide_paths,
+        #     'landslide_proportions': landslide_proportions,
+        #     'path_details': self.path_details,
+        #     'updated_soil_depth': self.updated_soil_depth,
+        #     'mass_balance': mass_balance,
+        #     'soil_depth_change': delta_soil_depth,
+        #     'transport_zone_info': transport_zones_info,
+        #     'transport_zone_props': transport_zone_props
+        # }
     
     def _create_transport_zones(self, delta_soil_depth):
         """
@@ -844,22 +863,121 @@ class ShallowLandslideSimulator:
         
         plt.show()
     
+    def save_run(self, file_name=None, overwrite=True):
+        if file_name is None:
+            file_name = self._make_pickle_name()
+
+        if not file_name.endswith(".pkl"):
+            file_name += ".pkl"
+
+        if os.path.exists(file_name) and not overwrite:
+            raise FileExistsError(f"{file_name} exists. Use overwrite=True to replace.")
+
+        grid_arrays = {
+            "n_rows": self.grid.number_of_node_rows,
+            "n_cols": self.grid.number_of_node_columns,
+            "dx": self.grid.dx,
+            "topographic_elevation": (
+                np.array(self.grid.at_node["topographic__elevation"], copy=True)
+                if "topographic__elevation" in self.grid.at_node else None
+            ),
+            "soil_depth": (
+                np.array(self.grid.at_node["soil__depth"], copy=True)
+                if "soil__depth" in self.grid.at_node else None
+            ),
+            "bedrock_elevation": (
+                np.array(self.grid.at_node["bedrock__elevation"], copy=True)
+                if "bedrock__elevation" in self.grid.at_node else None
+            ),
+            "drainage_area": (
+                np.array(self.grid.at_node["drainage_area"], copy=True)
+                if "drainage_area" in self.grid.at_node else None
+            )
+        }
+
+        run_package = {
+            "config": self.config,
+            "grid_arrays": grid_arrays,   # << use this, not direct at_node refs
+            "subgroup_props": self.results['aspect_filtering']['subgroup_props'],
+            "split_groups_props": self.results['aspect_filtering']['dim_split_props'],
+            "selected_group_props" : self.results['selected_landslides']['group_props'],
+            'landslide_proportion': self.results['selected_landslides']['proportion'],
+            # "model_grids": self.model_grids,
+            "metadata": {
+                "saved_at": datetime.now().isoformat(),
+                "class": self.__class__.__name__,
+            }
+        }
+        
+        for k, v in run_package["grid_arrays"].items():
+            if isinstance(v, np.ndarray):
+                print(f"{k}: ndarray {v.shape} {v.dtype}")
+            else:
+                print(f"{k}: {type(v)}")
+
+        print("Pickling...")
+
+        with open(file_name, "wb") as f:
+            pickle.dump(run_package, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        print(f"Run saved → {file_name}")
+        
+    def _make_pickle_name(self):
+        """
+        Construct a deterministic pickle filename from config data.
+        Same config → same name, no timestamp.
+        """
+        dem = self.config["dem_info"]["dem_type"]
+        coh = int(self.config["soil_params"]["cohesion_eff"])
+        dist = self.config["soil_params"]["distribution"]
+
+        parts = [dem, f"c{coh}", dist]
+
+        # Add relationship only when relevant
+        if dist in ("elevation", "curvature"):
+            rel = self.config["soil_params"].get("relationship", "none")
+            parts.append(rel)
+
+        # If you want runs with different random seeds to be treated differently, keep this.
+        # If not, you can drop the seed from the name.
+        seed = self.config["simulation"].get("random_seed", None)
+        if seed is not None:
+            parts.append(f"seed{seed}")
+
+        file_name = "_".join(str(p) for p in parts) + ".pkl"
+
+        output_dir = self.config["output"].get("output_dir") or "."
+        return os.path.join(output_dir, file_name)
+    
     def run_one_step(self, kde_input=None):
         """
         Run a single timestep of the landslide simulation, executing each step in sequence.
+        Can save/load from pickle if flagged in config
         
         Parameters:
         -----------
-        landslide_selection_method : str, optional
-            Method for selecting landslide groups:
-            - 'pga_weighted': Selection based on PGA-weighted probabilities
-            - 'probabilistic': Selection based on critical acceleration
+        kde_input: Dictionary containing KDE data for measured landslide lengths and widths
         
         Returns:
         --------
         dict
             Dictionary containing output data from all simulation steps for plotting and analysis
         """
+        
+        pickle_name = self._make_pickle_name()
+        
+        if self.config["output"]["load_pickle"] and os.path.exists(pickle_name):
+            print(f"Loading existing run from {pickle_name}")
+            model = self.load_run(pickle_name)
+            
+            # copy attributes over
+            
+            self.results = model.results
+            self.model_grids = model.model_grids
+            self.grid = model.grid
+            
+            return self.grid, self.results, self.model_grids
+            
         # Step 3: Calculate instability
         self.calculate_instability()
         
@@ -887,11 +1005,11 @@ class ShallowLandslideSimulator:
         )
         
         # Recalculate slopes with updated topography
-        self.slopes = self.grid.calc_slope_at_node(elevs='topographic__elevation')
-        self.slopes_degrees = np.degrees(self.slopes)
+        slopes = self.grid.calc_slope_at_node(elevs='topographic__elevation')
+        self.slopes_degrees = np.degrees(slopes)
         
         # Compile plotting data for return
-        model_grids = {
+        self.model_grids = {
             # Topography data
             'slopes': self.slopes_degrees,
             
@@ -912,4 +1030,44 @@ class ShallowLandslideSimulator:
             # 'transport_zones': self.transport_zones_grid
         }
         
-        return self.grid, self.results, model_grids
+        if self.config["output"]["save_pickle"]:
+            self.save_run(pickle_name, overwrite=True)
+        
+        # return self.grid, self.results, self.model_grids
+    
+    @classmethod
+
+    def load_run(cls, file_name):
+        if not file_name.endswith(".pkl"):
+            file_name += ".pkl"
+
+        if not os.path.exists(file_name):
+            raise FileNotFoundError(file_name)
+
+        with open(file_name, "rb") as f:
+            run_package = pickle.load(f)
+
+        model = cls(run_package["config"])
+        model.results = run_package.get("model_results", {})
+        # model.model_grids = run_package.get("model_grids", {})
+        
+        def _reconstruct_grid(grid_arrays):
+            grid = RasterModelGrid((grid_arrays["n_rows"], grid_arrays["n_cols"]),
+                                xy_spacing=grid_arrays["dx"])
+
+            if grid_arrays["topographic_elevation"] is not None:
+                grid.at_node["topographic__elevation"] = grid_arrays["topographic_elevation"].copy()
+            if grid_arrays["soil_depth"] is not None:
+                grid.at_node["soil__depth"] = grid_arrays["soil_depth"].copy()
+            if grid_arrays["bedrock_elevation"] is not None:
+                grid.at_node["bedrock__elevation"] = grid_arrays["bedrock_elevation"].copy()
+            if grid_arrays["drainage_area"] is not None:
+                grid.at_node["drainage_area"] = grid_arrays["drainage_area"].copy()
+
+            return grid
+
+        model.grid = _reconstruct_grid(run_package["grid_arrays"])
+
+        print(f"Run loaded → {file_name} (class={run_package['metadata']['class']})")
+        
+        return model

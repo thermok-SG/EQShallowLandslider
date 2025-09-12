@@ -11,28 +11,41 @@ from shallow_landslider_class import ShallowLandslideSimulator
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+from datetime import datetime
 
 import scipy.stats as stats
 
 from landlab import imshowhs_grid  # to plot results
 
-from auxiliary_functions import (
-    pickle_or_not_to_pickle
-    )
+import auxiliary_functions as af
 
 from inverse_gamma_script import compare_inverse_gamma
 
 # %% Get measured data
-bundle = pickle_or_not_to_pickle("measured_data.pkl")
 
-measured_data = bundle["measured_data"]
-measured_spatial_stats_900greater = bundle["measured_spatial_stats_900greater"]
-measured_spatial_stats_clipped = bundle["measured_spatial_stats_clipped"]
+file_name_dict = {
+    # Roback + Jones landslides - length/width
+    'file1': "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/measuredLandslides_all.csv",
+    # All landslides
+    'file2': "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_spatialStats.csv",
+    # Clipped landslides
+    'file3': "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv",
+        # "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv",
+        # "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_south_spatialStats.csv",
+    
+    'shapefile_name': "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp"
+}
+measured_bundle = af.pickle_or_not_to_pickle(file_name_dict=file_name_dict, pickle_path="measured_data.pkl")
+
+measured_data = measured_bundle["measured_data"]
+measured_spatial_stats = measured_bundle["measured_spatial_stats"]
+measured_spatial_stats_900greater = measured_bundle["measured_spatial_stats_900greater"]
+measured_spatial_stats_clipped = measured_bundle["measured_spatial_stats_clipped"]
 
 # Load measured length-width KDE for sampling
 kde_dict = {
-    'kde_data': bundle["kde_data"],
-    'kde_transform': bundle["kde_transform"]
+    'kde_data': measured_bundle["kde_data"],
+    'kde_transform': measured_bundle["kde_transform"]
     }
 
 # %%% Length vs. width of measured data
@@ -62,67 +75,80 @@ plt.xlabel('Landslide length (m)')
 plt.ylabel('Landslide width (m)')
 
 # %% ### Initialise and run ShallowLandslider
-
 # %%% Initialise landslider
 config_dict = {
-    'dem_info': {
-        'dem_type': "SRTMGL1",
-        'north': 28.29, #31.34,# 28.29,
-        'east': 85.20, # 85.00, #103.70,
-        'south': 28.18, #31.23, # 28.18,
-        'west': 85.04, # 84.84, #103.56,
-        'buffer': 0.01,
-        'plot_dem' : True
-        },
-    'flow_params': {
-        'flow_metric': 'D8',
-        'separate_hill_flow': True,
-        'depression_handling': 'fill',
-        'update_hill_depressions': True,
-        'accumulate_flow': True
-        },
-    'soil_params': {
-        'angle_int_frict': np.radians(30),
-        'cohesion_eff': 15e3,  # Pa
-        'submerged_soil_proportion': 0.5,
-        'max_soil_depth': 1.5, # m
-        'distribution': 'drainage_area', # 'uniform', 'elevation' or 'drainage_area'
-        'relationship': 'linear', # 'linear', 'exponential', 'power', 'sigmoid'
-        'decay_rate': 1.0, # rate of decay of exponential function
-        'exponent': 2.0, # exponent for when relationship == 'power'
-        'drainage_transform': 'threshold', # transformation for drainage area values, can be 'log', 'sqrt', 'power', 'threshold'
-        'drainage_threshold': None, # drainage area threshold when 'drainage_transform'=='threshold'
-        'drainage_power': 0.3, # power value for when 'drainage_transform'=='power'
-        'plot_soil': True,
-        },
-    'pga': {
-        'horizontal_max': 0.6,
-        'vertical_max': 0.2,
-        'distribution': "uniform",
-        'plot_grids': False
-        },
-    'simulation': {
-        'time_shaking': 10,  # seconds
-        'displacement_threshold': 0,
-        'aspect_interval': 20,
-        'random_seed': 5000, # for reproducibility
-        'handle_small_regions': 'merge', # what happens to 1px regions: 'keep', 'merge', or 'remove'
-        'split_convergence': 0.75, # threshold for splitting iterations
-        'min_region_size': 10, # minimum size of region to split
-        'selection_method': 'probabilistic', # or 'pga_weighted'
-        'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
-        },
-    'plot_intermediates':{
-        'factor_of_safety': True,
-        'critical_acceleration': True,
-        'unstable_areas': False, # Issue here
-        'filled_and_split': True
+    "dem_info": {
+        "dem_type": "SRTMGL1",
+        "north": 28.29,
+        "east": 85.20,
+        "south": 28.18,
+        "west": 85.04,
+        "buffer": 0.01,
+        "smooth_num": 4,
+        "plot_dem": False,
     },
-    'output': {
-        'save_plots': False,
-        'output_dir': None,
-        }
-    }
+    "flow_params": {
+        "flow_metric": "D8",
+        "separate_hill_flow": True,
+        "depression_handling": "fill",
+        "update_hill_depressions": True,
+        "accumulate_flow": True,
+    },
+    "soil_params": {
+        "angle_int_frict": np.radians(30),
+        "cohesion_eff": 15e3,  # Pa
+        "submerged_soil_proportion": 0.5,
+        "max_soil_depth": 1.0,  # m
+        "plot_soil": True,
+        "distribution": "uniform",  # 'uniform', 'elevation', 'curvature', 'drainage_area'
+        # for "distribution" == "elevation", "relationship" == "linear", "exponential", "power", "sigmoid"
+        # for "distribution" == "curvature", "relationship" == "linear", "linear_std_local", "linear_std_global", "piecewise"
+        "relationship": "piecewise",     # only relevant for 'elevation'/'curvature'
+        "decay_rate": 1.0,
+        "exponent": 2.0,
+        # drainage_area-based params
+        "drainage_transform": "threshold",
+        "drainage_threshold": 1e6,
+        "drainage_power": 0.3,
+        
+        # curvature-based params
+        "P0": 0.05,
+        "h_star": 1.0,
+        "D": 0.01,
+        "h_min": 0.1,
+        "h_no_ss": 0.0,
+    },
+    "pga": {
+        "horizontal_max": 0.6,
+        "vertical_max": 0.2,
+        "distribution": "uniform",
+        "plot_grids": False,
+    },
+    "simulation": {
+        "time_shaking": 10,  # seconds
+        "displacement_threshold": 0,
+        "aspect_interval": 20,
+        "random_seed": 5000,  # keep if you want seed in file naming
+        "handle_small_regions": "merge",
+        "split_convergence": 0.75,
+        "min_region_size": 10,
+        "selection_method": "probabilistic",  # or 'pga_weighted'
+        "proportion_method": "statistical",   # 'empirical', 'risk_profile', etc.
+    },
+    "plot_intermediates": {
+        "factor_of_safety": False,
+        "critical_acceleration": False,
+        "unstable_areas": False,
+        "filled_and_split": False,
+    },
+    "output": {
+        "save_plots": False,
+        "output_dir": None,     # defaults to current directory
+        "save_pickle": True,
+        "load_pickle": True,
+    },
+}
+
 
 # Initialise component with given parameters
 sim = ShallowLandslideSimulator(config=config_dict)
@@ -130,54 +156,124 @@ sim = ShallowLandslideSimulator(config=config_dict)
 # Loads DEM for the class
 sim.load_dem()
 
-# %%% Plot drainage area
-if config_dict['soil_params']['distribution'] == 'drainage_area':
-    
-    plt.figure(layout='constrained')
+# %%%
+if config_dict['soil_params']['distribution'] == 'curvature':
+    plt.figure(layout='constrained', figsize=(12,8))
+    plt.subplot(121)
     imshowhs_grid(sim.grid, "topographic__elevation", plot_type='Drape1',
-                drape1=np.ma.masked_invalid(np.ma.masked_greater(sim.grid.at_node['drainage_area'], 10e5)),
+                drape1=np.ma.masked_invalid(sim.grid.at_node["planform_curvature"]),
+                cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
+                cbar_loc='lower right', cbar_height=1.0, cbar_width=0.3)
+    
+    plt.subplot(122)
+    imshowhs_grid(sim.grid, "topographic__elevation", plot_type='Drape1',
+                drape1=np.ma.masked_invalid(sim.grid.at_node["soil__depth"]),
+                cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
+                cbar_loc='lower right', cbar_height=1.0, cbar_width=0.3)
+    # plt.suptitle('planform_curvature')
+
+elif config_dict['soil_params']['distribution'] == 'drainage_area':
+    
+    plt.figure(layout='constrained', figsize=(12,8))
+    plt.subplot(121)
+    imshowhs_grid(sim.grid, "topographic__elevation", plot_type='Drape1',
+                drape1=np.ma.masked_invalid(
+                    np.ma.masked_greater(sim.grid.at_node['drainage_area'],
+                                                    config_dict['soil_params']['drainage_threshold'])
+                    ),
+                cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
+                cbar_loc='lower right', cbar_height=1.0, cbar_width=0.3)
+    plt.subplot(122)
+    imshowhs_grid(sim.grid, "topographic__elevation", plot_type='Drape1',
+                drape1=np.ma.masked_invalid(sim.grid.at_node["soil__depth"]),
                 cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
                 cbar_loc='lower right', cbar_height=1.0, cbar_width=0.3)
     plt.suptitle('Drainage area')
     
-    plt.show()
+plt.show()
 
 # %%% Plot regional parameter distributions
+count, bins_elevRegion = np.histogram(measured_spatial_stats_900greater['Elevation_mean'], 50)
 # Elevation
 plt.figure(layout='constrained')
-sns.histplot(x=sim.grid.at_node['topographic__elevation'], color='grey', alpha=0.25, stat='density', label='Regional elevations')
-sns.histplot(data=measured_spatial_stats_900greater, x='mean_elev', label='All measured landslides', stat='density')
-sns.histplot(data=measured_spatial_stats_clipped, x='mean_elev', label='Clipped measured landslides', stat='density')
+sns.histplot(x=sim.grid.at_node['topographic__elevation'], color='grey', alpha=0.25,
+            stat='density', label='Regional elevations')
+sns.histplot(data=measured_spatial_stats_900greater, x='Elevation_mean',
+            label=f'All measured landslides - {len(measured_spatial_stats_900greater)}',
+            stat='density', bins=bins_elevRegion)
+sns.histplot(data=measured_spatial_stats_clipped, x='mean_elev',
+            label=f'Clipped measured landslides - {len(measured_spatial_stats_clipped)}',
+            stat='density', bins=bins_elevRegion)
 
 plt.legend()
 plt.title("Elevation distribution")
 plt.xlabel("Elevation (m)")
 
 # Slope
+count, bins_slopeRegion = np.histogram(measured_spatial_stats_900greater['Slope_deg_mean'], 50)
 plt.figure(layout='constrained')
-sns.histplot(x=sim.slopes_degrees, color='grey', alpha=0.25, stat='density', label='Regional slopes')
-sns.histplot(data=measured_spatial_stats_900greater, x='mean_slope', label='All measured landslides', stat='density')
-sns.histplot(data=measured_spatial_stats_clipped, x='mean_slope', label='Clipped measured landslides', stat='density')
-
+sns.histplot(x=sim.slopes_degrees, color='grey', alpha=0.25,
+            stat='density', label='Regional slopes')
+sns.histplot(data=measured_spatial_stats_900greater, x='Slope_deg_mean',
+            label=f'All measured landslides - {len(measured_spatial_stats_900greater)}',
+            stat='density', bins=bins_slopeRegion)
+sns.histplot(data=measured_spatial_stats_clipped, x='mean_slope',
+            label=f'Clipped measured landslides - {len(measured_spatial_stats_clipped)}',
+            stat='density', bins=bins_slopeRegion)
 
 plt.legend()
 plt.title("Slope distribution")
 plt.xlabel("Slope ($\degree$)")
 
+# %%% Plot aspect
+# Aspect histogram
+plt.figure(layout='constrained')
+sns.histplot(x=sim.results['dem']['aspect'], color='grey', alpha=0.25,
+            stat='density', label='Regional aspect')
+sns.histplot(data=measured_spatial_stats_900greater, x='Aspect_deg_median', label=f'All mapped landslides - {len(measured_spatial_stats_900greater)}',
+            stat='density')
+sns.histplot(data=measured_spatial_stats_clipped, x='mean_aspect',
+            stat='density', label='Mapped landslide aspect')
+plt.legend()
+plt.title("Aspect distribution")
+plt.xlabel("Aspect ($\degree$)")
+
+# importlib.reload(af)
+
+# Aspect rose plot
+aspect_datasets = [sim.results['dem']['aspect'], 
+                    measured_spatial_stats_900greater['Aspect_deg_median'],
+                    measured_spatial_stats_clipped['mean_aspect']
+                ]
+aspect_labels = ['Regional aspect', 'All mapped landslides', 'Mapped landslides in clipped region']
+af.plot_aspect(datasets=aspect_datasets,
+                labels=aspect_labels, 
+                normalize=True, 
+                mode='rose', # "rose" or "kde"
+                arrangement='subplots' #  only for rose: "overlay" or "subplots"
+                )
+
 # %%% Run component
 
-grid, model_results, model_grids = sim.run_one_step(kde_input=kde_dict)
+start = datetime.now()
 
+sim.run_one_step(kde_input=kde_dict)
+
+end = datetime.now()
+print(f"Model took {end - start}")
 # %% ### Plot results ###
 
 # Group properties after aspect splitting
-subgroup_props = model_results['aspect_filtering']['subgroup_props']
+subgroup_props = sim.results['aspect_filtering']['subgroup_props']
 
 # Group properties after width-splitting
-split_groups_props = model_results['aspect_filtering']['dim_split_props']
+split_groups_props = sim.results['aspect_filtering']['dim_split_props']
 
 # Groups after selection
-selected_group_props = model_results['selected_landslides']['group_props']
+selected_group_props = sim.results['selected_landslides']['group_props']
+
+aspect_datasets.append(selected_group_props['mean_aspect'])
+aspect_labels.append('Selected landslides')
 
 # # Displaced zones
 # displacement_zones = model_grids['transport_zones']
@@ -212,17 +308,17 @@ plt.ylabel('Landslide width (m)')
 # %%% Maps of predicted landslides
 # Post-displacement landslides
 plt.figure(layout='constrained')
-imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
-            drape1=np.ma.masked_invalid(np.ma.masked_equal(model_results['aspect_filtering']['dim_split_groups'], 0)),
+imshowhs_grid(sim.grid, "topographic__elevation", plot_type='Drape1',
+            drape1=np.ma.masked_invalid(np.ma.masked_equal(sim.results['aspect_filtering']['dim_split_groups'], 0)),
             cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
             cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
 plt.suptitle(f'Predicted landslides - {len(split_groups_props)}')
 
 # Selected landslides
 plt.figure(layout='constrained')
-imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1',
-            drape1=np.ma.masked_invalid(np.ma.masked_equal(model_grids['selected_landslides'], 0)),
-            cmap='binary', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
+imshowhs_grid(sim.grid, "topographic__elevation", plot_type='Drape1',
+            drape1=np.ma.masked_invalid(np.ma.masked_equal(sim.model_grids['selected_landslides'], 0)),
+            cmap='jet', allow_colorbar=True, cbar_or='vertical', ticks_km=True,
             cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
 plt.suptitle(f'Predicted & selected landslides - {len(selected_group_props)}')
 
@@ -239,7 +335,7 @@ plt.show()
 
 # %%%% Map of soil depth change
 plt.figure(layout='constrained')
-imshowhs_grid(grid, "topographic__elevation", plot_type='Drape1', ticks_km=True,
+imshowhs_grid(sim.grid, "topographic__elevation", plot_type='Drape1', ticks_km=True,
             drape1=np.ma.masked_equal(sim.grid.at_node['soil__depth'], 0.0),
             allow_colorbar=True, cmap='viridis', altdeg=45, azdeg=315, cbar_or='vertical',
             cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3)
@@ -253,8 +349,8 @@ measured_spatial_stats_clipped.drop(measured_spatial_stats_clipped[measured_spat
 count, bins_Roback = np.histogram(np.log10(measured_spatial_stats_clipped['Area_m2']), 20)
 # %%%%
 fig_mag_freq, ax_mag_freq = plt.subplots(layout='constrained')
-sns.histplot(data=subgroup_props, x="area", label=f"Model - All areas ({len(subgroup_props)})",
-            legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
+# sns.histplot(data=subgroup_props, x="area", label=f"Model - All areas ({len(subgroup_props)})",
+#             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
 # sns.histplot(data=split_groups_props, x="area", label="Model - All split areas",
 #             legend=True, ax=ax_mag_freq, bins=bins_Roback, log_scale=True, stat='density')
 sns.histplot(data=selected_group_props, x="area", label=f"Model - Selected areas ({len(selected_group_props)})",
@@ -288,7 +384,7 @@ ax_mag_freq_2.set_xlabel("Area")
 # Elevation
 count, elevation_bins = np.histogram(measured_spatial_stats_clipped['mean_elev'], 20)
 plt.figure(layout='constrained')
-sns.histplot(x=grid.at_node['topographic__elevation'], color='grey', alpha=0.25, stat='density', label='Regional elevations')
+sns.histplot(x=sim.grid.at_node['topographic__elevation'], color='grey', alpha=0.25, stat='density', label='Regional elevations')
 # sns.histplot(data=measured_spatial_stats_900greater, x='Elevation_mean', label='All measured landslides', stat='density')
 sns.histplot(data=measured_spatial_stats_clipped, x='mean_elev', label='Clipped measured landslides', stat='density',
             bins=elevation_bins)
@@ -301,7 +397,7 @@ plt.xlabel("Elevation (m)")
 # Slope
 count, slope_bins = np.histogram(measured_spatial_stats_clipped['mean_slope'], 20)
 plt.figure(layout='constrained')
-sns.histplot(x=model_grids['slopes'], color='grey', alpha=0.25, stat='density', label='Regional slopes')
+sns.histplot(x=sim.model_grids['slopes'], color='grey', alpha=0.25, stat='density', label='Regional slopes')
 # sns.histplot(data=measured_spatial_stats_900greater, x='Slope_deg_mean', label='All measured landslides', stat='density')
 sns.histplot(data=measured_spatial_stats_clipped, x='mean_slope',
             label='Clipped measured landslides', stat='density', bins=slope_bins)
@@ -311,6 +407,11 @@ sns.histplot(data=selected_group_props, x='median_slope',
 plt.legend()
 plt.title("Landslides vs. Slope")
 plt.xlabel("Slope ($\degree$)")
+
+# Aspect
+# Aspect rose plot
+af.plot_aspect(datasets=aspect_datasets, labels=aspect_labels, normalize=True, mode='kde')
+# af.plot_aspect_roses(datasets=[])
 # %% Compare variables
 # --- Utility functions ---
 def pick_reference_distribution(var_name):
@@ -466,11 +567,11 @@ def create_comparison_plots(observed_df, modeled_df, column_mapping):
 
 
 # %%%%
-column_mapping = {
-    # observed_col: modeled_col
-    'mean_elev':'median_elevation',
-    'mean_slope':'median_slope'
-}
+# column_mapping = {
+#     # observed_col: modeled_col
+#     'mean_elev':'median_elevation',
+#     'mean_slope':'median_slope'
+# }
 column_mapping = {
     # observed_col: modeled_col
     'Area_m2' : 'area',
@@ -480,7 +581,7 @@ column_mapping = {
 
 # Continuous:
 comparison_results = compare_continuous_variables(measured_spatial_stats_clipped,
-                            selected_group_props, column_mapping)
+                            selected_group_props, column_mapping,)
 # %%%%
 # Plots:
 create_comparison_plots(measured_spatial_stats_clipped, selected_group_props, column_mapping)
@@ -569,7 +670,7 @@ def compare_area_distributions(data1, data2, labels=("Measured", "Modelled"), di
 
 
 # %%%
-compare_area_distributions(measured_spatial_stats_clipped['area'],
+compare_area_distributions(measured_spatial_stats_clipped['Area_m2'],
                         selected_group_props['area'], distributions=["invgamma"])
 
 # %%

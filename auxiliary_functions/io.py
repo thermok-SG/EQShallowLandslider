@@ -149,10 +149,12 @@ def get_default_config() -> Dict[str, Any]:
             'unstable_areas': False, # Issue here
             'filled_and_split': True
             },
-        'output': {
-            'save_plots': False,
-            'output_dir': None,
-            }
+        "output": {
+            "save_plots": False,
+            "output_dir": None,     # defaults to current directory
+            "save_pickle": True,
+            "load_pickle": True,
+            },
         }
 
 
@@ -309,7 +311,7 @@ def validate_config(config: Dict[str, Any]) -> bool:
 # LSshapefile_name = 'C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp'
 # LSshapefile_file = gpd.read_file(LSshapefile_name)
 
-def pickle_or_not_to_pickle(pickle_path="measured_data.pkl"):
+def pickle_or_not_to_pickle(file_name_dict, pickle_path="measured_data.pkl"):
     """
     Load processed data (DataFrames, shapefile, KDEs) from pickle if it exists.
     Otherwise, build from source files, save, and return.
@@ -324,24 +326,22 @@ def pickle_or_not_to_pickle(pickle_path="measured_data.pkl"):
     print("Pickle not found, building from CSVs and shapefile...")
 
     # --- Load CSVs ---
-    measured_data = pd.read_csv(
-        "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/measuredLandslides_all.csv"
-        )
-    measured_spatial_stats = pd.read_csv(
-        "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv"
-        )
-    measured_spatial_stats_clipped = pd.read_csv(
-        "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv"
-        )
-
+    # All measured landslide areas
+    measured_data = pd.read_csv(file_name_dict['file1'])
+    
+    # All measured landslide zonal statistics (elevation, slope, aspect)
+    measured_spatial_stats = pd.read_csv(file_name_dict['file2'])
+    
+    # Filter out landslides below sensitivity threshold
     measured_spatial_stats_900greater = measured_spatial_stats.drop(
-        measured_spatial_stats[measured_spatial_stats['Area_m2'] < 1000].index
+        measured_spatial_stats[measured_spatial_stats['Area'] <= 900].index
     )
+    
+    # Measured landslide zonal statistics inside selected area
+    measured_spatial_stats_clipped = pd.read_csv(file_name_dict['file3'])
 
     # --- Load shapefile ---
-    LSshapefile_file = gpd.read_file(
-        "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp"
-        )
+    LSshapefile_file = gpd.read_file(file_name_dict['shapefile_name'])
 
     # --- Fit KDE ---
     kde_data, kde_transform = fit_bivariate_kde(
@@ -369,3 +369,25 @@ def pickle_or_not_to_pickle(pickle_path="measured_data.pkl"):
     print(f"Saved preprocessed data to {pickle_path}")
 
     return bundle
+
+def load_all_runs(folder_path):
+    """
+    Load all pickle files in a folder and store them in a dictionary.
+    
+    Returns:
+        runs_dict: dictionary where keys are derived from filenames, values are loaded run data
+    """
+    runs_dict = {}
+    run_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
+
+    for file_name in run_files:
+        file_path = os.path.join(folder_path, file_name)
+        with open(file_path, "rb") as f:
+            run_data = pickle.load(f)
+        
+        # Use filename without .pkl as key
+        var_name = os.path.splitext(file_name)[0]
+        runs_dict[var_name] = run_data
+        print(f"Loaded {file_name} → variable '{var_name}'")
+
+    return runs_dict

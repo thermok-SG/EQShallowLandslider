@@ -5,7 +5,8 @@ author: sghoshal
 """
 
 from .io import (
-    get_config, pickle_or_not_to_pickle
+    get_config, pickle_or_not_to_pickle,
+    load_all_runs
     )
 
 from .terrain import (
@@ -50,6 +51,11 @@ from .stats import (
     )
 
 from .topographic_functions import (
+    # Plot polar rose diagram
+    # plot_aspect_roses, 
+    plot_aspect,
+    # Analyse topography
+    calculate_terrain_attribute,
     # Excess topography
     calculate_excess_topography
 )

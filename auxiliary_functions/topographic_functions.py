@@ -1,16 +1,420 @@
+
+
 """
-Functions for calculating Excess topography from landlab grid
+Extra functions for analysing the topography
+
+Contains functions for:
+    - Plotting rose diagrams (polar histograms) for aspect
+    - Excess topography (currently not working)
 
 """
 import numpy as np
 from scipy.interpolate import griddata
+from scipy.stats import vonmises
+import matplotlib.pyplot as plt
+import richdem as rd
 
 from scipy.ndimage import (
     grey_erosion, grey_dilation,
     gaussian_filter
 )
-from scipy.spatial.distance import cdist
 
+def calculate_terrain_attribute(grid, field_name, attrib, out_field=None):
+    """
+    Compute a terrain attribute with richdem and add it to a Landlab grid.
+    Automatically detects nodata values from the field.
+
+    Parameters
+    ----------
+    mg : landlab.ModelGrid
+        The Landlab grid (must be RasterModelGrid for reshaping).
+    field_name : str
+        Name of the Landlab field containing elevation (e.g. 'topographic__elevation').
+    attrib : str
+        Richdem terrain attribute to calculate (e.g. 'slope_riserun', 'curvature').
+    out_field : str, optional
+        Name of the output field in Landlab (defaults to attrib name).
+
+    Returns
+    -------
+    numpy.ndarray
+        The computed attribute values (1D, node order).
+    """
+    if out_field is None:
+        out_field = attrib
+
+    # Grab field from landlab
+    z = grid.at_node[field_name]
+    nrows, ncols = grid.shape
+    dem2d = z.reshape((nrows, ncols))
+
+    # Detect nodata: if any NaNs, set nodata to np.nan, else use -9999
+    if np.isnan(dem2d).any():
+        nodata = np.nan
+    else:
+        nodata = -9999  # fallback
+
+    # Wrap into richdem rdarray
+    dem_rd = rd.rdarray(dem2d.copy(), no_data=nodata)
+    dem_rd.geotransform = [0, grid.dx, 0, 0, 0, -grid.dy]
+
+    # Compute terrain attribute with richdem
+    result2d = rd.TerrainAttribute(dem_rd, attrib=attrib)
+
+    # Flatten to Landlab node order
+    result1d = np.asarray(result2d).ravel()
+
+    # Add to Landlab grid
+    grid.add_field(out_field, result1d, at='node', clobber=True)
+
+    return result1d
+
+# -------------------------------
+# Helper: Rose overlay
+# -------------------------------
+def _plot_rose_overlay(datasets, labels, colors, processed_data, bin_centers, width, global_max,
+                        normalize, log_scale):
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, layout='constrained')
+    for dataset, hist, label, color in zip(datasets, processed_data, labels, colors):
+        ax.bar(bin_centers, hist, width=width, bottom=0.0,
+                color=color, edgecolor='black', alpha=0.5,
+                label=f"{label} (n={len(dataset)})")
+    ax.set_ylim(0, global_max * 1.1)
+    ax.set_title(f"{'Log10 ' if log_scale else ''}{'Normalized ' if normalize else ''}Rose Diagram")
+    ax.legend(loc="best", bbox_to_anchor=(1.3, 0))
+    _set_polar_ticks(ax)
+
+
+# -------------------------------
+# Helper: Rose subplots
+# -------------------------------
+def _plot_rose_subplots(datasets, labels, colors, processed_data, bin_centers, width, global_max):
+    n_datasets = len(datasets)
+    n_cols = min(3, n_datasets)
+    n_rows = (n_datasets + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols,
+                            figsize=(min(15, n_cols * 5), n_rows * 4),
+                            subplot_kw={'projection': 'polar'},
+                            layout='constrained')
+    if n_datasets == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+
+    for i, (dataset, hist, label, color) in enumerate(zip(datasets, processed_data, labels, colors)):
+        ax = axes[i]
+        ax.bar(bin_centers, hist, width=width, bottom=0.0,
+                color=color, edgecolor='black', alpha=0.7)
+        ax.set_ylim(0, global_max * 1.1)
+        ax.set_title(f"{label}\n(n={len(dataset)})", pad=20)
+        _set_polar_ticks(ax)
+
+    for i in range(n_datasets, len(axes)):
+        axes[i].set_visible(False)
+
+
+# -------------------------------
+# Helper: KDE curves
+# -------------------------------
+def _plot_kde(datasets_rad, labels, colors, kde_kappa, kde_points):
+    theta = np.linspace(0, 2*np.pi, kde_points)
+
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, layout='constrained')
+    for data, label, color in zip(datasets_rad, labels, colors):
+        pdf_vals = np.zeros_like(theta)
+        for angle in data:
+            pdf_vals += vonmises.pdf(theta, kde_kappa, loc=angle)
+        pdf_vals /= pdf_vals.max()  # normalize for comparability
+        ax.plot(theta, pdf_vals, color=color, lw=2, label=f"{label} (n={len(data)})")
+
+    ax.set_title("Circular KDE of Topographic Aspect")
+    ax.legend(loc="best", bbox_to_anchor=(1.3, 0))
+    _set_polar_ticks(ax)
+
+
+# -------------------------------
+# Helper: Polar ticks setup
+# -------------------------------
+def _set_polar_ticks(ax):
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    tick_positions = np.linspace(0, 2*np.pi, 8, endpoint=False)
+    ax.set_thetagrids(np.degrees(tick_positions),
+                    ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'])
+
+
+# -------------------------------
+# Main dispatcher
+# -------------------------------
+def plot_aspect(
+    datasets,
+    labels=None,
+    colors=None,
+    normalize=True,
+    log_scale=False,
+    mode="rose",        # "rose" or "kde"
+    arrangement="overlay",  # only for rose: "overlay" or "subplots"
+    n_bins=16,
+    kde_kappa=20,
+    kde_points=360
+):
+    """
+    Plot topographic aspect data as rose diagrams or circular KDE curves.
+    """
+    # Ensure datasets are numpy arrays and wrap to 0–360
+    datasets = [np.array(d) for d in datasets]
+    datasets = [d[d >= 0] % 360 for d in datasets]
+    print("Plotting aspect datasets...")
+
+    # Default labels and colors
+    if labels is None:
+        labels = [f"Dataset {i+1}" for i in range(len(datasets))]
+    if colors is None:
+        colors = ['skyblue', 'lightgreen', 'salmon', 'purple', 'orange']
+
+    if mode == "rose":
+        # Precompute histograms
+        processed_data = []
+        global_max = 0
+        for dataset in datasets:
+            hist, _ = np.histogram(dataset, bins=n_bins, range=(0, 360))
+            hist = np.maximum(0, hist)
+            if normalize:
+                hist = (hist / len(dataset)) * 100
+            if log_scale:
+                hist = np.log10(hist + 1)
+            processed_data.append(hist)
+            global_max = max(global_max, np.max(hist))
+
+        # Bin geometry
+        bin_edges = np.linspace(0, 360, n_bins + 1)
+        bin_centers = np.deg2rad(bin_edges[:-1] + np.diff(bin_edges)/2)
+        width = np.deg2rad(360 / n_bins)
+
+        if arrangement == "overlay":
+            _plot_rose_overlay(datasets, labels, colors, processed_data,
+                                bin_centers, width, global_max, normalize, log_scale)
+        elif arrangement == "subplots":
+            _plot_rose_subplots(datasets, labels, colors, processed_data,
+                                bin_centers, width, global_max)
+        else:
+            raise ValueError("arrangement must be 'overlay' or 'subplots'")
+
+    elif mode == "kde":
+        datasets_rad = [np.deg2rad(d) for d in datasets]
+        _plot_kde(datasets_rad, labels, colors, kde_kappa, kde_points)
+
+    else:
+        raise ValueError("mode must be 'rose' or 'kde'")
+
+    plt.show()
+
+
+def plot_aspect_roses_older(datasets, labels=None, colors=None, normalize=True, log_scale=False):
+    """
+    Create a rose diagram with multiple normalized datasets.
+    
+    Parameters:
+    datasets : list of array-like
+        List of aspect value arrays
+    labels : list of str, optional
+        Labels for each dataset
+    colors : list of str, optional
+        Colors for each dataset
+    normalize : bool, default=True
+        If True, normalize each dataset as percentage of total
+    log_scale : bool, default=False
+        If True, use log10 scale for radial axis
+    """
+    # Ensure datasets are numpy arrays
+    datasets = [np.array(dataset) for dataset in datasets]
+    datasets = [dataset[dataset >= 0] % 360 for dataset in datasets]
+    print('Plotting aspects...')
+
+    # Default labels and colors if not provided
+    if labels is None:
+        labels = [f'Dataset {i+1}' for i in range(len(datasets))]
+    if colors is None:
+        colors = ['skyblue', 'lightgreen', 'salmon', 'purple', 'orange']
+
+    # Set up the plot
+    plt.figure(layout='constrained')
+    ax = plt.subplot(111, projection='polar')
+
+    # Number of bins
+    n_bins = 16
+    max_percentage = 0
+
+    # Plot each dataset
+    for i, (dataset, label_num, color) in enumerate(zip(datasets, labels, colors)):
+        # Create histogram
+        hist, bin_edges = np.histogram(dataset, bins=n_bins, range=(0, 360))
+        hist = np.maximum(0, hist)
+
+        # Normalize if requested
+        if normalize:
+            hist = (hist / len(dataset)) * 100
+
+        # Track maximum percentage for scaling
+        max_percentage = max(max_percentage, np.max(hist))
+
+        # Calculate bin centers (in radians)
+        bin_centers = np.deg2rad(bin_edges[:-1] + np.diff(bin_edges)/2)
+
+        # Width of each bar (in radians)
+        width = np.deg2rad(360 / n_bins)
+
+        # Apply log scale if requested
+        if log_scale:
+            # Add small constant to avoid log(0)
+            hist = np.log10(hist + 1)
+
+        # Plot the rose diagram with partial transparency
+        ax.bar(bin_centers, hist, width=width, bottom=0.0,
+                color=color, edgecolor='black', alpha=0.5,
+                label=f'{label_num} (n={len(dataset)})')
+
+    # Customize the plot
+    ax.set_theta_zero_location('N')  # 0 degrees at the top
+    ax.set_theta_direction(-1)  # Clockwise
+
+    # Set title based on scale type
+    scale_type = "Log10 " if log_scale else ""
+    norm_type = "Normalized " if normalize else ""
+    ax.set_title(f'{scale_type}{norm_type}Topographic Aspect Rose Diagram')
+
+    # Set tick positions and labels for cardinal directions
+    tick_positions = np.linspace(0, 2*np.pi, 8, endpoint=False)
+    ax.set_thetagrids(np.degrees(tick_positions), ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'])
+    
+    # Customize radial labels based on scale type
+    if log_scale:
+        ax.set_rticks([0, 0.5, 1, 1.5, 2])
+        ax.set_rticklabels(['0', '0.5', '1', '1.5', '2'])
+        plt.text(0, 2.2, 'log10(percentage + 1)', ha='center', va='bottom')
+    # else:
+    #     if normalize:
+    #         plt.text(0, max_percentage * 1.1, 'Percentage of observations', ha='center', va='bottom')
+    #     else:
+    #         plt.text(0, max_percentage * 1.1, 'Count', ha='center', va='bottom')
+
+    # Add legend
+    plt.legend(loc='best', bbox_to_anchor=(1.3, 0))
+
+    # plt.tight_layout()
+    plt.show()
+    
+def plot_aspect_roses_old(datasets, labels=None, colors=None, normalize=True, log_scale=False):
+    """
+    Create separate rose diagrams for each dataset in subplots.
+    
+    Parameters:
+    datasets : list of array-like
+        List of aspect value arrays
+    labels : list of str, optional
+        Labels for each dataset
+    colors : list of str, optional
+        Colors for each dataset
+    normalize : bool, default=True
+        If True, normalize each dataset as percentage of total
+    log_scale : bool, default=False
+        If True, use log10 scale for radial axis
+    """
+    # Ensure datasets are numpy arrays
+    datasets = [np.array(dataset) for dataset in datasets]
+    datasets = [dataset[dataset >= 0] % 360 for dataset in datasets]
+    print('Plotting aspects...')
+    
+    # Default labels and colors if not provided
+    if labels is None:
+        labels = [f'Dataset {i+1}' for i in range(len(datasets))]
+    if colors is None:
+        colors = ['skyblue', 'lightgreen', 'salmon', 'purple', 'orange']
+    
+    # Calculate subplot layout
+    n_datasets = len(datasets)
+    n_cols = min(3, n_datasets)  # Maximum 3 columns
+    n_rows = (n_datasets + n_cols - 1) // n_cols  # Ceiling division
+    
+    # Set up the figure - adjust size based on number of subplots
+    fig_width = min(15, n_cols * 5)  # Max width of 15, scale with columns
+    fig_height = n_rows * 4  # 4 inches per row
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), 
+                            subplot_kw={'projection': 'polar'}, 
+                            layout='constrained')
+    
+    # Handle different subplot configurations
+    if n_datasets == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()  # Flatten to 1D array for easier indexing
+    
+    # Number of bins
+    n_bins = 16
+    
+    # Find global max for consistent scaling across subplots
+    global_max = 0
+    processed_data = []
+    
+    for dataset in datasets:
+        hist, _ = np.histogram(dataset, bins=n_bins, range=(0, 360))
+        hist = np.maximum(0, hist)
+        if normalize:
+            hist = (hist / len(dataset)) * 100
+        if log_scale:
+            hist = np.log10(hist + 1)
+        processed_data.append(hist)
+        global_max = max(global_max, np.max(hist))
+    
+    # Plot each dataset in its own subplot
+    for i, (dataset, hist, label_num, color) in enumerate(zip(datasets, processed_data, labels, colors)):
+        ax = axes[i]  # Simple indexing with flattened array
+        
+        # Calculate bin centers and width
+        bin_edges = np.linspace(0, 360, n_bins + 1)
+        bin_centers = np.deg2rad(bin_edges[:-1] + np.diff(bin_edges)/2)
+        width = np.deg2rad(360 / n_bins)
+        
+        # Plot the rose diagram
+        ax.bar(bin_centers, hist, width=width, bottom=0.0,
+                color=color, edgecolor='black', alpha=0.7)
+        
+        # Customize each subplot
+        ax.set_theta_zero_location('N')  # 0 degrees at the top
+        ax.set_theta_direction(-1)  # Clockwise
+        
+        # Set tick positions and labels for cardinal directions
+        tick_positions = np.linspace(0, 2*np.pi, 8, endpoint=False)
+        ax.set_thetagrids(
+            np.degrees(tick_positions),
+                        ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+                        )
+        
+        # Set consistent radial limits for all subplots
+        ax.set_ylim(0, global_max * 1.1)
+        
+        # Set subplot title
+        scale_type = "Log10 " if log_scale else ""
+        norm_type = "Normalized " if normalize else ""
+        ax.set_title(f'{label_num}\n(n={len(dataset)})', pad=20)
+        
+        # Customize radial labels based on scale type
+        if log_scale:
+            max_tick = min(2, int(global_max * 1.1))
+            ax.set_rticks(np.linspace(0, max_tick, 5))
+    
+    # Hide any unused subplots
+    for i in range(n_datasets, len(axes)):
+        axes[i].set_visible(False)
+    
+    # Add overall title
+    scale_type = "Log10 " if log_scale else ""
+    norm_type = "Normalized " if normalize else ""
+    # fig.suptitle(f'{scale_type}{norm_type}Topographic Aspect Rose Diagrams', fontsize=16)
+    
+    plt.show()
+
+# %% Function to calculate excess topography based on TopoToolbox method [currently not working]
 def calculate_excess_topography(grid, method='planar', **kwargs):
     """
     Calculate excess topography for a Landlab grid.
@@ -50,6 +454,7 @@ def calculate_excess_topography(grid, method='planar', **kwargs):
     else:
         raise ValueError(f"Unknown method: {method}")
 
+# %%% Excess topo - helper functions
 def _planar_reference(x, y, z, min_elevation_percentile=10):
     """
     Calculate excess topography using a planar reference surface.
