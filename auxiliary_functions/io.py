@@ -370,24 +370,101 @@ def pickle_or_not_to_pickle(file_name_dict, pickle_path="measured_data.pkl"):
 
     return bundle
 
+def parse_pickle_name(file_name):
+    """
+    Parse deterministic pickle filename back into parameter dict.
+    Handles variable filename structures with additional components.
+    
+    Special handling for:
+    - 'drainage_area' as single distribution type
+    - 'std_global'/'std_local' as curvature variants
+    """
+    base = os.path.splitext(file_name)[0]
+    parts = base.split("_")
+    
+    dem = parts[0]
+    coh = int(parts[1][1:])  # strip 'c'
+    
+    params = {
+        "dem_type": dem,
+        "cohesion_eff": coh,
+        "distribution": None,
+        "relationship": None,
+        "curvature_variant": None,  # New field for std_global/std_local
+        "random_seed": None,
+    }
+    
+    # Find seed first (it's always at the end if present)
+    seed_idx = None
+    for i, part in enumerate(parts):
+        if part.startswith("seed"):
+            params["random_seed"] = int(part[4:])
+            seed_idx = i
+            break
+    
+    # Handle special case: drainage_area
+    if len(parts) > 3 and parts[2] == "drainage" and parts[3] == "area":
+        params["distribution"] = "drainage_area"
+        return params
+    
+    # Standard distribution
+    params["distribution"] = parts[2]
+    
+    # Handle relationship and curvature variants
+    if params["distribution"] in ("elevation", "curvature"):
+        idx = 3
+        # Look for relationship
+        if idx < len(parts) and parts[idx] in ("linear", "exponential"):
+            params["relationship"] = parts[idx]
+            idx += 1
+            
+            # For curvature with linear, check for std variants
+            if params["distribution"] == "curvature" and params["relationship"] == "linear":
+                if idx < len(parts) and parts[idx] == "std":
+                    idx += 1  # Move past "std"
+                    if idx < len(parts) and parts[idx] in ("global", "local"):
+                        params["curvature_variant"] = f"std_{parts[idx]}"
+    
+    return params
+
+def make_key(params):
+    """
+    Create a tuple key from params.
+    Now includes curvature_variant as 5th element.
+    Structure: (cohesion, distribution, relationship, curvature_variant, seed)
+    """
+    return (
+        params["cohesion_eff"],
+        params["distribution"],
+        params["relationship"],      # can be None
+        params["curvature_variant"], # can be None
+        params["random_seed"],       # can be None
+    )
+
 def load_all_runs(folder_path):
     """
     Load all pickle files in a folder and store them in a dictionary.
-    
-    Returns:
-        runs_dict: dictionary where keys are derived from filenames, values are loaded run data
+    Keys: parameter tuples (cohesion, distribution, relationship, curvature_variant, seed)
+    Values: run data
     """
     runs_dict = {}
     run_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
-
+    
+    print("Loading pickle files:")
+    print("=" * 60)
+    
     for file_name in run_files:
         file_path = os.path.join(folder_path, file_name)
         with open(file_path, "rb") as f:
             run_data = pickle.load(f)
         
-        # Use filename without .pkl as key
-        var_name = os.path.splitext(file_name)[0]
-        runs_dict[var_name] = run_data
-        print(f"Loaded {file_name} → variable '{var_name}'")
-
+        params = parse_pickle_name(file_name)
+        key = make_key(params)
+        runs_dict[key] = run_data
+        
+        print(f"File: {file_name}")
+        print(f"  Parsed params: {params}")
+        print(f"  Key: {key}")
+        print()
+    
     return runs_dict

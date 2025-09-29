@@ -96,14 +96,14 @@ config_dict = {
     },
     "soil_params": {
         "angle_int_frict": np.radians(30),
-        "cohesion_eff": 15e3,  # Pa
+        "cohesion_eff": 20e3,  # Pa
         "submerged_soil_proportion": 0.5,
-        "max_soil_depth": 1.0,  # m
+        "max_soil_depth": 1.5,  # m
         "plot_soil": True,
-        "distribution": "uniform",  # 'uniform', 'elevation', 'curvature', 'drainage_area'
+        "distribution": "elevation",  # 'uniform', 'elevation', 'curvature', 'drainage_area'
         # for "distribution" == "elevation", "relationship" == "linear", "exponential", "power", "sigmoid"
         # for "distribution" == "curvature", "relationship" == "linear", "linear_std_local", "linear_std_global", "piecewise"
-        "relationship": "piecewise",     # only relevant for 'elevation'/'curvature'
+        "relationship": "linear",     # only relevant for 'curvature'
         "decay_rate": 1.0,
         "exponent": 2.0,
         # drainage_area-based params
@@ -134,6 +134,7 @@ config_dict = {
         "min_region_size": 10,
         "selection_method": "probabilistic",  # or 'pga_weighted'
         "proportion_method": "statistical",   # 'empirical', 'risk_profile', etc.
+        "custom_proportion": None,
     },
     "plot_intermediates": {
         "factor_of_safety": False,
@@ -143,12 +144,11 @@ config_dict = {
     },
     "output": {
         "save_plots": False,
-        "output_dir": None,     # defaults to current directory
+        "output_dir": "./pickled_runs/",     # defaults to current directory
         "save_pickle": True,
         "load_pickle": True,
     },
 }
-
 
 # Initialise component with given parameters
 sim = ShallowLandslideSimulator(config=config_dict)
