@@ -6,11 +6,16 @@ Functions that allow import and output of data
 
 # %% Required packages
 
+import os
 import json
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 import copy
+import pickle
+import pandas as pd
+import geopandas as gpd
+from .stats import fit_bivariate_kde
 
 # %% Handle JSON config files
 # %%% Main function
@@ -92,57 +97,65 @@ def get_default_config() -> Dict[str, Any]:
     """
     return {
         'dem_info': {
-                    'dem_type': "SRTMGL1",
-                    'north': 28.29, #31.34,# 28.29,
-                    'east': 85.20, # 85.00, #103.70,
-                    'south': 28.18, #31.23, # 28.18,
-                    'west': 85.04, # 84.84, #103.56,
-                    'buffer': 0.01,
-                    'smooth_num': 4,
-                    'plot_dem' : True
-                    },
-                'flow_params': {
-                    'flow_metric': 'D8',
-                    'separate_hill_flow': True,
-                    'depression_handling': 'fill',
-                    'update_hill_depressions': True,
-                    'accumulate_flow': True
-                    },
-                'soil_params': {
-                    'angle_int_frict': np.radians(30),
-                    'cohesion_eff': 15e3,  # Pa
-                    'submerged_soil_proportion': 0.5,
-                    'max_soil_depth': 1.5, # m
-                    'distribution': 'elevation', # 'uniform' or 'elevation'
-                    'plot_soil': False,
-                    },
-                'pga': {
-                    'horizontal_max': 0.6,
-                    'vertical_max': 0.2,
-                    'distribution': "uniform",
-                    'plot_grids': False
-                    },
-                'simulation': {
-                    'time_shaking': 10,  # seconds
-                    'displacement_threshold': 0,
-                    'aspect_interval': 20,
-                    'random_seed': 5000, # for reproducibility
-                    'split_convergence': 0.75, # threshold for splitting iterations
-                    'min_region_size': 10, # minimum size of region to split
-                    'selection_method': 'probabilistic', # or 'pga_weighted'
-                    'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
-                    },
-                'plot_intermediates':{
-                    'factor_of_safety': False,
-                    'critical_acceleration': False,
-                    'unstable_areas': False, # Issue here
-                    'filled_and_split': True
-                },
-                'output': {
-                    'save_plots': False,
-                    'output_dir': None,
-                    }
-                }
+            'dem_type': "SRTMGL1",
+            'north': 28.29, #31.34,# 28.29,
+            'east': 85.20, # 85.00, #103.70,
+            'south': 28.18, #31.23, # 28.18,
+            'west': 85.04, # 84.84, #103.56,
+            'buffer': 0.01,
+            'smooth_num': 4,
+            'plot_dem' : True
+            },
+        'flow_params': {
+            'flow_metric': 'D8',
+            'separate_hill_flow': True,
+            'depression_handling': 'fill',
+            'update_hill_depressions': True,
+            'accumulate_flow': True
+            },
+        'soil_params': {
+            'angle_int_frict': np.radians(30),
+            'cohesion_eff': 15e3,  # Pa
+            'submerged_soil_proportion': 0.5,
+            'max_soil_depth': 1.5, # m
+            'distribution': 'elevation', # 'uniform' or 'elevation'
+            'relationship': 'exponential', # 'linear', 'exponential', 'power', 'logarithmic', 'sigmoid'
+            'decay_rate': 5.0, # rate of decay of exponential function
+            'exponent': 1.0, # exponent for when relationship == 'power'
+            'drainage_transform': 'log', # transformation for drainage area values
+            'drainage_threshold': None, # drainage area threshold when  'drainage_transform'=='threshold'
+            'plot_soil': True,
+            },
+        'pga': {
+            'horizontal_max': 0.6,
+            'vertical_max': 0.2,
+            'distribution': "uniform",
+            'plot_grids': False
+            },
+        'simulation': {
+            'time_shaking': 10,  # seconds
+            'displacement_threshold': 0,
+            'aspect_interval': 20,
+            'random_seed': 5000, # for reproducibility
+            'handle_small_regions': 'merge', # what happens to 1px regions: 'keep', 'merge', or 'remove'
+            'split_convergence': 0.75, # threshold for splitting iterations
+            'min_region_size': 10, # minimum size of region to split
+            'selection_method': 'probabilistic', # or 'pga_weighted'
+            'proportion_method': 'statistical', # 'empirical', 'statistical', 'risk_profile', or 'adaptive'
+            },
+        'plot_intermediates':{
+            'factor_of_safety': False,
+            'critical_acceleration': False,
+            'unstable_areas': False, # Issue here
+            'filled_and_split': True
+            },
+        "output": {
+            "save_plots": False,
+            "output_dir": None,     # defaults to current directory
+            "save_pickle": True,
+            "load_pickle": True,
+            },
+        }
 
 
 def load_config_from_json(json_file: Union[str, Path]) -> Dict[str, Any]:
@@ -275,3 +288,319 @@ def validate_config(config: Dict[str, Any]) -> bool:
         raise ValueError("Shaking time must be positive")
     
     return True
+
+# %% Pickling datasets
+
+# %% Import measured data
+# # Import area, length and width data for all measured landslides in region
+# file_name = "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/measuredLandslides_all.csv"
+# measured_data = pd.read_csv(file_name)
+
+# # Import zonal statistics for Roback et al. 2017 landslides
+# file_name2 = "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_spatialStats.csv"
+# file_name3 = "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv"
+# measured_spatial_stats = pd.read_csv(file_name2)
+# measured_spatial_stats_clipped = pd.read_csv(file_name3)
+
+# # Remove all landslides below 1000 m^2
+# measured_spatial_stats_900greater = measured_spatial_stats.drop(measured_spatial_stats[measured_spatial_stats['Area']<1000].index)
+
+# plot_order = ["Roback2017_Gorkha", "Jones2021_ASM"]
+
+# # Import Roback et al. 2017 landslide shapefile for test area
+# LSshapefile_name = 'C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp'
+# LSshapefile_file = gpd.read_file(LSshapefile_name)
+
+# Parameters included in filenames
+FILENAME_PARAMS = [
+    "dem_type",
+    "cohesion_eff",
+    "angle_int_frict",
+    "distribution",
+    "relationship",
+    "curvature_variant",
+    "random_seed",
+]
+
+# Define which parameters should only be included if they're not None/empty
+OPTIONAL_PARAMS = {
+    "relationship",
+    "curvature_variant", 
+    "random_seed",
+}
+
+# Parameter abbreviations
+PARAM_ABBREVIATIONS = {
+    "dem_type": "dem",
+    "cohesion_eff": "c",
+    "distribution": "dist",
+    "relationship": "rel",
+    "curvature_variant": "curv",
+    "random_seed": "seed",
+    "angle_int_frict": "intfr"
+}
+
+# Reverse mapping for parsing
+REVERSE_ABBREVIATIONS = {v: k for k, v in PARAM_ABBREVIATIONS.items()}
+
+def pickle_or_not_to_pickle(file_name_dict, pickle_path="measured_data.pkl"):
+    """
+    Load processed data (DataFrames, shapefile, KDEs) from pickle if it exists.
+    Otherwise, build from source files, save, and return.
+    """
+    
+    if os.path.exists(pickle_path):
+        print(f"Loading preprocessed data from {pickle_path}...")
+        with open(pickle_path, "rb") as f:
+            bundle = pickle.load(f)
+        return bundle
+    
+    print("Pickle not found, building from CSVs and shapefile...")
+
+    # --- Load CSVs ---
+    # All measured landslide areas
+    measured_data = pd.read_csv(file_name_dict['file1'])
+    
+    # All measured landslide zonal statistics (elevation, slope, aspect)
+    measured_spatial_stats = pd.read_csv(file_name_dict['file2'])
+    
+    # Filter out landslides below sensitivity threshold
+    measured_spatial_stats_900greater = measured_spatial_stats.drop(
+        measured_spatial_stats[measured_spatial_stats['Area'] <= 900].index
+    )
+    
+    # Measured landslide zonal statistics inside selected area
+    measured_spatial_stats_clipped = pd.read_csv(file_name_dict['file3'])
+
+    # --- Load shapefile ---
+    LSshapefile_file = gpd.read_file(file_name_dict['shapefile_name'])
+
+    # --- Fit KDE ---
+    kde_data, kde_transform = fit_bivariate_kde(
+        dataframe=measured_data,
+        x_col="length_m",
+        y_col="width_m",
+        category_col=None,
+        plot_results=False
+    )
+
+    # --- Bundle everything ---
+    bundle = {
+        "measured_data": measured_data,
+        "measured_spatial_stats": measured_spatial_stats,
+        "measured_spatial_stats_clipped": measured_spatial_stats_clipped,
+        "measured_spatial_stats_900greater": measured_spatial_stats_900greater,
+        "LSshapefile_file": LSshapefile_file,
+        "kde_data": kde_data,
+        "kde_transform": kde_transform
+    }
+
+    # Save to pickle for next time
+    with open(pickle_path, "wb") as f:
+        pickle.dump(bundle, f)
+    print(f"Saved preprocessed data to {pickle_path}")
+
+    return bundle
+
+def parse_pickle_name_new(file_name: str) -> Dict[str, Any]:
+    """
+    Parse key=value pickle filename back into parameter dict.
+    Handles any order and missing optional parameters gracefully.
+    
+    Example: 
+        "dem=synthetic_c=5_dist=elevation_rel=linear.pkl"
+        -> {"dem_type": "synthetic", "cohesion_eff": 5, ...}
+    
+    ANALYSIS FUNCTION - called by load_all_runs()
+    """
+    base = os.path.splitext(os.path.basename(file_name))[0]
+    parts = base.split("_")
+    
+    # Initialize with None for all parameters
+    params = {param: None for param in FILENAME_PARAMS}
+    
+    # Parse each key=value pair
+    for part in parts:
+        if "=" not in part:
+            print(f"Warning: Skipping malformed part '{part}' in {file_name}")
+            continue
+        
+        key, value = part.split("=", 1)
+        param_name = REVERSE_ABBREVIATIONS.get(key, key)
+        
+        if param_name not in params:
+            print(f"Warning: Unknown parameter '{param_name}' in {file_name}")
+            continue
+        
+        # Type conversion
+        if param_name == "cohesion_eff":
+            params[param_name] = int(value)
+        elif param_name == "random_seed" and value != "None":
+            params[param_name] = int(value)
+        else:
+            params[param_name] = value if value != "None" else None
+    
+    return params
+
+def make_key_new(params: Dict[str, Any]) -> tuple:
+    """
+    Create a tuple key from params dictionary.
+    Uses all defined filename parameters in order.
+    
+    ANALYSIS FUNCTION - called by load_all_runs()
+    """
+    return tuple(params.get(param) for param in FILENAME_PARAMS)
+
+def parse_pickle_name(file_name):
+    """
+    Parse deterministic pickle filename back into parameter dict.
+    Handles variable filename structures with additional components.
+    
+    Special handling for:
+    - 'drainage_area' as single distribution type
+    - 'std_global'/'std_local' as curvature variants
+    """
+    base = os.path.splitext(file_name)[0]
+    parts = base.split("_")
+    
+    dem = parts[0]
+    coh = int(parts[1][1:])  # strip 'c'
+    
+    params = {
+        "dem_type": dem,
+        "cohesion_eff": coh,
+        "distribution": None,
+        "relationship": None,
+        "curvature_variant": None,  # New field for std_global/std_local
+        "random_seed": None,
+    }
+    
+    # Find seed first (it's always at the end if present)
+    seed_idx = None
+    for i, part in enumerate(parts):
+        if part.startswith("seed"):
+            params["random_seed"] = int(part[4:])
+            seed_idx = i
+            break
+    
+    # Handle special case: drainage_area
+    if len(parts) > 3 and parts[2] == "drainage" and parts[3] == "area":
+        params["distribution"] = "drainage_area"
+        return params
+    
+    # Standard distribution
+    params["distribution"] = parts[2]
+    
+    # Handle relationship and curvature variants
+    if params["distribution"] in ("elevation", "curvature"):
+        idx = 3
+        # Look for relationship
+        if idx < len(parts) and parts[idx] in ("linear", "exponential"):
+            params["relationship"] = parts[idx]
+            idx += 1
+            
+            # For curvature with linear, check for std variants
+            if params["distribution"] == "curvature" and params["relationship"] == "linear":
+                if idx < len(parts) and parts[idx] == "std":
+                    idx += 1  # Move past "std"
+                    if idx < len(parts) and parts[idx] in ("global", "local"):
+                        params["curvature_variant"] = f"std_{parts[idx]}"
+    
+    return params
+
+def make_key(params):
+    """
+    Create a tuple key from params.
+    Now includes curvature_variant as 5th element.
+    Structure: (cohesion, distribution, relationship, curvature_variant, seed)
+    """
+    return (
+        params["cohesion_eff"],
+        params["distribution"],
+        params["relationship"],      # can be None
+        params["curvature_variant"], # can be None
+        params["random_seed"],       # can be None
+    )
+
+def load_all_runs_new(folder_path: str) -> Dict[tuple, Any]:
+    """
+    Load all pickle files in a folder and store them in a dictionary.
+    Keys: parameter tuples with values in FILENAME_PARAMS order
+    Values: run data
+    
+    ANALYSIS FUNCTION - main entry point for loading saved runs
+    """
+    runs_dict = {}
+    run_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
+    
+    print("Loading pickle files:")
+    print("=" * 60)
+    
+    for file_name in run_files:
+        file_path = os.path.join(folder_path, file_name)
+        
+        try:
+            with open(file_path, "rb") as f:
+                run_data = pickle.load(f)
+            
+            params = parse_pickle_name(file_name)
+            key = make_key(params)
+            runs_dict[key] = run_data
+            
+            print(f"File: {file_name}")
+            print(f"  Parsed params: {params}")
+            print(f"  Key: {key}")
+            print()
+        except Exception as e:
+            print(f"Error loading {file_name}: {e}")
+            print()
+    
+    return runs_dict
+
+def load_all_runs(folder_path):
+    """
+    Load all pickle files in a folder and store them in a dictionary.
+    Keys: parameter tuples (cohesion, distribution, relationship, curvature_variant, seed)
+    Values: run data
+    """
+    runs_dict = {}
+    run_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
+    
+    print("Loading pickle files:")
+    print("=" * 60)
+    
+    for file_name in run_files:
+        file_path = os.path.join(folder_path, file_name)
+        with open(file_path, "rb") as f:
+            run_data = pickle.load(f)
+        
+        params = parse_pickle_name(file_name)
+        key = make_key(params)
+        runs_dict[key] = run_data
+        
+        print(f"File: {file_name}")
+        print(f"  Parsed params: {params}")
+        print(f"  Key: {key}")
+        print()
+    
+    return runs_dict
+
+def filter_runs(runs_dict: Dict[tuple, Any], **filters) -> Dict[tuple, Any]:
+    """
+    Filter runs by parameter values.
+    
+    ANALYSIS FUNCTION - helper for selecting specific runs
+    
+    Example:
+        filter_runs(runs_dict, cohesion_eff=5, distribution="elevation")
+    """
+    filtered = {}
+    
+    for key, data in runs_dict.items():
+        params = dict(zip(FILENAME_PARAMS, key))
+        
+        # Check if all filter conditions match
+        if all(params.get(k) == v for k, v in filters.items()):
+            filtered[key] = data
+    
+    return filtered

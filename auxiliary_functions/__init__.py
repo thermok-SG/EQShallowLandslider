@@ -4,11 +4,18 @@ Auxiliary functions for the ShallowLandslider component
 author: sghoshal
 """
 
-from .io import get_config
+from .io import (
+    get_config, pickle_or_not_to_pickle,
+    load_all_runs,
+    
+    FILENAME_PARAMS,
+    OPTIONAL_PARAMS,
+    PARAM_ABBREVIATIONS
+    )
 
 from .terrain import (
     get_topo, smooth_elevation_grid,
-    apply_soil_depth, 
+    apply_soil_depth, compare_soil_relationships
     )
 
 from .newmark import (
@@ -46,3 +53,13 @@ from .stats import (
     fit_bivariate_kde, plot_bivariate_kde,
     conditional_sample, plot_conditional_samples
     )
+
+from .topographic_functions import (
+    # Plot polar rose diagram
+    # plot_aspect_roses, 
+    plot_aspect,
+    # Analyse topography
+    calculate_terrain_attribute,
+    # Excess topography
+    calculate_excess_topography
+)

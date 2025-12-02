@@ -172,13 +172,13 @@ def generate_acceleration_grid(grid, horizontal_max, vertical_max,
         plt.figure(layout='constrained')
         plt.subplot(1,2,1)
         imshowhs_grid(grid, "topographic__elevation",
-                      plot_type='Drape1', drape1=horizontal_accel,
-                      cmap='Reds', allow_colorbar=True, ticks_km=True)
+                    plot_type='Drape1', drape1=horizontal_accel,
+                    cmap='Reds', allow_colorbar=True, ticks_km=True)
         
         plt.subplot(1,2,2)
         imshowhs_grid(grid, "topographic__elevation",
-                      plot_type='Drape1', drape1=vertical_accel,
-                      cmap='Reds', allow_colorbar=True, ticks_km=True)
+                    plot_type='Drape1', drape1=vertical_accel,
+                    cmap='Reds', allow_colorbar=True, ticks_km=True)
         
         plt.suptitle('Earthquake PGA (in multiples of g)')
         plt.show()
@@ -188,7 +188,7 @@ def generate_acceleration_grid(grid, horizontal_max, vertical_max,
 
 # %% Trace landslide paths
 def trace_paths_landslides(grid, starting_nodes, newmark_distances,
-                           check_sum=False, print_path_details=False):
+                            check_sum=False, print_path_details=False):
     """
     Calculates all downslope paths taken from a set of starting nodes constrained 
     by the newmark distance of each node and assigns proportions for each path
@@ -223,7 +223,7 @@ def trace_paths_landslides(grid, starting_nodes, newmark_distances,
         proportion_not_zero: dict
             Dictionary listing each path where the final proportions do not 
             add up to one
-
+    
     """
     receiver_nodes = grid.at_node['hill_flow__receiver_node']
     receiver_proportions = grid.at_node['hill_flow__receiver_proportions']
