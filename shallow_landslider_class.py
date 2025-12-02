@@ -20,6 +20,9 @@ from auxiliary_functions import (
     get_topo,
     smooth_elevation_grid,
     apply_soil_depth,
+    FILENAME_PARAMS,
+    OPTIONAL_PARAMS,
+    PARAM_ABBREVIATIONS,
     # Functions for Newmark acceleration and displacement
     critical_transient_acceleration,
     calculate_newmark_displacement,
@@ -150,7 +153,10 @@ class ShallowLandslideSimulator:
         """
         # Plot DEM
         if self.config["dem_info"]["plot_dem"]:
-            self.plot_intermediate_maps(save_path=self.config["output"]["output_dir"])
+            self.plot_intermediate_maps(
+                save_int_figs=self.config["output"]["save_plots"],
+                save_path=self.config["output"]["output_dir"],
+            )
 
             # Initialize and run flow router
         pf = PriorityFloodFlowRouter(
@@ -173,6 +179,9 @@ class ShallowLandslideSimulator:
 
         # Add soil depth field if it doesn't exist
         if "soil__depth" not in self.grid.at_node:
+            self.soil_depth = self.grid.add_zeros(
+                "soil__depth",
+                at="node")
             self.soil_depth = apply_soil_depth(
                 self.grid,
                 max_soil_depth=self.config["soil_params"]["max_soil_depth"],
@@ -923,7 +932,12 @@ class ShallowLandslideSimulator:
         }
 
     def plot_intermediate_maps(
-        self, drape_variable=None, drape_variable_name=None, cmap="jet", save_path=None
+        self,
+        drape_variable=None,
+        drape_variable_name=None,
+        cmap="jet",
+        save_int_figs=False,
+        save_path=None,
     ):
         plt.figure()
 
@@ -948,10 +962,91 @@ class ShallowLandslideSimulator:
             )
             plt.suptitle(f"{drape_variable_name}")
 
-        if save_path:
+        if save_int_figs:
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
         plt.show()
+
+    def save_run_new(self, file_name=None, overwrite=True):
+        """
+        Save simulation run data to pickle file.
+
+        CLASS METHOD - calls _make_pickle_name() if no filename provided
+
+        Args:
+            file_name: Optional custom filename. If None, uses _make_pickle_name()
+            overwrite: If False, raises error if file exists
+        """
+        if file_name is None:
+            file_name = self._make_pickle_name()
+
+        if not file_name.endswith(".pkl"):
+            file_name += ".pkl"
+
+        # Check if output directory exists and create if needed
+        output_dir = self.config["output"]["output_dir"]
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Created output directory: {output_dir}")
+
+        # Construct full path to file in output directory
+        full_path = os.path.join(output_dir, file_name)
+
+        if os.path.exists(full_path) and not overwrite:
+            raise FileExistsError(f"{full_path} exists. Use overwrite=True to replace.")
+
+        grid_arrays = {
+            "n_rows": self.grid.number_of_node_rows,
+            "n_cols": self.grid.number_of_node_columns,
+            "dx": self.grid.dx,
+            "topographic_elevation": (
+                np.array(self.grid.at_node["topographic__elevation"], copy=True)
+                if "topographic__elevation" in self.grid.at_node
+                else None
+            ),
+            "soil_depth": (
+                np.array(self.grid.at_node["soil__depth"], copy=True)
+                if "soil__depth" in self.grid.at_node
+                else None
+            ),
+            "bedrock_elevation": (
+                np.array(self.grid.at_node["bedrock__elevation"], copy=True)
+                if "bedrock__elevation" in self.grid.at_node
+                else None
+            ),
+            "drainage_area": (
+                np.array(self.grid.at_node["drainage_area"], copy=True)
+                if "drainage_area" in self.grid.at_node
+                else None
+            ),
+        }
+
+        run_package = {
+            "config": self.config,
+            "grid_arrays": grid_arrays,
+            "subgroup_props": self.results["aspect_filtering"]["subgroup_props"],
+            "split_groups_props": self.results["aspect_filtering"]["dim_split_props"],
+            "selected_group_props": self.results["selected_landslides"]["group_props"],
+            "landslide_proportion": self.results["selected_landslides"]["proportion"],
+            "metadata": {
+                "saved_at": datetime.now().isoformat(),
+                "class": self.__class__.__name__,
+            },
+        }
+
+        for k, v in run_package["grid_arrays"].items():
+            if isinstance(v, np.ndarray):
+                print(f"{k}: ndarray {v.shape} {v.dtype}")
+            else:
+                print(f"{k}: {type(v)}")
+
+        print("Pickling...")
+
+        with open(full_path, "wb") as f:
+            pickle.dump(run_package, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        print(f"Run saved → {full_path}")
+        return full_path
 
     def save_run(self, file_name=None, overwrite=True):
         if file_name is None:
@@ -960,8 +1055,17 @@ class ShallowLandslideSimulator:
         if not file_name.endswith(".pkl"):
             file_name += ".pkl"
 
-        if os.path.exists(file_name) and not overwrite:
-            raise FileExistsError(f"{file_name} exists. Use overwrite=True to replace.")
+        # Check if output directory exists and create if needed
+        output_dir = self.config["output"]["output_dir"]
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Created output directory: {output_dir}")
+
+        # Construct full path to file in output directory
+        full_path = os.path.join(output_dir, file_name)
+
+        if os.path.exists(full_path) and not overwrite:
+            raise FileExistsError(f"{full_path} exists. Use overwrite=True to replace.")
 
         grid_arrays = {
             "n_rows": self.grid.number_of_node_rows,
@@ -1015,6 +1119,45 @@ class ShallowLandslideSimulator:
             pickle.dump(run_package, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         print(f"Run saved → {file_name}")
+
+    def _make_pickle_name_new(self):
+        """
+        Construct a deterministic pickle filename using key=value format.
+        Example: dem=synthetic_c=5_dist=elevation_rel=linear_seed=42.pkl
+
+        CLASS METHOD - called by save_run() when file_name=None
+
+        Returns:
+            str: Just the filename (not full path), e.g. "dem=synthetic_c=5.pkl"
+                 save_run() will join this with output_dir
+        """
+        # Extract relevant parameters from config
+        params = {
+            "dem_type": self.config["dem_info"]["dem_type"],
+            "cohesion_eff": int(self.config["soil_params"]["cohesion_eff"]),
+            "distribution": self.config["soil_params"]["distribution"],
+            "relationship": self.config["soil_params"].get("relationship"),
+            "curvature_variant": self.config["soil_params"].get("curvature_variant"),
+            "random_seed": self.config["simulation"].get("random_seed"),
+        }
+
+        # Build filename parts
+        parts = []
+        for param_name in FILENAME_PARAMS:
+            value = params.get(param_name)
+
+            # Skip optional parameters that are None or empty
+            if param_name in OPTIONAL_PARAMS and (value is None or value == ""):
+                continue
+
+            # Create abbreviated key for readability
+            key = PARAM_ABBREVIATIONS.get(param_name, param_name)
+            parts.append(f"{key}={value}")
+
+        file_name = "_".join(parts) + ".pkl"
+
+        # Return just the filename - save_run() will handle the full path
+        return file_name
 
     def _make_pickle_name(self):
         """

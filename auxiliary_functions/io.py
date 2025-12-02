@@ -311,6 +311,38 @@ def validate_config(config: Dict[str, Any]) -> bool:
 # LSshapefile_name = 'C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp'
 # LSshapefile_file = gpd.read_file(LSshapefile_name)
 
+# Parameters included in filenames
+FILENAME_PARAMS = [
+    "dem_type",
+    "cohesion_eff",
+    "angle_int_frict",
+    "distribution",
+    "relationship",
+    "curvature_variant",
+    "random_seed",
+]
+
+# Define which parameters should only be included if they're not None/empty
+OPTIONAL_PARAMS = {
+    "relationship",
+    "curvature_variant", 
+    "random_seed",
+}
+
+# Parameter abbreviations
+PARAM_ABBREVIATIONS = {
+    "dem_type": "dem",
+    "cohesion_eff": "c",
+    "distribution": "dist",
+    "relationship": "rel",
+    "curvature_variant": "curv",
+    "random_seed": "seed",
+    "angle_int_frict": "intfr"
+}
+
+# Reverse mapping for parsing
+REVERSE_ABBREVIATIONS = {v: k for k, v in PARAM_ABBREVIATIONS.items()}
+
 def pickle_or_not_to_pickle(file_name_dict, pickle_path="measured_data.pkl"):
     """
     Load processed data (DataFrames, shapefile, KDEs) from pickle if it exists.
@@ -369,6 +401,55 @@ def pickle_or_not_to_pickle(file_name_dict, pickle_path="measured_data.pkl"):
     print(f"Saved preprocessed data to {pickle_path}")
 
     return bundle
+
+def parse_pickle_name_new(file_name: str) -> Dict[str, Any]:
+    """
+    Parse key=value pickle filename back into parameter dict.
+    Handles any order and missing optional parameters gracefully.
+    
+    Example: 
+        "dem=synthetic_c=5_dist=elevation_rel=linear.pkl"
+        -> {"dem_type": "synthetic", "cohesion_eff": 5, ...}
+    
+    ANALYSIS FUNCTION - called by load_all_runs()
+    """
+    base = os.path.splitext(os.path.basename(file_name))[0]
+    parts = base.split("_")
+    
+    # Initialize with None for all parameters
+    params = {param: None for param in FILENAME_PARAMS}
+    
+    # Parse each key=value pair
+    for part in parts:
+        if "=" not in part:
+            print(f"Warning: Skipping malformed part '{part}' in {file_name}")
+            continue
+        
+        key, value = part.split("=", 1)
+        param_name = REVERSE_ABBREVIATIONS.get(key, key)
+        
+        if param_name not in params:
+            print(f"Warning: Unknown parameter '{param_name}' in {file_name}")
+            continue
+        
+        # Type conversion
+        if param_name == "cohesion_eff":
+            params[param_name] = int(value)
+        elif param_name == "random_seed" and value != "None":
+            params[param_name] = int(value)
+        else:
+            params[param_name] = value if value != "None" else None
+    
+    return params
+
+def make_key_new(params: Dict[str, Any]) -> tuple:
+    """
+    Create a tuple key from params dictionary.
+    Uses all defined filename parameters in order.
+    
+    ANALYSIS FUNCTION - called by load_all_runs()
+    """
+    return tuple(params.get(param) for param in FILENAME_PARAMS)
 
 def parse_pickle_name(file_name):
     """
@@ -441,6 +522,41 @@ def make_key(params):
         params["random_seed"],       # can be None
     )
 
+def load_all_runs_new(folder_path: str) -> Dict[tuple, Any]:
+    """
+    Load all pickle files in a folder and store them in a dictionary.
+    Keys: parameter tuples with values in FILENAME_PARAMS order
+    Values: run data
+    
+    ANALYSIS FUNCTION - main entry point for loading saved runs
+    """
+    runs_dict = {}
+    run_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
+    
+    print("Loading pickle files:")
+    print("=" * 60)
+    
+    for file_name in run_files:
+        file_path = os.path.join(folder_path, file_name)
+        
+        try:
+            with open(file_path, "rb") as f:
+                run_data = pickle.load(f)
+            
+            params = parse_pickle_name(file_name)
+            key = make_key(params)
+            runs_dict[key] = run_data
+            
+            print(f"File: {file_name}")
+            print(f"  Parsed params: {params}")
+            print(f"  Key: {key}")
+            print()
+        except Exception as e:
+            print(f"Error loading {file_name}: {e}")
+            print()
+    
+    return runs_dict
+
 def load_all_runs(folder_path):
     """
     Load all pickle files in a folder and store them in a dictionary.
@@ -468,3 +584,23 @@ def load_all_runs(folder_path):
         print()
     
     return runs_dict
+
+def filter_runs(runs_dict: Dict[tuple, Any], **filters) -> Dict[tuple, Any]:
+    """
+    Filter runs by parameter values.
+    
+    ANALYSIS FUNCTION - helper for selecting specific runs
+    
+    Example:
+        filter_runs(runs_dict, cohesion_eff=5, distribution="elevation")
+    """
+    filtered = {}
+    
+    for key, data in runs_dict.items():
+        params = dict(zip(FILENAME_PARAMS, key))
+        
+        # Check if all filter conditions match
+        if all(params.get(k) == v for k, v in filters.items()):
+            filtered[key] = data
+    
+    return filtered

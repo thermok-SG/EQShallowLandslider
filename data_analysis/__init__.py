@@ -11,7 +11,6 @@ from .stats import (
     
     # Stats
     compare_all_models,
-    create_all_models_comparison,
     create_performance_summary,
     plot_histograms_ecdfs_combined
 )
