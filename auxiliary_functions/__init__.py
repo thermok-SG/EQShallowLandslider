@@ -48,6 +48,7 @@ from .stats import (
     # Splits regions that are too wide compared to their length
     split_wide_regions,
     recursive_split_wide_regions, analyze_split_results,
+    calculate_region_dimensions,
     
     # Statistical fits
     fit_bivariate_kde, plot_bivariate_kde,

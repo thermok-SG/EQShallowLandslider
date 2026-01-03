@@ -13,7 +13,7 @@ import numpy as np
 from landlab import imshowhs_grid  # to plot results
 
 # %% Load measured data
-model_region = "west" # "west", "east", "south"
+model_region = "east" # "west", "east", "south"
 
 file_name_dict = {
     # Roback + Jones landslides - length/width

@@ -26,7 +26,7 @@ matplotlib.rcParams['pdf.fonttype'] = 42
 
 # %% Get measured data
 
-model_region = "west" # "west", "east", "south"
+model_region = "east" # "west", "east", "south"
 
 file_name_dict = {
     # Roback + Jones landslides - length/width
@@ -140,10 +140,10 @@ config_dict = {
         "submerged_soil_proportion": 0.5,
         "max_soil_depth": 1.5,  # m
         "plot_soil": True,
-        "distribution": "elevation",  # 'uniform', 'elevation', 'curvature', 'drainage_area'
+        "distribution": "curvature",  # 'uniform', 'elevation', 'curvature', 'drainage_area', 'mean_elev_curv'
         # for "distribution" == "elevation", "relationship" == "linear", "exponential", "power", "sigmoid"
         # for "distribution" == "curvature", "relationship" == "linear", "linear_std_local", "linear_std_global", "piecewise"
-        "relationship": "linear",  # only relevant for 'elevation' or 'curvature'
+        "relationship": "linear_std_local",  # only relevant for 'elevation' or 'curvature'
         "decay_rate": 1.0,
         "exponent": 2.0,
         # drainage_area-based params
