@@ -1,5 +1,21 @@
-% Incomplete
+# Core runtime dependencies
+landlab >= 2.7
 numpy >= 2.0
 pandas
 scipy
-seaborn
+scikit-image
+richdem
+
+# Plotting (optional but recommended for visualization)
+matplotlib>=3.7
+
+# Progress bars (optional; used only when verbose with bars enabled)
+# tqdm
+
+# Geospatial I/O (optional; needed if you build measured-data pickles from shapefiles)
+# geopandas
+# pyproj
+# shapely
+
+# OpenTopography / topo utilities (optional; if you fetch DEMs programmatically)
+# bmi-topography

@@ -25,12 +25,135 @@ from helper_functions import (
 
 
 class ShallowLandslider(Component):
-    """Predict shallow landslide initiation & selection on a Landlab grid.
+    r"""
+    Predict shallow landslide initiation & selection on a Landlab grid.
 
-    Supports aspect filtering and recursive width-based splitting using measured-data KDEs, then selects potential landslides (probabilistic or PGA-weighted).
-    Optional Newmark displacement, soil update hooks provided.
+    This component calculates node-wise static stability metrics, identifies
+    contiguous unstable regions, optionally splits them by aspect and measured
+    dimensions (via KDE), selects potential landslides by either a probabilistic
+    or PGA-weighted method, and (optionally) computes Newmark displacement.
+    It also exposes a per-group properties table.
 
-    Also exposes a group properties DataFrame with geometric and topographic metrics for the final subgroup labels, and a CSV export helper.
+    Parameters
+    ----------
+    grid : landlab.ModelGrid
+        A Landlab grid (typically a RasterModelGrid) with required fields.
+    cohesion_eff : float
+        Effective cohesion (Pa). May be a scalar or array.
+    angle_int_frict : float
+        Angle of internal friction **in degrees**; converted internally to radians.
+    submerged_soil_proportion : float, optional
+        Proportion of soil submerged (0–1). Default is 0.0.
+    pga_h, pga_v : float or array-like, optional
+        Horizontal/vertical PGA in multiples of *g* (if not supplied, fallback
+        values are written to grid core nodes).
+    pga_h_max, pga_v_max : float, optional
+        Fallback PGA values in multiples of *g* to populate core nodes.
+    aspect_interval : int, optional
+        Degrees per aspect zone for subgrouping (default: 20).
+    selection_method : {"probabilistic", "pga_weighted"}, optional
+        Landslide selection strategy (default: "probabilistic").
+    proportion_method : str, optional
+        Method for deriving proportions in probabilistic selection (default: "conservative").
+    random_seed : int, optional
+        Seed to ensure reproducible selections where randomness is involved.
+    time_shaking : float, optional
+        Duration (seconds) used by Newmark displacement when `compute_displacement=True`.
+    compute_displacement : bool, optional
+        If True, compute Newmark displacement on selected labels (default: False).
+    displacement_threshold : float, optional
+        Threshold (meters) to identify "high displacement" nodes (default: 0.0).
+    update_soil : bool, optional
+        If True and no soil field exists, add a default `soil__depth` field (default: False).
+    g : float, optional
+        Gravitational acceleration. Default: 9.81 m s^-2.
+    split_by_width_config : dict, optional
+        Configuration for recursive KDE-based splitting. Keys may include:
+        `{"kde_data", "kde_transform", "width_threshold", "max_iterations",
+          "min_region_size", "convergence_threshold"}`.
+    verbose : bool, optional
+        Print additional progress information.
+
+    Notes
+    -----
+    **Grid fields written**
+    (node-centered; names follow Landlab conventions):
+
+    - ``landslide__factor_of_safety``
+    - ``landslide__critical_acceleration``
+    - ``landslide__driving_minus_critical_acceleration``
+    - ``landslide__unstable_mask`` (bool)
+    - ``landslide__region_labels`` (int)
+    - ``landslide__aspect_subgroup_labels`` (int)
+    - ``landslide__dimension_split_labels`` (int; present only if splitting is configured)
+    - ``landslide__selected_labels`` (int)
+    - ``landslide__newmark_displacement`` (float; present only if `compute_displacement=True`)
+
+    The ``results`` property returns a dict with cached arrays and a per-group
+    properties DataFrame (if computed).
+
+    Examples
+    --------
+    Basic usage on a tiny grid (doctest):
+
+    >>> import numpy as np
+    >>> from landlab import RasterModelGrid
+    >>> from helper_functions import generate_acceleration_grid
+    >>> from shallow_landslide_component import ShallowLandslider
+    >>> mg = RasterModelGrid((5, 5), xy_spacing=10.0)
+    >>> z = mg.add_zeros("topographic__elevation", at="node")
+    >>> # Create a gentle gradient so slopes are non-zero
+    >>> z[:] = np.linspace(0, mg.number_of_nodes - 1, mg.number_of_nodes)
+    >>> # Provide soil depth if you intend to update or compute stability with soil terms
+    >>> h = mg.add_zeros("soil__depth", at="node"); h[:] = 1.0
+    >>> # Provide horizontal/vertical PGA (multiples of g) or let component create fallbacks
+    >>> pga_h, pga_v = generate_acceleration_grid(mg, horizontal_max=0.2, vertical_max=0.1,
+    ...                                           distribution="uniform")
+    >>> comp = ShallowLandslider(
+    ...     mg,
+    ...     cohesion_eff=500.0,              # Pa
+    ...     angle_int_frict=30.0,            # degrees
+    ...     pga_h=pga_h, pga_v=pga_v,        # multiples of g
+    ...     selection_method="probabilistic",
+    ...     compute_displacement=False,
+    ...     aspect_interval=45,
+    ...     random_seed=42,
+    ... )
+    >>> comp.run_one_step()
+    >>> # The component writes several node fields; check a few are present:
+    >>> set(("landslide__factor_of_safety",
+    ...      "landslide__critical_acceleration",
+    ...      "landslide__unstable_mask")).issubset(mg.at_node.keys())
+    True
+    >>> # Region labels should be integer valued at nodes:
+    >>> labels = mg.at_node["landslide__region_labels"]
+    >>> labels.dtype == np.int64 or labels.dtype == np.int32
+    True
+    >>> # The results dictionary contains cached arrays:
+    >>> isinstance(comp.results, dict) and "unstable_mask" in comp.results
+    True
+
+    Example with Newmark displacement (doctest):
+
+    >>> comp2 = ShallowLandslider(
+    ...     mg,
+    ...     cohesion_eff=500.0,
+    ...     angle_int_frict=30.0,
+    ...     pga_h=pga_h, pga_v=pga_v,
+    ...     selection_method="probabilistic",
+    ...     compute_displacement=True,
+    ...     time_shaking=2.0,                 # seconds
+    ...     displacement_threshold=0.0,
+    ...     random_seed=123,
+    ... )
+    >>> comp2.run_one_step()
+    >>> "landslide__newmark_displacement" in mg.at_node
+    True
+    >>> disp = mg.at_node["landslide__newmark_displacement"]
+    >>> # Displacement must be non-negative (zero where not selected)
+    >>> np.nanmin(disp) >= 0
+    True
+
     """
 
     _name = "ShallowLandslider"
@@ -173,7 +296,7 @@ class ShallowLandslider(Component):
         grid,
         cohesion_eff: float,
         angle_int_frict: float,
-        submerged_soil_proportion: float = 0.0,
+        submerged_soil_proportion: float = 0.5,
         pga_h: Optional[np.ndarray | float] = None,
         pga_v: Optional[np.ndarray | float] = None,
         pga_h_max: float = 0.3,

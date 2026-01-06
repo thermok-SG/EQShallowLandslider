@@ -693,7 +693,6 @@ def _calculate_landslide_proportion(
 
 # %% "pga_weighted" path
 
-
 def generate_landslide_proportion_from_pga(
     grid,
     h_pga,
@@ -705,41 +704,36 @@ def generate_landslide_proportion_from_pga(
     random_seed=None,
     verbose: bool = False,
 ):
-    """
-    Generates landslide probability using both horizontal and vertical PGA components.
+    # --- reshape PGA to grid ---
+    h_pga_array = np.asarray(h_pga).reshape(grid.shape)
+    v_pga_array = np.asarray(v_pga).reshape(grid.shape)
 
-    Parameters
-    ----------
-    h_pga_array : array
-        Array containing horizontal PGA values in g.
-    v_pga_array : array
-        Array containing vertical PGA values in g.
-    labeled_array : array
-        Array of labeled regions (unstable areas).
-    weight_array : array, optional
-        Array containing weights for group selection. Values closer to zero
-        correspond to higher selection probabilities.
-    slope_array : array, optional
-        Array containing slope angles in degrees.
-    soil_condition_array : array, optional
-        Array containing soil susceptibility factors (0-1).
-    random_seed : int, optional
-        Seed for random number generator.
+    # --- optional arrays: accept 1-D (n_nodes) or 2-D (grid.shape) ---
+    weight_grid = None
+    if weight_array is not None:
+        weight_arr = np.asarray(weight_array)
+        if weight_arr.ndim == 1:
+            if weight_arr.size != grid.number_of_nodes:
+                raise ValueError(
+                    f"weight_array length {weight_arr.size} != number_of_nodes {grid.number_of_nodes}"
+                )
+            weight_grid = weight_arr.reshape(grid.shape)
+        elif weight_arr.shape == grid.shape:
+            weight_grid = weight_arr
+        else:
+            raise ValueError("weight_array must be 1-D (n_nodes) or 2-D grid.shape")
 
-    Returns
-    -------
-    probability_array : array
-        Array containing probability of failure for each labeled group.
-    proportion : float
-        Overall proportion of unstable areas predicted to fail.
-    metadata : dict
-        Dictionary containing additional information about the calculations.
-    """
+    slope_grid = None
+    if slope_array is not None:
+        slope_arr = np.asarray(slope_array)
+        slope_grid = slope_arr.reshape(grid.shape) if slope_arr.ndim == 1 else slope_arr
 
-    h_pga_array = h_pga.reshape(grid.shape)
-    v_pga_array = v_pga.reshape(grid.shape)
+    soil_grid = None
+    if soil_condition_array is not None:
+        soil_arr = np.asarray(soil_condition_array)
+        soil_grid = soil_arr.reshape(grid.shape) if soil_arr.ndim == 1 else soil_arr
 
-    # Uses a value for the random seed for reproducibility
+    # --- seed for reproducibility (optional) ---
     if random_seed is not None:
         np.random.seed(random_seed)
         if verbose:
@@ -748,84 +742,85 @@ def generate_landslide_proportion_from_pga(
     unique_labels = np.unique(labeled_array)
     unique_labels = unique_labels[unique_labels != 0]
 
-    group_probabilities = []
     probability_array = np.zeros_like(labeled_array, dtype=np.float32)
-
-    # Store metadata for analysis
+    group_probabilities = []
     metadata = {
         "group_data": [],
-        "mean_h_pga": np.mean(h_pga_array),
-        "mean_v_pga": np.mean(v_pga_array),
-        "num_groups": len(unique_labels),
+        "mean_h_pga": float(np.nanmean(h_pga_array)),
+        "mean_v_pga": float(np.nanmean(v_pga_array)),
+        "num_groups": int(len(unique_labels)),
     }
+
+    # Early exit if no groups
+    if len(unique_labels) == 0:
+        return probability_array, 0.0, metadata
 
     for label_name in unique_labels:
         mask = labeled_array == label_name
 
-        # Get PGA values for this group
+        # group PGA values (may include NaNs at boundaries)
         group_h_pga = h_pga_array[mask]
         group_v_pga = v_pga_array[mask]
 
-        # Calculate mean PGA values
-        mean_h_pga = np.mean(group_h_pga)
-        mean_v_pga = np.mean(group_v_pga)
+        # --- nan-safe means; guard all-NaN case ---
+        mean_h_pga = np.nanmean(group_h_pga)
+        mean_v_pga = np.nanmean(group_v_pga)
+        if np.isnan(mean_h_pga):
+            mean_h_pga = 0.0
+        if np.isnan(mean_v_pga):
+            mean_v_pga = 0.0
 
-        # Calculate vector resultant PGA
-        resultant_pga = np.sqrt(mean_h_pga**2 + mean_v_pga**2)
+        # resultant and V/H ratio
+        resultant_pga = float(np.sqrt(mean_h_pga**2 + mean_v_pga**2))
+        vh_ratio = float(mean_v_pga / mean_h_pga) if mean_h_pga > 0 else 0.0
 
-        # Calculate V/H ratio
-        vh_ratio = mean_v_pga / mean_h_pga if mean_h_pga > 0 else 0
-
-        # Base probability calculation considering both components
-        h_prob = _calculate_prob_from_h_pga(mean_h_pga)
-        r_prob = _calculate_prob_from_resultant(resultant_pga, vh_ratio)
+        # base probability from h-only and resultant
+        h_prob = float(_calculate_prob_from_h_pga(mean_h_pga))
+        r_prob = float(_calculate_prob_from_resultant(resultant_pga, vh_ratio))
         base_prob = 0.7 * h_prob + 0.3 * r_prob
 
-        # Apply slope factor if available
+        # --- define factors with defaults so they exist even if inputs are None ---
         slope_factor = 1.0
-        if slope_array is not None:
-            group_slope = slope_array[mask]
-            mean_slope = np.mean(group_slope)
-            slope_factor = _calculate_slope_factor(mean_slope)
+        soil_factor = 1.0
+        weight_factor = 1.0
+
+        if slope_grid is not None:
+            group_slope = slope_grid[mask]
+            mean_slope = float(np.nanmean(group_slope))
+            slope_factor = float(_calculate_slope_factor(mean_slope))
             base_prob *= slope_factor
 
-        # Apply soil conditions if available
-        soil_factor = 1.0
-        if soil_condition_array is not None:
-            group_soil = soil_condition_array[mask]
-            mean_soil = np.mean(group_soil)
-            soil_factor = 0.5 + 0.5 * mean_soil
+        if soil_grid is not None:
+            group_soil = soil_grid[mask]
+            mean_soil = float(np.nanmean(group_soil))
+            soil_factor = float(0.5 + 0.5 * mean_soil)
             base_prob *= soil_factor
 
-        # Apply weight factor (from critical acceleration)
-        if weight_array is not None:
-            group_weight = np.mean(weight_array[mask])
+        if weight_grid is not None:
+            group_weight = float(np.nanmean(weight_grid[mask]))
             epsilon = 1e-10
-            weight_factor = 1.0 / (group_weight + epsilon)
+            weight_factor = float(1.0 / (group_weight + epsilon))
             base_prob *= weight_factor
 
-        # Add stochastic component
-        stochastic_factor = np.random.lognormal(mean=0, sigma=0.3)
-        group_prob = base_prob * stochastic_factor
+        # stochastic variability
+        stochastic_factor = float(np.random.lognormal(mean=0, sigma=0.3))
+        group_prob = float(np.clip(base_prob * stochastic_factor, 0.0, 1.0))
 
-        # Ensure probability is between 0 and 1
-        group_prob = np.clip(group_prob, 0.0, 1.0)
-
-        # Store group probability
-        group_probabilities.append(group_prob)
+        # write per-node probability for this group
         probability_array[mask] = group_prob
+        group_probabilities.append(group_prob)
 
-        # Store metadata for this group
+        # metadata for this group (factors always present)
         metadata["group_data"].append(
             {
-                "label": label_name,
+                "label": int(label_name),
                 "mean_h_pga": mean_h_pga,
                 "mean_v_pga": mean_v_pga,
                 "resultant_pga": resultant_pga,
                 "vh_ratio": vh_ratio,
                 "h_prob": h_prob,
                 "r_prob": r_prob,
-                "base_prob": base_prob,
+                "base_prob": float(base_prob),
                 "slope_factor": slope_factor,
                 "soil_factor": soil_factor,
                 "weight_factor": weight_factor,
@@ -833,65 +828,59 @@ def generate_landslide_proportion_from_pga(
             }
         )
 
-    proportion = np.mean(group_probabilities)
+    # global proportion = mean of group probs
+    proportion = float(np.mean(group_probabilities))
     metadata["overall_proportion"] = proportion
 
     return probability_array, proportion, metadata
 
 
+
 # %%% Region selection using probabilities
+
 def select_groups_by_proportion_weighted(
-    labeled_array, probability_array, proportion=None
+    labeled_array,
+    probability_array,
+    proportion=None,
 ):
     """
-    Selects a specified proportion of groups from the labeled array using probabilities.
-
-    Parameters
-    ----------
-    labeled_array : array of int32
-        Array of labeled regions.
-    probability_array : array of same shape as labeled_array
-        Array containing probability values for each group.
-    proportion : float, optional
-        Proportion of groups to select (between 0 and 1). If None, uses probabilities
-        directly.
-
-    Returns
-    -------
-    selected_groups : array of int32
-        Array with only the selected groups.
-    selected_labels : list of int
-        List of selected group labels.
+    Selects a specified proportion of groups based on group-level probabilities.
+    Robust to NaNs or zero-sum probability vectors by falling back to uniform selection.
     """
     unique_labels = np.unique(labeled_array)
     unique_labels = unique_labels[unique_labels != 0]
     num_groups = len(unique_labels)
 
+    if num_groups == 0:
+        return np.zeros_like(labeled_array), []
+
+    # How many groups to select
     if proportion is not None:
         num_to_select = int(np.ceil(proportion * num_groups))
+        num_to_select = max(1, min(num_to_select, num_groups))
     else:
-        num_to_select = num_groups  # Will use probabilities to determine selection
+        num_to_select = num_groups  # select all by probability
 
-    # Get probabilities for each group
-    group_probs = []
-    for label_name in unique_labels:
-        mask = labeled_array == label_name
-        group_prob = np.mean(probability_array[mask])
-        group_probs.append(group_prob)
-
-    group_probs = np.array(group_probs)
-
-    # Normalize probabilities
-    group_probs = group_probs / np.sum(group_probs)
-
-    # Select groups based on probability array
-    selected_labels = np.random.choice(
-        unique_labels, num_to_select, replace=False, p=group_probs
+    # Per-group mean probability (nan-safe)
+    group_probs = np.array(
+        [float(np.nanmean(probability_array[labeled_array == lab])) for lab in unique_labels],
+        dtype=float,
     )
 
-    selected_groups = np.isin(labeled_array, selected_labels) * labeled_array
+    # Clean and normalize
+    group_probs = np.nan_to_num(group_probs, nan=0.0, posinf=0.0, neginf=0.0)
+    total = group_probs.sum()
 
-    return selected_groups, selected_labels
+    if total <= 0.0:
+        # Fallback: uniform probabilities if all zeros/NaNs
+        p = np.ones(num_groups, dtype=float) / num_groups
+    else:
+        p = group_probs / total
+
+    selected_labels = np.random.choice(unique_labels, num_to_select, replace=False, p=p)
+    selected_groups = np.isin(labeled_array, selected_labels) * labeled_array
+    return selected_groups, selected_labels.tolist()
+
 
 
 # %%% Helper functions for "pga_weighted" path

@@ -295,3 +295,36 @@ imshowhs_grid(
 # %%
 imshowhs_grid(mg, "topographic__elevation", plot_type="DEM")
 # %%
+props_filtered = props.loc[props["selected"]]
+# %%
+import seaborn as sns
+count, bins_Roback = np.histogram(
+    np.log10(measured_spatial_stats_clipped["Area_m2"]), 20
+)
+fig_mag_freq, ax_mag_freq = plt.subplots(layout="constrained")
+sns.histplot(
+    data=props_filtered,
+    x="area",
+    label=f"Model - Selected areas ({len(props_filtered)})",
+    legend=True,
+    ax=ax_mag_freq,
+    bins=bins_Roback,
+    log_scale=True,
+    stat="density",
+)
+
+sns.histplot(
+    data=measured_spatial_stats_clipped,
+    x="Area_m2",
+    label=f"Roback et al.; ({len(measured_spatial_stats_clipped)})",
+    legend=True,
+    ax=ax_mag_freq,
+    log_scale=True,
+    bins=bins_Roback,
+    stat="density",
+)
+
+# ax_mag_freq.set_xscale("log")
+ax_mag_freq.legend()
+ax_mag_freq.set_xlabel("Area")
+# %%
