@@ -3,8 +3,8 @@ from typing import Optional, Dict, Any
 import numpy as np
 from landlab.core.model_component import Component
 
-# Integrations from provided auxiliary modules
-from auxiliary_functions import (
+# Integrations from provided helper modules
+from helper_functions import (
     # Landslide selection
     generate_landslide_probability,
     probabilistic_group_selection,
@@ -15,7 +15,7 @@ from auxiliary_functions import (
     # Regions
     calculate_regions,
     split_groups_by_aspect,
-    create_zones,
+    _create_zones,
     calculate_region_properties,
     # Newmark
     factor_of_safety,
@@ -27,13 +27,10 @@ from auxiliary_functions import (
 class ShallowLandslider(Component):
     """Predict shallow landslide initiation & selection on a Landlab grid.
 
-    Supports aspect filtering and **recursive width-based splitting** using
-    measured-data KDEs, then selects potential landslides (probabilistic or
-    PGA-weighted). Optional Newmark displacement, soil update hooks provided.
+    Supports aspect filtering and recursive width-based splitting using measured-data KDEs, then selects potential landslides (probabilistic or PGA-weighted).
+    Optional Newmark displacement, soil update hooks provided.
 
-    Also exposes a **group properties table** (pandas.DataFrame) with geometric
-    and topographic metrics for the final subgroup labels, and a CSV export
-    helper.
+    Also exposes a group properties DataFrame with geometric and topographic metrics for the final subgroup labels, and a CSV export helper.
     """
 
     _name = "ShallowLandslider"
@@ -191,10 +188,11 @@ class ShallowLandslider(Component):
         update_soil: bool = False,
         g: float = 9.81,
         split_by_width_config: Optional[dict] = None,
+        verbose: bool = False,
     ):
         super().__init__(grid)
         self.cohesion_eff = float(cohesion_eff)
-        self.angle_int_frict = float(angle_int_frict)
+        self.angle_int_frict = float(np.radians(angle_int_frict))
         self.submerged_soil_proportion = float(submerged_soil_proportion)
         self.aspect_interval = int(aspect_interval)
         self.selection_method = str(selection_method)
@@ -206,6 +204,7 @@ class ShallowLandslider(Component):
         self.update_soil = bool(update_soil)
         self.g = float(g)
         self.split_by_width_config = split_by_width_config
+        self.verbose = verbose
 
         # Internals
         self._fos = None
@@ -333,12 +332,13 @@ class ShallowLandslider(Component):
         self.grid.at_node["landslide__region_labels"] = self._labels
 
     def _filter_by_aspect_and_split(self):
-        zones = create_zones(interval=self.aspect_interval)
+        zones = _create_zones(interval=self.aspect_interval)
         aspect_grid = self._aspect.reshape(self.grid.shape)
         aspect_subgroups, aspect_zones, info = split_groups_by_aspect(
             groups=self._labels.reshape(self.grid.shape),
             aspect_array=aspect_grid,
             zones=zones,
+            verbose=self.verbose,
         )
         self._aspect_labels = aspect_subgroups.reshape(self.grid.number_of_nodes)
         self.grid.at_node["landslide__aspect_subgroup_labels"] = self._aspect_labels
@@ -352,7 +352,6 @@ class ShallowLandslider(Component):
             max_iterations = cfg.get("max_iterations", 10)
             min_region_size = cfg.get("min_region_size", 10)
             convergence_threshold = cfg.get("convergence_threshold", 0.75)
-            verbose = cfg.get("verbose", True)
             split_labels, split_info = recursive_split_wide_regions(
                 grid=self.grid,
                 labeled_array=self._aspect_labels.reshape(self.grid.shape),
@@ -366,7 +365,7 @@ class ShallowLandslider(Component):
                 max_iterations=max_iterations,
                 min_region_size=min_region_size,
                 convergence_threshold=convergence_threshold,
-                verbose=verbose,
+                verbose=self.verbose,
             )
             self._split_labels = split_labels.reshape(self.grid.number_of_nodes)
             self.grid.at_node["landslide__dimension_split_labels"] = self._split_labels
@@ -441,6 +440,7 @@ class ShallowLandslider(Component):
                 v_pga=self._pga_v,
                 labeled_array=subgroup_array.reshape(self.grid.shape),  # 2-D
                 weight_array=self._a_transient.reshape(self.grid.shape),
+                random_seed=self.random_seed,
             )
 
             groups, labels = select_groups_by_proportion_weighted(

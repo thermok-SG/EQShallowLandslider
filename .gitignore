@@ -2,3 +2,7 @@
 __pycache__/
 auxiliary_functions/__pycache__/
 *.pyc
+*.pkl
+*.pdf
+*.asc
+*.tif

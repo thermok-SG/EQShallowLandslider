@@ -3,15 +3,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from shallow_landslide_component import ShallowLandslider
 
-from auxiliary_functions import (
+from helper_functions import (
     get_topo,
     apply_soil_depth,
-    fit_bivariate_kde,
     pickle_or_not_to_pickle,
     calculate_terrain_attribute,
     generate_acceleration_grid,
 )
-from landlab import RasterModelGrid
+
 from landlab.components import PriorityFloodFlowRouter
 from landlab import imshowhs_grid  # to plot results
 
@@ -24,12 +23,6 @@ file_name_dict = {
     "file1": "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/measuredLandslides_all.csv",
     # All landslides
     "file2": "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_spatialStats.csv",
-    # Clipped landslides
-    # "file3": "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_east_spatialStats.csv",
-    # "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_ZonalStats_clipbuffer.csv",
-    # "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_south_spatialStats.csv",
-    # "C:/Users/sghoshal/Documents/ArcGIS/Projects/Landslides_Nepal_Main/Roback2017_east_spatialStats.csv"
-    "shapefile_name": "C:/Users/sghoshal/Documents/ArcGIS/Projects/landslides_Nepal/landslide_Nepal_Roback.shp",
 }
 region_configs = {
     "south": {
@@ -80,6 +73,7 @@ config_dict = {
         "buffer": 0.01,
         "smooth_num": 4,
         "plot_dem": False,
+        "api_key": "f08b2664772eb044626d5cb114924de1",
     },
     "flow_params": {
         "flow_metric": "D8",
@@ -89,7 +83,7 @@ config_dict = {
         "accumulate_flow": True,
     },
     "soil_params": {
-        "angle_int_frict": np.radians(30),
+        "angle_int_frict": 30,  # degrees
         "cohesion_eff": 20e3,  # Pa
         "submerged_soil_proportion": 0.5,
         "max_soil_depth": 1.5,  # m
@@ -123,8 +117,6 @@ config_dict = {
         "aspect_interval": 20,
         "random_seed": 5000,  # keep if you want seed in file naming
         "handle_small_regions": "merge",
-        "split_convergence": 0.75,
-        "min_region_size": 10,
         "selection_method": "probabilistic",  # or 'pga_weighted'
         "proportion_method": "conservative",  # 'empirical', 'statistical', 'risk_profile', 'adaptive', or 'conservative'.
     },
@@ -135,6 +127,7 @@ config_dict = {
         "filled_and_split": False,
     },
     "output": {
+        "verbose": False,
         "save_plots": False,
         # "output_dir": "./pickled_runs_east/",  # defaults to current directory
         "save_pickle": True,
@@ -175,6 +168,7 @@ mg, z = get_topo(
     east=config_dict["dem_info"]["east"],
     west=config_dict["dem_info"]["west"],
     buffer=config_dict["dem_info"]["buffer"],
+    api_key=config_dict["dem_info"]["api_key"],
 )
 
 # Initialize and run flow router
@@ -267,8 +261,13 @@ ls = ShallowLandslider(
     split_by_width_config={
         "kde_data": kde_dict["kde_data"],
         "kde_transform": kde_dict["kde_transform"],
+        "split_convergence": 0.75,
+        "min_region_size": 10,
+        "max_interations": 10,
+        "width_threshold": 1.5,
     },
-    g=9.81
+    g=9.81,
+    verbose=config_dict["output"]["verbose"],
 )
 # %%
 ls.run_one_step()
