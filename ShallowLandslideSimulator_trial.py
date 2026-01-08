@@ -1,6 +1,7 @@
 # %% Load packages
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 from shallow_landslide_component import ShallowLandslider
 
 from helper_functions import (
@@ -16,7 +17,7 @@ from landlab import imshowhs_grid  # to plot results
 
 # %% Get measured data
 
-model_region = "east"  # "west", "east", "south"
+model_region = "west"  # "west", "east", "south"
 
 file_name_dict = {
     # Roback + Jones landslides - length/width
@@ -72,7 +73,7 @@ config_dict = {
         "dem_type": "SRTMGL1",
         "buffer": 0.01,
         "smooth_num": 4,
-        "plot_dem": False,
+        "plot_dem": True,
         "api_key": "f08b2664772eb044626d5cb114924de1",
     },
     "flow_params": {
@@ -84,10 +85,10 @@ config_dict = {
     },
     "soil_params": {
         "angle_int_frict": 30,  # degrees
-        "cohesion_eff": 20e3,  # Pa
+        "cohesion_eff": 15e3,  # Pa
         "submerged_soil_proportion": 0.5,
         "max_soil_depth": 1.5,  # m
-        "plot_soil": False,
+        "plot_soil": True,
         "distribution": "curvature",  # 'uniform', 'elevation', 'curvature', 'drainage_area', 'mean_elev_curv'
         # for "distribution" == "elevation", "relationship" == "linear", "exponential", "power", "sigmoid"
         # for "distribution" == "curvature", "relationship" == "linear", "linear_std_local", "linear_std_global", "piecewise"
@@ -127,7 +128,7 @@ config_dict = {
         "filled_and_split": False,
     },
     "output": {
-        "verbose": False,
+        "verbose": True,
         "save_plots": False,
         # "output_dir": "./pickled_runs_east/",  # defaults to current directory
         "save_pickle": True,
@@ -161,6 +162,8 @@ match model_region:
 config_dict["output"]["output_dir"] = config["modelled_data_folder"]
 
 # %% Build Landlab grid mg, set elevation/soil depth ...
+load_dem = 'C:/Users/sghoshal/Documents/Python/nepal_cropped_dem.txt'
+
 mg, z = get_topo(
     dem_type=config_dict["dem_info"]["dem_type"],
     north=config_dict["dem_info"]["north"],
@@ -169,6 +172,8 @@ mg, z = get_topo(
     west=config_dict["dem_info"]["west"],
     buffer=config_dict["dem_info"]["buffer"],
     api_key=config_dict["dem_info"]["api_key"],
+    smooth_num=config_dict["dem_info"]["smooth_num"],
+    load_dem=load_dem
 )
 
 # Initialize and run flow router
@@ -269,6 +274,125 @@ ls = ShallowLandslider(
     g=9.81,
     verbose=config_dict["output"]["verbose"],
 )
+# %%%
+if config_dict["soil_params"]["distribution"] == "curvature":
+    plt.figure(layout="constrained", figsize=(12, 8))
+    plt.subplot(121)
+    imshowhs_grid(
+        ls.grid,
+        "topographic__elevation",
+        plot_type="Drape1",
+        drape1=np.ma.masked_invalid(ls.grid.at_node["planform_curvature"]),
+        cmap="jet",
+        allow_colorbar=True,
+        cbar_or="vertical",
+        ticks_km=True,
+        cbar_loc="lower right",
+        cbar_height=1.0,
+        cbar_width=0.3,
+    )
+
+    plt.subplot(122)
+    imshowhs_grid(
+        ls.grid,
+        "topographic__elevation",
+        plot_type="Drape1",
+        drape1=np.ma.masked_invalid(ls.grid.at_node["soil__depth"]),
+        cmap="jet",
+        allow_colorbar=True,
+        cbar_or="vertical",
+        ticks_km=True,
+        cbar_loc="lower right",
+        cbar_height=1.0,
+        cbar_width=0.3,
+    )
+    # plt.suptitle('planform_curvature')
+
+elif config_dict["soil_params"]["distribution"] == "drainage_area":
+    plt.figure(layout="constrained", figsize=(12, 8))
+    plt.subplot(121)
+    imshowhs_grid(
+        ls.grid,
+        "topographic__elevation",
+        plot_type="Drape1",
+        drape1=np.ma.masked_invalid(
+            np.ma.masked_greater(
+                ls.grid.at_node["drainage_area"],
+                config_dict["soil_params"]["drainage_threshold"],
+            )
+        ),
+        cmap="jet",
+        allow_colorbar=True,
+        cbar_or="vertical",
+        ticks_km=True,
+        cbar_loc="lower right",
+        cbar_height=1.0,
+        cbar_width=0.3,
+    )
+    plt.subplot(122)
+    imshowhs_grid(
+        ls.grid,
+        "topographic__elevation",
+        plot_type="Drape1",
+        drape1=np.ma.masked_invalid(ls.grid.at_node["soil__depth"]),
+        cmap="jet",
+        allow_colorbar=True,
+        cbar_or="vertical",
+        ticks_km=True,
+        cbar_loc="lower right",
+        cbar_height=1.0,
+        cbar_width=0.3,
+    )
+    plt.suptitle("Drainage area")
+
+elif config_dict["soil_params"]["distribution"] == "mean_elev_curv":
+    plt.figure(layout="constrained", figsize=(12, 8))
+    plt.subplot(221)
+    imshowhs_grid(
+        ls.grid,
+        "topographic__elevation",
+        plot_type="DEM",
+        allow_colorbar=True,
+        cbar_or="vertical",
+        ticks_km=True,
+        cbar_loc="lower right",
+        cbar_height=1.0,
+        cbar_width=0.3,
+    )
+    
+    plt.subplot(222)
+    imshowhs_grid(
+        ls.grid,
+        "topographic__elevation",
+        plot_type="Drape1",
+        drape1=np.ma.masked_invalid(ls.grid.at_node["planform_curvature"]),
+        cmap="jet",
+        allow_colorbar=True,
+        cbar_or="vertical",
+        ticks_km=True,
+        cbar_loc="lower right",
+        cbar_height=1.0,
+        cbar_width=0.3,
+    )
+
+    plt.subplot(223)
+    imshowhs_grid(
+        ls.grid,
+        "topographic__elevation",
+        plot_type="Drape1",
+        drape1=np.ma.masked_invalid(ls.grid.at_node["soil__depth"]),
+        cmap="jet",
+        allow_colorbar=True,
+        cbar_or="vertical",
+        ticks_km=True,
+        cbar_loc="lower right",
+        cbar_height=1.0,
+        cbar_width=0.3,
+    )
+    plt.suptitle("Soil depth = mean of elevation-based and curvature-based")
+
+plt.show()
+
 # %%
 ls.run_one_step()
 
@@ -279,35 +403,41 @@ print(props.head())
 # Optional: export to CSV
 # ls.export_group_properties("group_properties.csv")
 # %%
-imshowhs_grid(
-    mg,
-    "topographic__elevation",
-    plot_type="Drape1",
-    drape1="landslide__selected_labels",
-    cmap="jet",
-    allow_colorbar=True,
-    cbar_or="vertical",
-    ticks_km=True,
-    cbar_loc="lower right",
-    cbar_height=0.8,
-    cbar_width=0.3,
-)
-# %%
-imshowhs_grid(mg, "topographic__elevation", plot_type="DEM")
-# %%
+# Get labels and reshape to 2-D for draping
+labels = mg.at_node['landslide__selected_labels'].copy().reshape(mg.shape)
+
+# Mask out zeros
+labels_masked = np.ma.masked_where(labels == 0, labels)
+
+# Make a copy of the cmap and set masked values to transparent
+cmap = plt.cm.get_cmap('jet').copy()
+cmap.set_bad(alpha=0)  # masked pixels won't be visible
+
 props_filtered = props.loc[props["selected"]]
 # %%
-import seaborn as sns
+
 count, bins_Roback = np.histogram(
     np.log10(measured_spatial_stats_clipped["Area_m2"]), 20
 )
-fig_mag_freq, ax_mag_freq = plt.subplots(layout="constrained")
+
+fig, axes = plt.subplots(2, 2, figsize=(18, 12), layout="constrained")
+
+# Panel 1:
+plt.sca(axes[0, 0])
+imshowhs_grid(
+    mg, 'topographic__elevation', plot_type='Drape1',
+    drape1=labels_masked, cmap=cmap,
+    allow_colorbar=True, cbar_or='vertical', ticks_km=True,
+    cbar_loc='lower right', cbar_height=0.8, cbar_width=0.3,
+)
+
+# Panel 2:
 sns.histplot(
     data=props_filtered,
     x="area",
     label=f"Model - Selected areas ({len(props_filtered)})",
     legend=True,
-    ax=ax_mag_freq,
+    ax=axes[0, 1],
     bins=bins_Roback,
     log_scale=True,
     stat="density",
@@ -318,13 +448,33 @@ sns.histplot(
     x="Area_m2",
     label=f"Roback et al.; ({len(measured_spatial_stats_clipped)})",
     legend=True,
-    ax=ax_mag_freq,
+    ax=axes[0, 1],
     log_scale=True,
     bins=bins_Roback,
     stat="density",
 )
 
-# ax_mag_freq.set_xscale("log")
-ax_mag_freq.legend()
-ax_mag_freq.set_xlabel("Area")
+axes[0, 1].set_xlabel('log10(Area) [m²]')
+axes[0, 1].set_title('Histogram of Area')
+axes[0, 1].legend()
+
+# Panel 3:
+sns.histplot(data=props_filtered, x='median_elevation', label="Model",
+             ax=axes[1,0], stat='density', color='blue', alpha=0.6)
+sns.histplot(data=measured_spatial_stats_clipped, x='mean_elev', label="Observed", ax=axes[1,0], stat='density', color='orange', alpha=0.6)
+axes[1,0].set_xlabel('Elevation [m]')
+axes[1,0].set_title('Histogram of Elevation')
+axes[1,0].legend()
+
+# Panel 4: Slope
+sns.histplot(data=props_filtered, x='median_slope', label="Model",
+             ax=axes[1,1], stat='density', color='blue', alpha=0.6)
+sns.histplot(data=measured_spatial_stats_clipped, x='mean_slope', label="Observed", ax=axes[1,1], stat='density', color='orange', alpha=0.6)
+
+axes[1,1].set_xlabel('Slope [degrees]')
+axes[1,1].set_title('Histogram of Slope')
+axes[1,1].legend()
+
+fig.suptitle(f"Modeled output: {config_dict['soil_params']['distribution']} - {config_dict['soil_params']['relationship']}")
+
 # %%

@@ -18,4 +18,4 @@ matplotlib>=3.7
 # shapely
 
 # OpenTopography / topo utilities (optional; if you fetch DEMs programmatically)
-# bmi-topography
+bmi-topography

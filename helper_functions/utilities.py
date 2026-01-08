@@ -14,95 +14,219 @@ import os
 import pickle
 
 from landlab import RasterModelGrid, imshowhs_grid
-from landlab.io import esri_ascii
+from landlab.io import esri_ascii, read_esri_ascii
 
 from bmi_topography import Topography
 
 
 # %% Getting topography from OpenTopography
+
 def get_topo(
-    api_key,
+    api_key: str,
     buffer: float,
-    north=28.25,
-    south=28.23,
-    east=85.18,
-    west=85.15,
-    dem_type="NASADEM",
+    north: float = 28.25,
+    south: float = 28.23,
+    east: float = 85.18,
+    west: float = 85.15,
+    dem_type: str = "NASADEM",
+    smooth_num: int = 0,
+    load_dem: str = None,
     verbose: bool = False,
 ):
     """
-    Downloads DEM from OpenTopo and generates a landlab RasterModelGrid.
+    Downloads DEM from OpenTopo and generates a Landlab RasterModelGrid.
 
     Parameters
     ----------
+    api_key : str
+        API key for OpenTopo.
     buffer : float
-        Additional space around the DEM to remove potential edge effects.
-        Values in decimal degrees.
-    north : float, optional
-        Northern extent of DEM in decimal degrees. The default is 28.25.
-    south : float, optional
-        Southern extent of DEM in decimal degrees. The default is 28.23.
-    east : float, optional
-        Eastern extent of DEM in decimal degrees. The default is 85.18.
-    west : float, optional
-        Western extent of DEM in decimal degrees. The default is 85.15.
-    dem_type : string, optional
-        Type of DEM to download from OpenTopo. The default is "NASADEM".
-        Available DEM types:
-            1. SRTMGL3: Default, 90 m
-            2. SRTMGL1: 30 m
-            3. AW3D30: ALOS World 3D, 30 m
-            4. NASADEM: NASADEM Global DEM, 30 m
-            5. COP30: Copernicus Global DSM 30 m
-            6. COP90: Copernicus Global DSM 90 m
-    api_key : string, optional
-        API key that allows downloading to
+        Additional space around the DEM to remove potential edge effects (in degrees).
+    north, south, east, west : float
+        Bounding box in decimal degrees.
+    dem_type : str
+        DEM type from OpenTopo (e.g., NASADEM, SRTMGL1).
+    smooth_num : int
+        Number of smoothing iterations (0 for none).
+    load_dem : str, optional
+        Path to local DEM file in ESRI ASCII format.
+    verbose : bool
+        Print debug information.
 
     Returns
     -------
     grid : RasterModelGrid
-        Elevation grid.
+        Landlab grid with elevation field.
     z_geog : ndarray
-        Array of elevation values.
-
+        Elevation values.
     """
+    
+    try:
+        # If loading local DEM
+        if load_dem:
+            if not Path(load_dem).exists():
+                raise FileNotFoundError(f"DEM file not found: {load_dem}")
+            grid, z_geog = read_esri_ascii(load_dem, name="topographic__elevation", halo=1)
+            grid.set_nodata_nodes_to_closed(grid.at_node["topographic__elevation"], -9999)
+            grid.at_node["topographic__elevation"][
+                grid.at_node["topographic__elevation"] == -9999
+            ] = np.nan
 
-    params = Topography.DEFAULT.copy()
-    params["south"] = south - buffer
-    params["north"] = north + buffer
-    params["west"] = west - buffer
-    params["east"] = east + buffer
-    params["dem_type"] = dem_type
-    params["output_format"] = "AAIGrid"
-    params["cache_dir"] = Path.cwd()
-    params["api_key"] = api_key
-    dem = Topography(**params)
-    name = dem.fetch()
-    props = dem.load()
+        else:
+            # Validate bounding box
+            if north <= south or east <= west:
+                raise ValueError("Invalid bounding box: north must be > south and east > west.")
+            
+            # Prepare OpenTopo request
+            params = Topography.DEFAULT.copy()
+            params.update({
+                "south": south - buffer,
+                "north": north + buffer,
+                "west": west - buffer,
+                "east": east + buffer,
+                "dem_type": dem_type,
+                "output_format": "AAIGrid",
+                "cache_dir": Path.cwd(),
+                "api_key": api_key,
+            })
 
-    with open(name) as fp:
-        grid_geog = esri_ascii.load(fp, name="topographic__elevation", at="node")
+            # Fetch DEM
+            dem = Topography(**params)
+            try:
+                name = dem.fetch()
+                props = dem.load()
+            except Exception as e:
+                raise RuntimeError(f"Failed to fetch DEM from OpenTopo: {e}")
 
-    z_geog = grid_geog.at_node["topographic__elevation"]
+            # Load DEM into Landlab
+            with open(name) as fp:
+                grid_geog = esri_ascii.load(fp, name="topographic__elevation", at="node")
+            z_geog = grid_geog.at_node["topographic__elevation"]
 
-    match dem_type:
-        case "SRTMGL3" | "COP90":
-            grid_spacing = 90
-        case "SRTMGL1" | "AW3D30" | "NASADEM" | "COP30":
-            grid_spacing = 30
+            # Extract resolution dynamically
+            grid_spacing = props.get("resolution", 30)  # fallback to 30 m if missing
 
-    grid = RasterModelGrid(
-        (grid_geog.number_of_node_rows, grid_geog.number_of_node_columns),
-        xy_spacing=grid_spacing,
-        xy_axis_units="m",
-    )
-    grid.add_field("topographic__elevation", z_geog, at="node")
+            # Create RasterModelGrid
+            grid = RasterModelGrid(
+                (grid_geog.number_of_node_rows, grid_geog.number_of_node_columns),
+                xy_spacing=grid_spacing,
+                xy_axis_units="m",
+            )
+            grid.add_field("topographic__elevation", z_geog, at="node")
 
-    if verbose:
-        print(params)
-        print(props)
+            if verbose:
+                print("Request Parameters:", params)
+                print("DEM Properties:", props)
 
-    return grid, z_geog
+        # Apply smoothing if requested
+        if smooth_num > 0:
+            smoothed_elev = smooth_elevation_grid(grid, method="gaussian", smooth_num=smooth_num)
+            grid.at_node["topographic__elevation"] = smoothed_elev
+            z_geog = smoothed_elev
+
+        return grid, z_geog
+
+    except Exception as e:
+        raise RuntimeError(f"Error in get_topo: {e}")
+
+    # if load_dem is not None:
+    #     grid, z_geog = read_esri_ascii(load_dem, name="topographic__elevation",
+    #                         halo=1,)
+    #     grid.set_nodata_nodes_to_closed(grid.at_node["topographic__elevation"], -9999)
+    #     grid.at_node["topographic__elevation"][grid.at_node["topographic__elevation"]==-9999] = np.nan
+    # else:
+    #     params = Topography.DEFAULT.copy()
+    #     params["south"] = south - buffer
+    #     params["north"] = north + buffer
+    #     params["west"] = west - buffer
+    #     params["east"] = east + buffer
+    #     params["dem_type"] = dem_type
+    #     params["output_format"] = "AAIGrid"
+    #     params["cache_dir"] = Path.cwd()
+    #     params["api_key"] = api_key
+    #     dem = Topography(**params)
+    #     name = dem.fetch()
+    #     props = dem.load()
+
+    #     with open(name) as fp:
+    #         grid_geog = esri_ascii.load(fp, name="topographic__elevation", at="node")
+
+    #     z_geog = grid_geog.at_node["topographic__elevation"]
+
+    #     match dem_type:
+    #         case "SRTMGL3" | "COP90":
+    #             grid_spacing = 90
+    #         case "SRTMGL1" | "AW3D30" | "NASADEM" | "COP30":
+    #             grid_spacing = 30
+
+    #     grid = RasterModelGrid(
+    #         (grid_geog.number_of_node_rows, grid_geog.number_of_node_columns),
+    #         xy_spacing=grid_spacing,
+    #         xy_axis_units="m",
+    #     )
+    #     grid.add_field("topographic__elevation", z_geog, at="node")
+        
+    #     if verbose:
+    #         print(params)
+    #         print(props)
+    
+    # if smooth_num > 0:
+    #     # Smooth the downloaded DEM
+    #     smoothed_elev = smooth_elevation_grid(
+    #         grid,
+    #         method="gaussian",
+    #         smooth_num=smooth_num,
+    #     )
+    #     grid.at_node["topographic__elevation"] = smoothed_elev
+    #     z_geog = smoothed_elev
+
+    # return grid, z_geog
+
+# %% Smoothen landlab grid
+def smooth_elevation_grid(grid, method="mean", smooth_num=1):
+    """
+    Apply a 3x3 moving window smoothing to a landlab grid's elevation data.
+
+    Parameters:
+    -----------
+    grid : landlab.grid
+        The landlab grid containing elevation data
+    method : str, optional
+        The smoothing method to use: 'mean' or 'gaussian' (default: 'mean')
+
+    Returns:
+    --------
+    numpy.ndarray
+        The smoothed elevation array
+    """
+    if method == "mean":
+        from scipy.ndimage import uniform_filter
+    elif method == "gaussian":
+        # For Gaussian smoothing
+        from scipy.ndimage import gaussian_filter
+    else:
+        raise ValueError("Method must be 'mean' or 'gaussian'")
+
+    # Get the original elevation data
+    elevation = grid.at_node["topographic__elevation"].copy()
+
+    # Reshape to 2D for smoothing (assuming a raster grid)
+    elevation_2d = elevation.reshape(grid.shape)
+
+    smooth_round = 0
+    while smooth_round < smooth_num:
+        if method == "mean":
+            # Apply a 3x3 mean filter
+            smoothed_elevation = uniform_filter(elevation_2d, size=3, mode="reflect")
+        elif method == "gaussian":
+            # For Gaussian smoothing
+            smoothed_elevation = gaussian_filter(elevation_2d, sigma=1, mode="reflect")
+        smooth_round += 1
+
+    # Reshape back to 1D for use with landlab
+    smoothed_elevation_1d = smoothed_elevation.flatten()
+
+    return smoothed_elevation_1d
 
 
 # %% Apply soil depth to DEM
