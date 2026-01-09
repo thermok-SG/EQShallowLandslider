@@ -4,12 +4,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from shallow_landslide_component import ShallowLandslider
 
-from helper_functions import (
+from utils import (
     get_topo,
     apply_soil_depth,
     pickle_or_not_to_pickle,
     calculate_terrain_attribute,
     generate_acceleration_grid,
+    plot_comparison_panels_with_ecdf
 )
 
 from landlab.components import PriorityFloodFlowRouter
@@ -61,6 +62,7 @@ measured_data = measured_bundle["measured_data"]
 measured_spatial_stats = measured_bundle["measured_spatial_stats"]
 measured_spatial_stats_900greater = measured_bundle["measured_spatial_stats_900greater"]
 measured_spatial_stats_clipped = measured_bundle["measured_spatial_stats_clipped"]
+measured_spatial_stats_clipped_filt = measured_spatial_stats_clipped[measured_spatial_stats_clipped["Area_m2"]>900]
 
 # Load measured length-width KDE for sampling
 kde_dict = {
@@ -173,7 +175,7 @@ mg, z = get_topo(
     buffer=config_dict["dem_info"]["buffer"],
     api_key=config_dict["dem_info"]["api_key"],
     smooth_num=config_dict["dem_info"]["smooth_num"],
-    load_dem=load_dem
+    # load_dem=load_dem
 )
 
 # Initialize and run flow router
@@ -263,12 +265,14 @@ ls = ShallowLandslider(
     selection_method=config_dict["simulation"]["selection_method"],
     proportion_method=config_dict["simulation"]["proportion_method"],
     random_seed=5000,
+    custom_proportion=None,
+    handle_small="merge",
     split_by_width_config={
         "kde_data": kde_dict["kde_data"],
         "kde_transform": kde_dict["kde_transform"],
-        "split_convergence": 0.75,
+        "convergence_threshold": 0.90,
         "min_region_size": 10,
-        "max_interations": 10,
+        "max_iterations": 10,
         "width_threshold": 1.5,
     },
     g=9.81,
@@ -393,6 +397,33 @@ elif config_dict["soil_params"]["distribution"] == "mean_elev_curv":
 
 plt.show()
 
+# %% Error probes
+
+# mask = ls.grid.at_node["landslide__unstable_mask"]
+# print("Unstable nodes:", int(np.sum(mask)))
+# print("Fraction unstable:", float(np.mean(mask)))
+# print("a_driving min/max:", np.nanmin(ls._a_driving), np.nanmax(ls._a_driving))
+# print("a_crit min/max:", np.nanmin(ls._a_transient), np.nanmax(ls._a_transient))
+
+# print("H-PGA core mean:", float(np.nanmean(ls.grid.at_node["earthquake__horizontal_pga"][ls.grid.core_nodes])))
+# print("V-PGA core mean:", float(np.nanmean(ls.grid.at_node["earthquake__vertical_pga"][ls.grid.core_nodes])))
+# print("Any NaN at core H/V:",
+#       np.isnan(ls.grid.at_node["earthquake__horizontal_pga"][ls.grid.core_nodes]).any(),
+#       np.isnan(ls.grid.at_node["earthquake__vertical_pga"][ls.grid.core_nodes]).any())
+
+# print("Cohesion_eff:", ls.cohesion_eff, "Pa")
+# print("Friction angle (deg):", np.degrees(ls.angle_int_frict))
+# slope_deg = np.degrees(ls.grid.calc_slope_at_node(elevs="topographic__elevation"))
+# print("Slope deg min/median/max:", slope_deg.min(), np.median(slope_deg), slope_deg.max())
+
+# print("'soil__depth' field exists:", "soil__depth" in ls.grid.at_node)
+# if "soil__depth" in ls.grid.at_node:
+#     h = ls.grid.at_node["soil__depth"]
+#     print("Soil depth min/median/max:", float(np.nanmin(h)), float(np.nanmedian(h)), float(np.nanmax(h)))
+
+# z = ls.grid.at_node["topographic__elevation"]
+# print("Elevation NaNs present:", np.isnan(z).any())
+
 # %%
 ls.run_one_step()
 
@@ -414,8 +445,20 @@ cmap = plt.cm.get_cmap('jet').copy()
 cmap.set_bad(alpha=0)  # masked pixels won't be visible
 
 props_filtered = props.loc[props["selected"]]
-# %%
 
+# %% Plot results
+
+plot_comparison_panels_with_ecdf(
+    observed_df=measured_spatial_stats_clipped_filt,
+    model_df=props_filtered,
+    mg=mg,                     # optional
+    labels_masked=labels_masked,  # optional
+    title=f"Modeled output: {config_dict['soil_params']['distribution']} - {config_dict['soil_params']['relationship']}",
+    save_path=None             # or "comparison_panels.pdf"
+)
+
+
+# %%
 count, bins_Roback = np.histogram(
     np.log10(measured_spatial_stats_clipped["Area_m2"]), 20
 )

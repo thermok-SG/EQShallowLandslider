@@ -21,6 +21,7 @@ from bmi_topography import Topography
 
 # %% Getting topography from OpenTopography
 
+
 def get_topo(
     api_key: str,
     buffer: float,
@@ -60,14 +61,18 @@ def get_topo(
     z_geog : ndarray
         Elevation values.
     """
-    
+
     try:
         # If loading local DEM
-        if load_dem:
+        if load_dem is not None:
             if not Path(load_dem).exists():
                 raise FileNotFoundError(f"DEM file not found: {load_dem}")
-            grid, z_geog = read_esri_ascii(load_dem, name="topographic__elevation", halo=1)
-            grid.set_nodata_nodes_to_closed(grid.at_node["topographic__elevation"], -9999)
+            grid, z_geog = read_esri_ascii(
+                load_dem, name="topographic__elevation", halo=1
+            )
+            grid.set_nodata_nodes_to_closed(
+                grid.at_node["topographic__elevation"], -9999
+            )
             grid.at_node["topographic__elevation"][
                 grid.at_node["topographic__elevation"] == -9999
             ] = np.nan
@@ -75,20 +80,24 @@ def get_topo(
         else:
             # Validate bounding box
             if north <= south or east <= west:
-                raise ValueError("Invalid bounding box: north must be > south and east > west.")
-            
+                raise ValueError(
+                    "Invalid bounding box: north must be > south and east > west."
+                )
+
             # Prepare OpenTopo request
             params = Topography.DEFAULT.copy()
-            params.update({
-                "south": south - buffer,
-                "north": north + buffer,
-                "west": west - buffer,
-                "east": east + buffer,
-                "dem_type": dem_type,
-                "output_format": "AAIGrid",
-                "cache_dir": Path.cwd(),
-                "api_key": api_key,
-            })
+            params.update(
+                {
+                    "south": south - buffer,
+                    "north": north + buffer,
+                    "west": west - buffer,
+                    "east": east + buffer,
+                    "dem_type": dem_type,
+                    "output_format": "AAIGrid",
+                    "cache_dir": Path.cwd(),
+                    "api_key": api_key,
+                }
+            )
 
             # Fetch DEM
             dem = Topography(**params)
@@ -100,11 +109,16 @@ def get_topo(
 
             # Load DEM into Landlab
             with open(name) as fp:
-                grid_geog = esri_ascii.load(fp, name="topographic__elevation", at="node")
+                grid_geog = esri_ascii.load(
+                    fp, name="topographic__elevation", at="node"
+                )
             z_geog = grid_geog.at_node["topographic__elevation"]
 
-            # Extract resolution dynamically
-            grid_spacing = props.get("resolution", 30)  # fallback to 30 m if missing
+            match dem_type:
+                case "SRTMGL3" | "COP90":
+                    grid_spacing = 90
+                case "SRTMGL1" | "AW3D30" | "NASADEM" | "COP30":
+                    grid_spacing = 30
 
             # Create RasterModelGrid
             grid = RasterModelGrid(
@@ -120,7 +134,9 @@ def get_topo(
 
         # Apply smoothing if requested
         if smooth_num > 0:
-            smoothed_elev = smooth_elevation_grid(grid, method="gaussian", smooth_num=smooth_num)
+            smoothed_elev = smooth_elevation_grid(
+                grid, method="gaussian", smooth_num=smooth_num
+            )
             grid.at_node["topographic__elevation"] = smoothed_elev
             z_geog = smoothed_elev
 
@@ -129,58 +145,6 @@ def get_topo(
     except Exception as e:
         raise RuntimeError(f"Error in get_topo: {e}")
 
-    # if load_dem is not None:
-    #     grid, z_geog = read_esri_ascii(load_dem, name="topographic__elevation",
-    #                         halo=1,)
-    #     grid.set_nodata_nodes_to_closed(grid.at_node["topographic__elevation"], -9999)
-    #     grid.at_node["topographic__elevation"][grid.at_node["topographic__elevation"]==-9999] = np.nan
-    # else:
-    #     params = Topography.DEFAULT.copy()
-    #     params["south"] = south - buffer
-    #     params["north"] = north + buffer
-    #     params["west"] = west - buffer
-    #     params["east"] = east + buffer
-    #     params["dem_type"] = dem_type
-    #     params["output_format"] = "AAIGrid"
-    #     params["cache_dir"] = Path.cwd()
-    #     params["api_key"] = api_key
-    #     dem = Topography(**params)
-    #     name = dem.fetch()
-    #     props = dem.load()
-
-    #     with open(name) as fp:
-    #         grid_geog = esri_ascii.load(fp, name="topographic__elevation", at="node")
-
-    #     z_geog = grid_geog.at_node["topographic__elevation"]
-
-    #     match dem_type:
-    #         case "SRTMGL3" | "COP90":
-    #             grid_spacing = 90
-    #         case "SRTMGL1" | "AW3D30" | "NASADEM" | "COP30":
-    #             grid_spacing = 30
-
-    #     grid = RasterModelGrid(
-    #         (grid_geog.number_of_node_rows, grid_geog.number_of_node_columns),
-    #         xy_spacing=grid_spacing,
-    #         xy_axis_units="m",
-    #     )
-    #     grid.add_field("topographic__elevation", z_geog, at="node")
-        
-    #     if verbose:
-    #         print(params)
-    #         print(props)
-    
-    # if smooth_num > 0:
-    #     # Smooth the downloaded DEM
-    #     smoothed_elev = smooth_elevation_grid(
-    #         grid,
-    #         method="gaussian",
-    #         smooth_num=smooth_num,
-    #     )
-    #     grid.at_node["topographic__elevation"] = smoothed_elev
-    #     z_geog = smoothed_elev
-
-    # return grid, z_geog
 
 # %% Smoothen landlab grid
 def smooth_elevation_grid(grid, method="mean", smooth_num=1):
@@ -1178,8 +1142,7 @@ Measured data is used for statistically-based region splitting and data comparis
 
 
 def pickle_or_not_to_pickle(
-    file_name_dict, pickle_path="measured_data.pkl", min_area=900,
-    verbose: bool = False
+    file_name_dict, pickle_path="measured_data.pkl", min_area=900, verbose: bool = False
 ):
     """
     Load processed data (DataFrames, shapefile, KDEs) from pickle if it exists.
@@ -1716,3 +1679,177 @@ def progress_iter(iterable, verbose: bool = False, desc: str | None = None):
         # tqdm not installed or failed
         print(desc)
         return iterable
+
+
+# %% Plot results
+
+def _ecdf(values):
+    v = np.asarray(values)
+    v = v[~np.isnan(v)]
+    if v.size == 0:
+        return np.array([]), np.array([])
+    x = np.sort(v)
+    y = np.arange(1, x.size + 1) / x.size
+    return x, y
+
+
+def plot_comparison_panels_with_ecdf(
+    observed_df,
+    model_df,
+    mg=None,
+    labels_masked=None,
+    cmap="terrain",
+    title="Comparison Plots (Histograms + ECDF)",
+    save_path=None,
+):
+    # Combine data for shared bins
+    area_combined = np.log10(
+        np.concatenate([observed_df.get("Area_m2", []), model_df.get("area", [])])
+    )
+    elev_combined = np.concatenate(
+        [observed_df.get("mean_elev", []), model_df.get("median_elevation", [])]
+    )
+    slope_combined = np.concatenate(
+        [observed_df.get("mean_slope", []), model_df.get("median_slope", [])]
+    )
+
+    bins_area = np.histogram_bin_edges(area_combined, bins=20)
+    bins_elev = np.histogram_bin_edges(elev_combined, bins=20)
+    bins_slope = np.histogram_bin_edges(slope_combined, bins=20)
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 12), layout="constrained")
+
+    # Panel 1: Map
+    if mg is not None and labels_masked is not None:
+        plt.sca(axes[0, 0])
+        imshowhs_grid(
+            mg,
+            "topographic__elevation",
+            plot_type="Drape1",
+            drape1=labels_masked,
+            cmap=cmap,
+            allow_colorbar=True,
+            cbar_or="vertical",
+            ticks_km=True,
+            cbar_loc="lower right",
+            cbar_height=0.8,
+            cbar_width=0.3,
+        )
+        axes[0, 0].set_title("Topographic Map")
+    else:
+        axes[0, 0].axis("off")
+        axes[0, 0].text(0.5, 0.5, "Map not provided", ha="center", va="center")
+
+    model_color = "tab:blue"
+    obs_color = "tab:orange"
+
+    # Panel 2: Area (log scale)
+    ax_area = axes[0, 1]
+    sns.histplot(
+        np.log10(model_df["area"]),
+        bins=bins_area,
+        stat="density",
+        color=model_color,
+        alpha=0.6,
+        label="Model",
+        ax=ax_area,
+    )
+    sns.histplot(
+        np.log10(observed_df["Area_m2"]),
+        bins=bins_area,
+        stat="density",
+        color=obs_color,
+        alpha=0.6,
+        label="Observed",
+        ax=ax_area,
+    )
+    ax_area.set_xlabel("log10(Area) [m²]")
+    ax_area.set_title("Histogram of Area")
+    ax_area.legend()
+
+    ax_area_ecdf = ax_area.twinx()
+    x_obs, y_obs = _ecdf(observed_df["Area_m2"])
+    x_mod, y_mod = _ecdf(model_df["area"])
+    if x_obs.size:
+        ax_area_ecdf.plot(
+            x_obs, y_obs, color="black", linestyle="--", label="Observed ECDF"
+        )
+    if x_mod.size:
+        ax_area_ecdf.plot(x_mod, y_mod, color="gray", linestyle="-", label="Model ECDF")
+    ax_area_ecdf.set_ylim(0, 1)
+    ax_area_ecdf.set_xscale("log")
+    ax_area_ecdf.set_ylabel("ECDF")
+
+    # Panel 3: Elevation
+    ax_elev = axes[1, 0]
+    sns.histplot(
+        model_df["median_elevation"],
+        bins=bins_elev,
+        stat="density",
+        color=model_color,
+        alpha=0.6,
+        label="Model",
+        ax=ax_elev,
+    )
+    sns.histplot(
+        observed_df["mean_elev"],
+        bins=bins_elev,
+        stat="density",
+        color=obs_color,
+        alpha=0.6,
+        label="Observed",
+        ax=ax_elev,
+    )
+    ax_elev.set_xlabel("Elevation [m]")
+    ax_elev.set_title("Histogram of Elevation")
+    ax_elev.legend()
+
+    ax_elev_ecdf = ax_elev.twinx()
+    x_obs, y_obs = _ecdf(observed_df["mean_elev"])
+    x_mod, y_mod = _ecdf(model_df["median_elevation"])
+    if x_obs.size:
+        ax_elev_ecdf.plot(x_obs, y_obs, color="black", linestyle="--")
+    if x_mod.size:
+        ax_elev_ecdf.plot(x_mod, y_mod, color="gray", linestyle="-")
+    ax_elev_ecdf.set_ylim(0, 1)
+    ax_elev_ecdf.set_ylabel("ECDF")
+
+    # Panel 4: Slope
+    ax_slope = axes[1, 1]
+    sns.histplot(
+        model_df["median_slope"],
+        bins=bins_slope,
+        stat="density",
+        color=model_color,
+        alpha=0.6,
+        label="Model",
+        ax=ax_slope,
+    )
+    sns.histplot(
+        observed_df["mean_slope"],
+        bins=bins_slope,
+        stat="density",
+        color=obs_color,
+        alpha=0.6,
+        label="Observed",
+        ax=ax_slope,
+    )
+    ax_slope.set_xlabel("Slope [degrees]")
+    ax_slope.set_title("Histogram of Slope")
+    ax_slope.legend()
+
+    ax_slope_ecdf = ax_slope.twinx()
+    x_obs, y_obs = _ecdf(observed_df["mean_slope"])
+    x_mod, y_mod = _ecdf(model_df["median_slope"])
+    if x_obs.size:
+        ax_slope_ecdf.plot(x_obs, y_obs, color="black", linestyle="--")
+    if x_mod.size:
+        ax_slope_ecdf.plot(x_mod, y_mod, color="gray", linestyle="-")
+    ax_slope_ecdf.set_ylim(0, 1)
+    ax_slope_ecdf.set_ylabel("ECDF")
+
+    fig.suptitle(title, fontsize=16)
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Saved figure to: {save_path}")
+    plt.show()
