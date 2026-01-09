@@ -394,16 +394,6 @@ class ShallowLandslider(Component):
             self.grid, self.cohesion_eff, self.angle_int_frict
         )
         self.grid.at_node["landslide__factor_of_safety"] = self._fos
-        
-        # DEBUG:
-        h = self.grid.at_node.get("soil__depth", None)
-        print("Pre-compute: soil__depth exists?", h is not None)
-        if h is not None:
-            core = self.grid.core_nodes
-            print("Pre-compute soil depth (core) min/med/max:", 
-                float(np.nanmin(h[core])),
-                float(np.nanmedian(h[core])),
-                float(np.nanmax(h[core])))
 
         a_c, a_s, a_diff = self._critical_transient_acceleration(
             self.grid,
@@ -413,37 +403,6 @@ class ShallowLandslider(Component):
             a_h=self._pga_h * self.g,
             a_v=self._pga_v * self.g,
         )
-        
-        # DEBUG: Right after a_c, a_s, a_diff are computed
-        core = self.grid.core_nodes
-        print("Check units:")
-        print("  angle_int_frict radians?:", self.angle_int_frict, " (deg=", np.degrees(self.angle_int_frict), ")")
-        print("  H-PGA in g (core mean):", float(np.nanmean(self._pga_h[core])))
-        print("  V-PGA in g (core mean):", float(np.nanmean(self._pga_v[core])))
-
-        print("Check extremes (core only):")
-        print("  a_driving min/max:", float(np.nanmin(a_s[core])), float(np.nanmax(a_s[core])))
-        print("  a_crit min/max   :", float(np.nanmin(a_c[core])), float(np.nanmax(a_c[core])))
-
-        h = self.grid.at_node["soil__depth"]
-        print("  soil depth min/median/max (core):", float(np.nanmin(h[core])), float(np.nanmedian(h[core])), float(np.nanmax(h[core])))
-
-        unst_core = (a_s > a_c)[core]
-        print("  Unstable core count/fraction:", int(np.sum(unst_core)), float(np.mean(unst_core)))
-        
-        i = int(self.grid.core_nodes[0])
-        phi = self.angle_int_frict               # radians (0.5236...)
-        slope = self.grid.calc_slope_at_node(elevs="topographic__elevation")[i]
-        h = self.grid.at_node["soil__depth"][i]
-        psi = self.submerged_soil_proportion * 9.8e3 * h
-        a_h = self._pga_h[i] * self.g
-        a_v = self._pga_v[i] * self.g
-        num = (self.g * self.cohesion_eff) - (psi * self.g * np.tan(phi))
-        den = (15e3 * max(h, 1e-6))  # protect against zero just for this sanity check
-        frac = num / den
-        a_c_i = np.tan(phi) * (self.g*np.cos(slope) - a_v*np.cos(slope) - a_h*np.sin(slope)) + frac - self.g*np.sin(slope)
-        print("One-node check: h=", h, "  a_c(expected with h)=", a_c_i)
-
 
         self._a_transient, self._a_driving, self._a_diff = a_c, a_s, a_diff
         self.grid.at_node["landslide__critical_acceleration"] = a_c
@@ -713,13 +672,7 @@ class ShallowLandslider(Component):
             psi = submerged_soil_proportion * water_unit_weight * soil_depth
         else:
             psi = -15e3
-        # a_c_transient = (
-        #     np.tan(angle_int_frict)
-        #     * (g * np.cos(slope) - a_v * np.cos(slope) - a_h * np.sin(slope))
-        #     + ((g * cohesion_eff) - (psi * g * np.tan(angle_int_frict_rad)))
-        #     / (soil_unit_weight * soil_depth)
-        #     - g * np.sin(slope)
-        # )
+
         # critical transient acceleration (a_c_transient) in 3D
         a_c_transient = (
             np.tan(angle_int_frict)
