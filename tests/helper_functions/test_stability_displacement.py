@@ -1,101 +1,158 @@
+# tests/helper_functions/test_stability_displacement.py
 
 import numpy as np
 import pytest
 from landlab import RasterModelGrid
-
-from helper_functions import (
-    factor_of_safety,
-    critical_transient_acceleration,
-    calculate_newmark_displacement,
-)
+from shallow_landslide_component import ShallowLandslider
 
 
 def make_grid(n=5, spacing=10.0):
     mg = RasterModelGrid((n, n), xy_spacing=spacing)
-    # Soil depth: required by stability functions
-    h = mg.add_zeros("soil__depth", at="node")
-    h[:] = 1.0
-    # Elevation: populated but overridden by monkeypatched slope
-    z = mg.add_zeros("topographic__elevation", at="node")
-    z[:] = 0.0
+    mg.add_ones("topographic__elevation", at="node")
+    mg.add_ones("soil__depth", at="node")
     return mg
 
 
 def test_factor_of_safety_matches_formula(monkeypatch):
+    """Validate the FoS implementation against the analytic formula."""
     mg = make_grid()
-    # constant slope everywhere (30 deg)
     slope_rad = np.deg2rad(30.0)
+
     monkeypatch.setattr(
-        mg, "calc_slope_at_node", lambda elevs=None: np.ones(mg.number_of_nodes) * slope_rad
+        mg,
+        "calc_slope_at_node",
+        lambda elevs=None: np.ones(mg.number_of_nodes) * slope_rad,
     )
 
-    cohesion_eff = 1000.0  # Pa
-    phi = np.deg2rad(30.0)
-    sub = 0.0
+    coh = 1000.0
+    phi_rad = np.deg2rad(30.0)
     gamma_s = 15e3
     gamma_w = 9.8e3
+    sub = 0.0
 
-    soil_depth = mg.at_node["soil__depth"].copy()
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=coh,
+        angle_int_frict=30.0,
+        submerged_soil_proportion=sub,
+        update_soil=False,
+    )
+
+    fos = comp._factor_of_safety(
+        mg, coh, phi_rad, submerged_soil_proportion=sub,
+        soil_unit_weight=gamma_s, water_unit_weight=gamma_w
+    )
+
+    soil_depth = mg.at_node["soil__depth"]
     psi = sub * gamma_w * soil_depth
     slope = np.ones(mg.number_of_nodes) * slope_rad
-    expected = ((cohesion_eff - psi * np.tan(phi)) / (gamma_s * soil_depth * np.sin(slope))) + (
-        np.tan(phi) / np.tan(slope)
-    )
 
-    fos = factor_of_safety(
-        mg, cohesion_eff, phi, submerged_soil_proportion=sub, soil_unit_weight=gamma_s, water_unit_weight=gamma_w
-    )
+    expected = ((coh - psi * np.tan(phi_rad)) /
+                (gamma_s * soil_depth * np.sin(slope))) + \
+               (np.tan(phi_rad) / np.tan(slope))
+
     assert np.allclose(fos, expected, rtol=1e-6, atol=1e-9)
 
 
-def test_critical_transient_acceleration_vectors(monkeypatch):
+def test_critical_transient_acceleration(monkeypatch):
     mg = make_grid()
-    slope_rad = np.deg2rad(20.0)
+    slope_rad = np.deg2rad(20)
     monkeypatch.setattr(
-        mg, "calc_slope_at_node", lambda elevs=None: np.ones(mg.number_of_nodes) * slope_rad
+        mg,
+        "calc_slope_at_node",
+        lambda elevs=None: np.ones(mg.number_of_nodes) * slope_rad,
     )
 
-    phi = np.deg2rad(30.0)
-    coh = 500.0
-    sub = 0.0
-    gamma_s = 15e3
-    gamma_w = 9.8e3
     g = 9.81
-
     a_h = np.ones(mg.number_of_nodes) * 0.3 * g
     a_v = np.ones(mg.number_of_nodes) * 0.1 * g
 
-    h = mg.at_node["soil__depth"].copy()
-    slope = np.ones(mg.number_of_nodes) * slope_rad
-    psi = sub * gamma_w * h
-    a_c_transient = (
-        np.tan(phi) * (g * np.cos(slope) - a_v * np.cos(slope) - a_h * np.sin(slope))
-        + ((g * coh) - (psi * g * np.tan(phi))) / (gamma_s * h)
-        - g * np.sin(slope)
+    phi = np.deg2rad(30)
+    coh = 500.0
+    gamma_s = 15e3
+    gamma_w = 9.8e3
+    sub = 0.0
+
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=coh,
+        angle_int_frict=30,
+        submerged_soil_proportion=sub,
     )
-    a_s_t = a_h * np.cos(slope) - a_v * np.sin(slope)
-    a_c_transient[mg.boundary_nodes] = 0
-    a_diff = a_s_t - a_c_transient
-
-    ac, aslip, adiff = critical_transient_acceleration(
-        mg, coh, phi, sub, a_h=a_h, a_v=a_v, soil_unit_weight=gamma_s, water_unit_weight=gamma_w, g=g
+    ac, aslip, adiff = comp._critical_transient_acceleration(
+        mg, coh, phi, sub, a_h=a_h, a_v=a_v,
+        soil_unit_weight=gamma_s, water_unit_weight=gamma_w, g=g
     )
-    assert np.allclose(ac, a_c_transient, rtol=1e-6)
-    assert np.allclose(aslip, a_s_t, rtol=1e-6)
-    assert np.allclose(adiff, a_diff, rtol=1e-6)
+
+    soil_depth = mg.at_node["soil__depth"]
+    psi = sub * gamma_w * soil_depth
+
+    a_c_simple = (
+        np.tan(phi) * (g * np.cos(slope_rad) - a_v * np.cos(slope_rad) - a_h * np.sin(slope_rad)) +
+        ((g * coh) - (psi * g * np.tan(phi))) / (gamma_s * soil_depth) -
+        g * np.sin(slope_rad)
+    )
+    a_c_simple[mg.boundary_nodes] = 0
+    a_s = a_h * np.cos(slope_rad) - a_v * np.sin(slope_rad)
+
+    assert np.allclose(ac, a_c_simple, rtol=1e-6)
+    assert np.allclose(aslip, a_s)
+    assert np.allclose(adiff, a_s - a_c_simple)
 
 
-def test_newmark_displacement_masks_unlabeled_and_scales_with_time():
+def test_newmark_displacement_and_masking():
     mg = make_grid()
-    a_diff = np.zeros(mg.number_of_nodes)
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=10,
+        angle_int_frict=30,
+        compute_displacement=True,
+    )
+
+    # construct simple labels
     labels = np.zeros(mg.shape, dtype=int)
     labels[2:4, 2:4] = 1
-    idx = np.where(labels.ravel() == 1)[0]
-    a_diff[idx] = 2.0  # m/s^2
+    diff = np.zeros(mg.number_of_nodes)
+    active_idx = np.where(labels.ravel() == 1)[0]
+    diff[active_idx] = 2.0  # m/s2
 
-    disp = calculate_newmark_displacement(mg, a_diff, labels, time_shaking=3.0)
-    # unlabeled nodes should be NaN
+    disp = comp._calculate_newmark_displacement(
+        a_difference_1d=diff,
+        selected_labels_2d=labels,
+        time_shaking_2d=np.ones(mg.shape) * 3.0,
+    )
+
     unlabeled = np.where(labels.ravel() == 0)[0]
     assert np.all(np.isnan(disp[unlabeled]))
-    # labeled nodes: s = 0.5 * a * t^2 = 0.5 * 2 * 9 = 9
-    assert np.allclose(disp[idx], 9.0)
+    assert np.allclose(disp[active_idx], 0.5 * 2.0 * 9.0)
+
+def test_newmark_displacement_threshold_behavior():
+    mg = make_grid()
+    comp = ShallowLandslider(
+        mg, cohesion_eff=10, angle_int_frict=30,
+        compute_displacement=True, displacement_threshold=5.0
+    )
+
+    comp.run_one_step()
+    disp = mg.at_node["landslide__newmark_displacement"]
+
+    # All high displacement nodes must exceed threshold
+    for idx in comp._high_disp_nodes:
+        assert disp[idx] > 5.0
+        
+def test_critical_acceleration_sets_boundary_to_zero(monkeypatch):
+    mg = make_grid()
+    comp = ShallowLandslider(mg, cohesion_eff=10, angle_int_frict=30)
+
+    monkeypatch.setattr(
+        mg, "calc_slope_at_node",
+        lambda elevs=None: np.ones(mg.number_of_nodes) * np.deg2rad(10)
+    )
+
+    ac, *_ = comp._critical_transient_acceleration(
+        mg, 10, np.deg2rad(30), 0.0,
+        a_h=np.zeros(mg.number_of_nodes),
+        a_v=np.zeros(mg.number_of_nodes)
+    )
+
+    assert np.all(ac[mg.boundary_nodes] == 0)
