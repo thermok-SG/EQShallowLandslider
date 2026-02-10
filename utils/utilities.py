@@ -1703,9 +1703,7 @@ def plot_comparison_panels_with_ecdf(
     save_path=None,
 ):
     # Combine data for shared bins
-    area_combined = np.log10(
-        np.concatenate([observed_df.get("Area_m2", []), model_df.get("area", [])])
-    )
+    area_combined = np.concatenate([observed_df.get("Area_m2", []), model_df.get("area", [])])
     elev_combined = np.concatenate(
         [observed_df.get("mean_elev", []), model_df.get("median_elevation", [])]
     )
@@ -1713,22 +1711,26 @@ def plot_comparison_panels_with_ecdf(
         [observed_df.get("mean_slope", []), model_df.get("median_slope", [])]
     )
 
-    bins_area = np.histogram_bin_edges(area_combined, bins=20)
+    # Use log-spaced bins for area
+    bins_area = np.logspace(np.log10(area_combined.min()), np.log10(area_combined.max()), 20)
     bins_elev = np.histogram_bin_edges(elev_combined, bins=20)
     bins_slope = np.histogram_bin_edges(slope_combined, bins=20)
 
     fig, axes = plt.subplots(2, 2, figsize=(18, 12), layout="constrained")
 
-    # Panel 1: Map
+    # Panel 1: Map (use solid red color)
     if mg is not None and labels_masked is not None:
         plt.sca(axes[0, 0])
+        from matplotlib.colors import ListedColormap
+        # Create a single-color colormap (solid red)
+        single_red = ListedColormap(['red'])
         imshowhs_grid(
             mg,
             "topographic__elevation",
             plot_type="Drape1",
             drape1=labels_masked,
-            cmap=cmap,
-            allow_colorbar=True,
+            cmap=single_red,
+            allow_colorbar=False,
             cbar_or="vertical",
             ticks_km=True,
             cbar_loc="lower right",
@@ -1743,10 +1745,10 @@ def plot_comparison_panels_with_ecdf(
     model_color = "tab:blue"
     obs_color = "tab:orange"
 
-    # Panel 2: Area (log scale)
+    # Panel 2: Area (log scale) - FIXED
     ax_area = axes[0, 1]
     sns.histplot(
-        np.log10(model_df["area"]),
+        model_df["area"],
         bins=bins_area,
         stat="density",
         color=model_color,
@@ -1755,7 +1757,7 @@ def plot_comparison_panels_with_ecdf(
         ax=ax_area,
     )
     sns.histplot(
-        np.log10(observed_df["Area_m2"]),
+        observed_df["Area_m2"],
         bins=bins_area,
         stat="density",
         color=obs_color,
@@ -1763,7 +1765,8 @@ def plot_comparison_panels_with_ecdf(
         label="Observed",
         ax=ax_area,
     )
-    ax_area.set_xlabel("log10(Area) [m²]")
+    ax_area.set_xscale("log")  # Set log scale on x-axis
+    ax_area.set_xlabel("Area [m²]")
     ax_area.set_title("Histogram of Area")
     ax_area.legend()
 
@@ -1777,7 +1780,6 @@ def plot_comparison_panels_with_ecdf(
     if x_mod.size:
         ax_area_ecdf.plot(x_mod, y_mod, color="gray", linestyle="-", label="Model ECDF")
     ax_area_ecdf.set_ylim(0, 1)
-    ax_area_ecdf.set_xscale("log")
     ax_area_ecdf.set_ylabel("ECDF")
 
     # Panel 3: Elevation

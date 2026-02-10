@@ -91,7 +91,7 @@ config_dict = {
         "submerged_soil_proportion": 0.5,
         "max_soil_depth": 1.5,  # m
         "plot_soil": True,
-        "distribution": "curvature",  # 'uniform', 'elevation', 'curvature', 'drainage_area', 'mean_elev_curv'
+        "distribution": "mean_elev_curv",  # 'uniform', 'elevation', 'curvature', 'drainage_area', 'mean_elev_curv'
         # for "distribution" == "elevation", "relationship" == "linear", "exponential", "power", "sigmoid"
         # for "distribution" == "curvature", "relationship" == "linear", "linear_std_local", "linear_std_global", "piecewise"
         "relationship": "linear_std_local",  # only relevant for 'elevation' or 'curvature'
@@ -109,7 +109,7 @@ config_dict = {
         "h_no_ss": 0.0,
     },
     "pga": {
-        "horizontal_max": 0.6,
+        "horizontal_max": 0.5,
         "vertical_max": 0.2,
         "distribution": "uniform",
         "plot_grids": False,
@@ -164,7 +164,8 @@ match model_region:
 config_dict["output"]["output_dir"] = config["modelled_data_folder"]
 
 # %% Build Landlab grid mg, set elevation/soil depth ...
-load_dem = 'C:/Users/sghoshal/Documents/Python/nepal_cropped_dem.txt'
+load_dem = "C:/Users/sghoshal/Documents/ArcGIS/Projects/CoseismicLandslides_global/GorkhaDEM_05g.asc"
+# 'C:/Users/sghoshal/Documents/Python/nepal_cropped_dem.txt'
 
 mg, z = get_topo(
     dem_type=config_dict["dem_info"]["dem_type"],
@@ -175,7 +176,7 @@ mg, z = get_topo(
     buffer=config_dict["dem_info"]["buffer"],
     api_key=config_dict["dem_info"]["api_key"],
     smooth_num=config_dict["dem_info"]["smooth_num"],
-    # load_dem=load_dem
+    load_dem=load_dem
 )
 
 # Initialize and run flow router

@@ -37,7 +37,7 @@ class ShallowLandslider(Component):
 
     This component computes node-wise stability metrics, identifies and
     sub-groups contiguous unstable regions by aspect, optionally splits groups
-    by measured length–width relationships (KDE-informed), selects candidate
+    by measured length-width relationships (KDE-informed), selects candidate
     landslides with either probabilistic or PGA-weighted strategies, and can
     compute Newmark displacement.
 
