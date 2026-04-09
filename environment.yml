@@ -1,0 +1,20 @@
+name: shallow_landslider
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - numpy >= 2.0
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scikit-image
+  - richdem
+  - landlab
+  - jupyterlab         # ← required to run notebooks
+  - ipykernel          # ← required so the environment appears as a kernel
+  - tqdm
+  - pip
+  - pip:
+      - astropy
+      - bmi-topography

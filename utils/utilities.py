@@ -11,10 +11,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import os
+import sys
 import pickle
+from typing import Dict, Any
+import logging
+from logging.handlers import RotatingFileHandler
 
 from landlab import RasterModelGrid, imshowhs_grid
-from landlab.io import esri_ascii, read_esri_ascii
+from landlab.io import esri_ascii
 
 from bmi_topography import Topography
 
@@ -22,8 +26,41 @@ from bmi_topography import Topography
 # %% Getting topography from OpenTopography
 
 
+def apply_nodata_and_close_nodes(grid, z, nodata_values=(-9999,)):
+    """Convert nodata to CLOSED nodes while keeping z finite."""
+    z = z.astype("float32", copy=False)
+
+    # Build mask: nodata values + existing NaNs
+    nodata_mask = np.zeros_like(z, dtype=bool)
+    for nd in nodata_values:
+        nodata_mask |= z == nd
+    nodata_mask |= np.isnan(z)
+
+    # ---- FIX: modify live status_at_node, not a copy ----
+    CLOSED = grid.BC_NODE_IS_CLOSED
+    grid.status_at_node[nodata_mask] = CLOSED
+
+    # Fill nodata values with a finite filler
+    if (~nodata_mask).any():
+        finite_min = np.nanmin(z[~nodata_mask])
+    else:
+        finite_min = 0.0
+
+    fill_value = finite_min - 1.0
+    z_finite = np.where(nodata_mask, fill_value, z).astype("float32", copy=False)
+
+    # Save fields
+    if "topographic__elevation" in grid.at_node:
+        grid.at_node["topographic__elevation"][:] = z_finite
+    else:
+        grid.add_field("topographic__elevation", z_finite, at="node", copy=False)
+
+    grid.add_field("nodata__mask", nodata_mask, at="node", copy=False)
+
+    return z_finite, nodata_mask
+
+
 def get_topo(
-    api_key: str,
     buffer: float,
     north: float = 28.25,
     south: float = 28.23,
@@ -33,58 +70,34 @@ def get_topo(
     smooth_num: int = 0,
     load_dem: str = None,
     verbose: bool = False,
+    api_key: str = None,
 ):
     """
-    Downloads DEM from OpenTopo and generates a Landlab RasterModelGrid.
-
-    Parameters
-    ----------
-    api_key : str
-        API key for OpenTopo.
-    buffer : float
-        Additional space around the DEM to remove potential edge effects (in degrees).
-    north, south, east, west : float
-        Bounding box in decimal degrees.
-    dem_type : str
-        DEM type from OpenTopo (e.g., NASADEM, SRTMGL1).
-    smooth_num : int
-        Number of smoothing iterations (0 for none).
-    load_dem : str, optional
-        Path to local DEM file in ESRI ASCII format.
-    verbose : bool
-        Print debug information.
-
-    Returns
-    -------
-    grid : RasterModelGrid
-        Landlab grid with elevation field.
-    z_geog : ndarray
-        Elevation values.
+    Future-proof DEM loader that handles nodata correctly using CLOSED nodes.
     """
 
     try:
-        # If loading local DEM
+        # -------------------------------------------------------------
+        # OPTION 1 — Load DEM from local file
+        # -------------------------------------------------------------
         if load_dem is not None:
             if not Path(load_dem).exists():
                 raise FileNotFoundError(f"DEM file not found: {load_dem}")
-            grid, z_geog = read_esri_ascii(
-                load_dem, name="topographic__elevation", halo=1
-            )
-            grid.set_nodata_nodes_to_closed(
-                grid.at_node["topographic__elevation"], -9999
-            )
-            grid.at_node["topographic__elevation"][
-                grid.at_node["topographic__elevation"] == -9999
-            ] = np.nan
 
-        else:
-            # Validate bounding box
-            if north <= south or east <= west:
-                raise ValueError(
-                    "Invalid bounding box: north must be > south and east > west."
+            with open(load_dem) as fp:
+                grid_geog = esri_ascii.load(
+                    fp, name="topographic__elevation", at="node"
                 )
 
-            # Prepare OpenTopo request
+            z_geog = grid_geog.at_node["topographic__elevation"].astype("float32")
+
+        else:
+            # -------------------------------------------------------------
+            # OPTION 2 — Download DEM from OpenTopo
+            # -------------------------------------------------------------
+            if north <= south or east <= west:
+                raise ValueError("Invalid bounding box order.")
+
             params = Topography.DEFAULT.copy()
             params.update(
                 {
@@ -99,48 +112,62 @@ def get_topo(
                 }
             )
 
-            # Fetch DEM
             dem = Topography(**params)
-            try:
-                name = dem.fetch()
-                props = dem.load()
-            except Exception as e:
-                raise RuntimeError(f"Failed to fetch DEM from OpenTopo: {e}")
+            name = dem.fetch()
+            props = dem.load()
 
-            # Load DEM into Landlab
             with open(name) as fp:
                 grid_geog = esri_ascii.load(
                     fp, name="topographic__elevation", at="node"
                 )
-            z_geog = grid_geog.at_node["topographic__elevation"]
 
-            match dem_type:
-                case "SRTMGL3" | "COP90":
-                    grid_spacing = 90
-                case "SRTMGL1" | "AW3D30" | "NASADEM" | "COP30":
-                    grid_spacing = 30
-
-            # Create RasterModelGrid
-            grid = RasterModelGrid(
-                (grid_geog.number_of_node_rows, grid_geog.number_of_node_columns),
-                xy_spacing=grid_spacing,
-                xy_axis_units="m",
-            )
-            grid.add_field("topographic__elevation", z_geog, at="node")
+            z_geog = grid_geog.at_node["topographic__elevation"].astype("float32")
 
             if verbose:
                 print("Request Parameters:", params)
                 print("DEM Properties:", props)
 
-        # Apply smoothing if requested
-        if smooth_num > 0:
-            smoothed_elev = smooth_elevation_grid(
-                grid, method="gaussian", smooth_num=smooth_num
-            )
-            grid.at_node["topographic__elevation"] = smoothed_elev
-            z_geog = smoothed_elev
+        # -------------------------------------------------------------
+        # Create Landlab RasterModelGrid with correct spacing
+        # -------------------------------------------------------------
+        spacing = {
+            "SRTMGL3": 90,
+            "COP90": 90,
+            "SRTMGL1": 30,
+            "AW3D30": 30,
+            "NASADEM": 30,
+            "COP30": 30,
+        }.get(dem_type, 30)
 
-        return grid, z_geog
+        grid = RasterModelGrid(
+            (grid_geog.number_of_node_rows, grid_geog.number_of_node_columns),
+            xy_spacing=spacing,
+            xy_axis_units="m",
+        )
+
+        # -------------------------------------------------------------
+        # NODATA HANDLING (recommended approach)
+        # -------------------------------------------------------------
+        nodata_values = (-9999, 1e30, 3.4028235e38)  # typical ASCII nodata markers
+
+        z_finite, nodata_mask = apply_nodata_and_close_nodes(
+            grid, z_geog, nodata_values=nodata_values
+        )
+
+        # -------------------------------------------------------------
+        # Optional smoothing (safe because nodata nodes are CLOSED)
+        # -------------------------------------------------------------
+        if smooth_num > 0:
+            sm = smooth_elevation_grid(grid, method="gaussian", smooth_num=smooth_num)
+            sm = sm.astype("float32", copy=False)
+            grid.at_node["topographic__elevation"] = sm
+            z_finite = sm
+
+        grid.at_node["topographic__elevation"] = grid.at_node[
+            "topographic__elevation"
+        ].astype("float64", copy=False)
+
+        return grid, z_finite, nodata_mask
 
     except Exception as e:
         raise RuntimeError(f"Error in get_topo: {e}")
@@ -194,8 +221,6 @@ def smooth_elevation_grid(grid, method="mean", smooth_num=1):
 
 
 # %% Apply soil depth to DEM
-
-
 def apply_soil_depth(
     grid,
     elevation_field="topographic__elevation",
@@ -1161,17 +1186,19 @@ def pickle_or_not_to_pickle(
     # --- Load CSVs ---
     # All measured landslide areas
     measured_data = pd.read_csv(file_name_dict["file1"])
+    measured_data.head()
 
     # All measured landslide zonal statistics (elevation, slope, aspect)
     measured_spatial_stats = pd.read_csv(file_name_dict["file2"])
+    measured_spatial_stats.head()
 
     # Filter out landslides below sensitivity threshold
     measured_spatial_stats_900greater = measured_spatial_stats.drop(
-        measured_spatial_stats[measured_spatial_stats["Area"] <= min_area].index
+        measured_spatial_stats[measured_spatial_stats["Area_m2"] <= min_area].index
     )
 
     # Measured landslide zonal statistics inside selected area
-    measured_spatial_stats_clipped = pd.read_csv(file_name_dict["file3"])
+    # measured_spatial_stats_clipped = pd.read_csv(file_name_dict["file3"])
 
     # --- Fit KDE ---
     kde_data, kde_transform = fit_bivariate_kde(
@@ -1186,7 +1213,7 @@ def pickle_or_not_to_pickle(
     bundle = {
         "measured_data": measured_data,
         "measured_spatial_stats": measured_spatial_stats,
-        "measured_spatial_stats_clipped": measured_spatial_stats_clipped,
+        # "measured_spatial_stats_clipped": measured_spatial_stats_clipped,
         "measured_spatial_stats_900greater": measured_spatial_stats_900greater,
         "kde_data": kde_data,
         "kde_transform": kde_transform,
@@ -1199,6 +1226,62 @@ def pickle_or_not_to_pickle(
         print(f"Saved preprocessed data to {pickle_path}")
 
     return bundle
+
+
+def save_model_run(ls, config, output_dir):
+    """
+    Save a ShallowLandslider run in the exact format expected by load_all_runs()
+    and parse_pickle_name(), i.e.:
+        SL_c15000_phi30_sub50_curvature-linear_std_local_probabilistic_seed5000.pkl
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1. Extract required results
+    bundle = {
+        "selected_group_props": ls.results["group_properties"],
+        "grid_arrays": {
+            "selected_labels": ls.results["selected_labels"],
+            "fos": ls.results["factor_of_safety"],
+            "a_diff": ls.results["a_diff"],
+        },
+        "config": config,
+    }
+
+    # 2. Build filename parts
+    sim = config["simulation"]
+    soil = config["soil_params"]
+    
+    tags = []
+    
+    # Model ID
+    tags.append("SL")
+    
+    # Mechanical parameters
+    tags.append(f"c{int(soil['cohesion_eff'])}")
+    tags.append(f"phi{int(soil['angle_int_frict'])}")
+    tags.append(f"sub{int(round(soil['submerged_soil_proportion'] * 100))}")
+    
+    # Soil / thickness distribution
+    dist = soil["distribution"]
+    if dist == "uniform" or dist == "drainage_area":
+        tags.append(f"{dist}")
+    else:
+        tags.append(f"{dist}-{soil["relationship"]}")
+    
+    # Selection method
+    tags.append(sim["selection_method"])
+        
+    # Random seed
+    tags.append(f"seed{sim["random_seed"]}")
+    
+    filename = "_".join(tags) + "pkl"
+    out_path = os.path.join(output_dir, filename)
+    
+    with open(out_path, 'wb') as f:
+        pickle.dump(bundle, f)
+
+    return out_path
 
 
 # %%% Bivariate kde fitting for region splitting
@@ -1683,6 +1766,7 @@ def progress_iter(iterable, verbose: bool = False, desc: str | None = None):
 
 # %% Plot results
 
+
 def _ecdf(values):
     v = np.asarray(values)
     v = v[~np.isnan(v)]
@@ -1703,16 +1787,20 @@ def plot_comparison_panels_with_ecdf(
     save_path=None,
 ):
     # Combine data for shared bins
-    area_combined = np.concatenate([observed_df.get("Area_m2", []), model_df.get("area", [])])
+    area_combined = np.concatenate(
+        [observed_df.get("Area_m2", []), model_df.get("area", [])]
+    )
     elev_combined = np.concatenate(
-        [observed_df.get("mean_elev", []), model_df.get("median_elevation", [])]
+        [observed_df.get("Elevation_m_mean", []), model_df.get("median_elevation", [])]
     )
     slope_combined = np.concatenate(
-        [observed_df.get("mean_slope", []), model_df.get("median_slope", [])]
+        [observed_df.get("Slope_deg_mean", []), model_df.get("median_slope", [])]
     )
 
     # Use log-spaced bins for area
-    bins_area = np.logspace(np.log10(area_combined.min()), np.log10(area_combined.max()), 20)
+    bins_area = np.logspace(
+        np.log10(area_combined.min()), np.log10(area_combined.max()), 20
+    )
     bins_elev = np.histogram_bin_edges(elev_combined, bins=20)
     bins_slope = np.histogram_bin_edges(slope_combined, bins=20)
 
@@ -1722,8 +1810,9 @@ def plot_comparison_panels_with_ecdf(
     if mg is not None and labels_masked is not None:
         plt.sca(axes[0, 0])
         from matplotlib.colors import ListedColormap
+
         # Create a single-color colormap (solid red)
-        single_red = ListedColormap(['red'])
+        single_red = ListedColormap(["red"])
         imshowhs_grid(
             mg,
             "topographic__elevation",
@@ -1794,7 +1883,7 @@ def plot_comparison_panels_with_ecdf(
         ax=ax_elev,
     )
     sns.histplot(
-        observed_df["mean_elev"],
+        observed_df["Elevation_m_mean"],
         bins=bins_elev,
         stat="density",
         color=obs_color,
@@ -1807,7 +1896,7 @@ def plot_comparison_panels_with_ecdf(
     ax_elev.legend()
 
     ax_elev_ecdf = ax_elev.twinx()
-    x_obs, y_obs = _ecdf(observed_df["mean_elev"])
+    x_obs, y_obs = _ecdf(observed_df["Elevation_m_mean"])
     x_mod, y_mod = _ecdf(model_df["median_elevation"])
     if x_obs.size:
         ax_elev_ecdf.plot(x_obs, y_obs, color="black", linestyle="--")
@@ -1828,7 +1917,7 @@ def plot_comparison_panels_with_ecdf(
         ax=ax_slope,
     )
     sns.histplot(
-        observed_df["mean_slope"],
+        observed_df["Slope_deg_mean"],
         bins=bins_slope,
         stat="density",
         color=obs_color,
@@ -1841,7 +1930,7 @@ def plot_comparison_panels_with_ecdf(
     ax_slope.legend()
 
     ax_slope_ecdf = ax_slope.twinx()
-    x_obs, y_obs = _ecdf(observed_df["mean_slope"])
+    x_obs, y_obs = _ecdf(observed_df["Slope_deg_mean"])
     x_mod, y_mod = _ecdf(model_df["median_slope"])
     if x_obs.size:
         ax_slope_ecdf.plot(x_obs, y_obs, color="black", linestyle="--")
@@ -1855,3 +1944,214 @@ def plot_comparison_panels_with_ecdf(
         fig.savefig(save_path, dpi=300, bbox_inches="tight")
         print(f"Saved figure to: {save_path}")
     plt.show()
+
+
+# %% Output file preparation
+# Parameters included in filenames
+FILENAME_PARAMS = [
+    "dem_type",
+    "cohesion_eff",
+    "angle_int_frict",
+    "distribution",
+    "relationship",
+    "curvature_variant",
+    "random_seed",
+]
+
+# Define which parameters should only be included if they're not None/empty
+OPTIONAL_PARAMS = {
+    "relationship",
+    "curvature_variant",
+    "random_seed",
+}
+
+# Parameter abbreviations
+PARAM_ABBREVIATIONS = {
+    "dem_type": "dem",
+    "cohesion_eff": "c",
+    "distribution": "dist",
+    "relationship": "rel",
+    "curvature_variant": "curv",
+    "random_seed": "seed",
+    "angle_int_frict": "intfr",
+}
+
+
+def parse_pickle_name(file_name):
+    """
+    Parse deterministic pickle filename back into parameter dict.
+    Handles variable filename structures with additional components.
+
+    Special handling for:
+    - 'drainage_area' as single distribution type
+    - 'std_global'/'std_local' as curvature variants
+    """
+    base = os.path.splitext(file_name)[0]
+    parts = base.split("_")
+
+    dem = parts[0]
+    coh = int(parts[1][1:])  # strip 'c'
+
+    params = {
+        "dem_type": dem,
+        "cohesion_eff": coh,
+        "distribution": None,
+        "relationship": None,
+        "curvature_variant": None,  # New field for std_global/std_local
+        "random_seed": None,
+    }
+
+    # Find seed first (it's always at the end if present)
+    seed_idx = None
+    for i, part in enumerate(parts):
+        if part.startswith("seed"):
+            params["random_seed"] = int(part[4:])
+            seed_idx = i
+            break
+
+    # Handle special case: drainage_area
+    if len(parts) > 3 and parts[2] == "drainage" and parts[3] == "area":
+        params["distribution"] = "drainage_area"
+        return params
+
+    # Standard distribution
+    params["distribution"] = parts[2]
+
+    # Handle relationship and curvature variants
+    if params["distribution"] in ("elevation", "curvature"):
+        idx = 3
+        # Look for relationship
+        if idx < len(parts) and parts[idx] in ("linear", "exponential"):
+            params["relationship"] = parts[idx]
+            idx += 1
+
+            # For curvature with linear, check for std variants
+            if (
+                params["distribution"] == "curvature"
+                and params["relationship"] == "linear"
+            ):
+                if idx < len(parts) and parts[idx] == "std":
+                    idx += 1  # Move past "std"
+                    if idx < len(parts) and parts[idx] in ("global", "local"):
+                        params["curvature_variant"] = f"std_{parts[idx]}"
+
+    return params
+
+
+def make_key(params):
+    """
+    Create a tuple key from params.
+    Now includes curvature_variant as 5th element.
+    Structure: (cohesion, distribution, relationship, curvature_variant, seed)
+    """
+    return (
+        params["cohesion_eff"],
+        params["distribution"],
+        params["relationship"],  # can be None
+        params["curvature_variant"],  # can be None
+        params["random_seed"],  # can be None
+    )
+
+
+def load_all_runs(folder_path):
+    """
+    Load all pickle files in a folder and store them in a dictionary.
+    Keys: parameter tuples (cohesion, distribution, relationship, curvature_variant, seed)
+    Values: run data
+    """
+    runs_dict = {}
+    run_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
+
+    print("Loading pickle files:")
+    print("=" * 60)
+
+    for file_name in run_files:
+        file_path = os.path.join(folder_path, file_name)
+        with open(file_path, "rb") as f:
+            run_data = pickle.load(f)
+
+        params = parse_pickle_name(file_name)
+        key = make_key(params)
+        runs_dict[key] = run_data
+
+        print(f"File: {file_name}")
+        print(f"  Parsed params: {params}")
+        print(f"  Key: {key}")
+        print()
+
+    return runs_dict
+
+
+def filter_runs(runs_dict: Dict[tuple, Any], **filters) -> Dict[tuple, Any]:
+    """
+    Filter runs by parameter values.
+
+    ANALYSIS FUNCTION - helper for selecting specific runs
+
+    Example:
+        filter_runs(runs_dict, cohesion_eff=5, distribution="elevation")
+    """
+    filtered = {}
+
+    for key, data in runs_dict.items():
+        params = dict(zip(FILENAME_PARAMS, key))
+
+        # Check if all filter conditions match
+        if all(params.get(k) == v for k, v in filters.items()):
+            filtered[key] = data
+
+    return filtered
+
+
+# %% Logging model progress
+# utilities.py (or example_utils.py if you rename it)
+
+
+def setup_logger(
+    name: str = "landslider",
+    log_dir: str = ".",
+    log_file: str | None = None,
+    level: str = "INFO",
+    to_console: bool = True,
+    rotate_mb: int = 50,
+    backups: int = 3,
+) -> logging.Logger:
+    """
+    Configure and return a logger for landslider workflows.
+
+    Safe to call once per process. Subsequent calls return the same logger.
+    """
+
+    logger = logging.getLogger(name)
+
+    if logger.handlers:
+        return logger  # prevent duplicate handlers
+
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+    os.makedirs(log_dir, exist_ok=True)
+
+    if log_file is None:
+        log_file = os.path.join(log_dir, "run.log")
+
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # File handler
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=rotate_mb * 1024 * 1024,
+        backupCount=backups,
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # Optional console handler
+    if to_console:
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        logger.addHandler(console)
+
+    return logger

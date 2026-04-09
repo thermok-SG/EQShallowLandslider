@@ -1,0 +1,73 @@
+dem_path:  "C:/Users/sghoshal/Documents/Python/nepal_cropped_dem_west_bilinear.asc"
+# "/users/sghoshal/.conda/envs/landlab_dev/ShallowLandslider/nepal_cropped_dem_west_bilinear.asc"
+# "/users/sghoshal/.conda/envs/landlab_dev/ShallowLandslider/gorkhadem_05g.asc"
+smooth_num: 0
+
+save_pickle: false
+output_dir: "C:/Users/sghoshal/Documents/Python/EQShallowLandslider/runs_small/"
+
+random_seed: 5000
+
+
+flow_params:
+  enable: true
+  flow_metric: "D8"
+  separate_hill_flow: true
+  depression_handling: "fill"
+  update_hill_depressions: true
+  accumulate_flow: true
+
+chunking:
+  enable_auto: true              # auto-switch to chunking mode  
+  threshold_cells: 20000000      # DEMs >20M cells → chunked mode  
+  tile_size: [2500, 2500]        # Size of tile core region  
+  overlap: 10                     # Necessary for slope/aspect stability  
+
+soil_params:
+  cohesion_eff: 15000
+  angle_int_frict: 30
+  submerged_soil_proportion: 0.5
+  max_soil_depth: 1.5
+  distribution: "mean_elev_curv"
+  relationship: "linear_std_local"
+
+  # Elevation-based params
+  decay_rate: 1.0 # for relationship == "exponential"
+  exponent: 2.0 # for relationship == "power"
+  # Drainage-area based params
+  drainage_transform: threshold
+  drainage_threshold: 1e6 # Flow accumulation threshold
+  drainage_power: 0.3
+  # Curvature-based params
+  P0: 0.05
+  h_star: 1.0
+  D: 0.01
+  h_min: 0.1
+  h_no_ss: 0.0
+
+pga:
+  horizontal_max: 0.5
+  vertical_max: 0.2
+  distribution: "uniform"
+
+simulation:
+  selection_method: "probabilistic"
+  proportion_method: "conservative" # empirical|statistical|risk_profile|adaptive|conservative
+  custom_proportion: 0.25
+  handle_small: "merge"
+  aspect_interval: 20 # interval for topographic aspect zones
+  verbose: false
+
+  compute_displacement: false
+  time_shaking: 10 # seconds (used for Newmark displacement if enabled)
+  displacement_threshold: 0.0
+  enable_runout: false
+  update_soil: false
+
+split_by_width:
+  enabled: true
+  pickle_path: "C:/Users/sghoshal/Documents/Python/EQShallowLandslider/utils/measured_data.pkl"
+  width_threshold: 1.5
+  max_iterations: 5
+  min_region_size: 10
+  convergence_threshold: 0.75
