@@ -171,19 +171,14 @@ After `run_one_step()`, the component populates:
 ```
 ShallowLandslider/
 ├─ __init__.py
-├─ shallow_landslide_component.py   # Main component
-├─ helper_functions/
+├─ shallow_landslide_component.py       # Main component
+├─ utils/                               
 │   ├─ __init__.py
-│   ├─ displacement.py              # Newmark displacement
-│   ├─ regions.py                   # Region labelling & properties
-│   ├─ selection.py                 # Probabilistic & PGA selection
-│   ├─ split.py                     # Recursive splitting
-│   ├─ stability.py                 # FoS & critical acceleration
-│   ├─ utilities.py                 # Optional helpers (get_topo, generate_acceleration_grid, etc.)
-├─ examples/                        # Suite of example data/notebooks to run full model
-├─ tests/                           # Pytest suite
-├─ example_config.json              # Sample config
-└─ README.md                        # This file
+│   ├─ utilities.py                     # Optional helpers (get_topo, generate_acceleration_grid, etc.)
+├─ input_data/                          # Suite of example data/notebooks to run full model
+├─ tests/                               # Pytest suite
+├─ ShallowLandslider_quickstart.ipynb   # Sample config
+└─ README.md                            
 ```
 
 ---
