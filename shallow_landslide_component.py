@@ -21,17 +21,35 @@ from scipy.ndimage import (
     gaussian_filter as _gaussian_filter,
     binary_dilation as _binary_dilation,
     generate_binary_structure as _generate_binary_structure,
-    center_of_mass as _center_of_mass,
 )
 from skimage.measure import regionprops as _regionprops
 from scipy.special import expit as _expit
+# from joblib import Parallel, delayed
 
 try:
     from tqdm import tqdm as _tqdm
 except Exception:
     _tqdm = None
+    
+import time as _time
+from contextlib import contextmanager as _contextmanager
 
 logger = logging.getLogger("landslider")
+
+@_contextmanager
+def _log_stage(name: str):
+    """Context manager that logs start, elapsed time, and any exception for a pipeline stage."""
+    logger.info(f"[START] {name}")
+    t0 = _time.perf_counter()
+    try:
+        yield
+    except Exception as exc:
+        elapsed = _time.perf_counter() - t0
+        logger.error(f"[FAILED] {name} — raised {type(exc).__name__} after {elapsed:.1f}s: {exc}")
+        raise
+    else:
+        elapsed = _time.perf_counter() - t0
+        logger.info(f"[DONE]  {name} — {elapsed:.1f}s")
 
 
 class ShallowLandslider(Component):
@@ -189,6 +207,7 @@ class ShallowLandslider(Component):
         g: float = 9.81,
         split_by_width_config: Optional[dict] = None,
         verbose: bool = False,
+        n_jobs: int = 1,
     ):
         """
         Initialize the ShallowLandslider component.
@@ -249,6 +268,7 @@ class ShallowLandslider(Component):
         self.g = float(g)
         self.split_by_width_config = split_by_width_config
         self.verbose = verbose
+        self._n_jobs = int(n_jobs)
 
         # Internals
         self._fos = None
@@ -342,6 +362,15 @@ class ShallowLandslider(Component):
         kde_input : dict, optional
             If provided, overrides `split_by_width_config` for KDE-based width splitting.
         """
+        t_total = _time.perf_counter()
+        logger.info(
+            f"=== run_one_step | grid {self.grid.shape[0]}×{self.grid.shape[1]} "
+            f"({self.grid.number_of_nodes:,} nodes) | "
+            f"selection={self.selection_method} | "
+            f"KDE={'yes' if self.split_by_width_config else 'no'} | "
+            f"n_jobs={self._n_jobs} ==="
+        )
+        
         if kde_input is not None:
             self.split_by_width_config = kde_input
         self._compute_stability()
@@ -383,6 +412,11 @@ class ShallowLandslider(Component):
         del self._labels
         self._labels = None
         gc.collect()
+        logger.debug("Freed _labels and ran gc.collect()")
+
+        logger.info(
+            f"=== run_one_step complete — total {_time.perf_counter() - t_total:.1f}s ==="
+        )
 
     # ---------------------------------------------------------------------
     # Pipeline steps
@@ -438,29 +472,56 @@ class ShallowLandslider(Component):
         - `landslide__unstable_mask`
         """
 
-        logger.info("Starting _compute_stability...")
-        self._fos = self._factor_of_safety(
-            self.grid, self.cohesion_eff, self.angle_int_frict
-        )
-        self.grid.at_node["landslide__factor_of_safety"] = self._fos
+        with _log_stage("_compute_stability"):
+            n_nodes = self.grid.number_of_nodes
+            logger.debug(
+                f"  cohesion_eff={self.cohesion_eff:.1f} Pa | "
+                f"phi={np.degrees(self.angle_int_frict):.1f}° | "
+                f"m={self.submerged_soil_proportion}"
+            )
 
-        a_c, a_s, a_diff = self._critical_transient_acceleration(
-            self.grid,
-            self.cohesion_eff,
-            self.angle_int_frict,
-            submerged_soil_proportion=self.submerged_soil_proportion,
-            a_h=self._pga_h * self.g,
-            a_v=self._pga_v * self.g,
-        )
+            self._fos = self._factor_of_safety(
+                self.grid, self.cohesion_eff, self.angle_int_frict
+            )
+            self.grid.at_node["landslide__factor_of_safety"] = self._fos
 
-        self._a_transient, self._a_driving, self._a_diff = a_c, a_s, a_diff
-        self.grid.at_node["landslide__critical_acceleration"] = a_c
-        self.grid.at_node["landslide__driving_minus_critical_acceleration"] = a_diff
+            fos_valid = self._fos[np.isfinite(self._fos)]
+            
+            if fos_valid.size > 0:
+                logger.info(
+                    f"  FoS | min={fos_valid.min():.3f} "
+                    f"median={np.median(fos_valid):.3f} "
+                    f"max={fos_valid.max():.3f} | "
+                    f"n_finite={len(fos_valid):,}/{n_nodes:,}"
+                )
+            else:
+                logger.warning(
+                    f"  FoS | no finite values in this tile "
+                    f"(n_finite=0/{n_nodes:,})"
+                )
 
-        unstable = a_s > a_c
-        unstable[self.grid.boundary_nodes] = False
-        self._unstable_mask = unstable
-        self.grid.at_node["landslide__unstable_mask"] = np.asarray(unstable, dtype=bool)
+            a_c, a_s, a_diff = self._critical_transient_acceleration(
+                self.grid,
+                self.cohesion_eff,
+                self.angle_int_frict,
+                submerged_soil_proportion=self.submerged_soil_proportion,
+                a_h=self._pga_h * self.g,
+                a_v=self._pga_v * self.g,
+            )
+            self._a_transient, self._a_driving, self._a_diff = a_c, a_s, a_diff
+            self.grid.at_node["landslide__critical_acceleration"] = a_c
+            self.grid.at_node["landslide__driving_minus_critical_acceleration"] = a_diff
+
+            unstable = a_s > a_c
+            unstable[self.grid.boundary_nodes] = False
+            self._unstable_mask = unstable
+            self.grid.at_node["landslide__unstable_mask"] = np.asarray(unstable, dtype=bool)
+
+            n_unstable = int(np.sum(unstable))
+            logger.info(
+                f"  Unstable nodes: {n_unstable:,}/{n_nodes:,} "
+                f"({100.0 * n_unstable / n_nodes:.2f}%)"
+            )
 
     def _identify_regions(self):
         """
@@ -470,11 +531,21 @@ class ShallowLandslider(Component):
         ------
         - `landslide__region_labels`
         """
-        logger.info("Starting _identify_regions...")
-        sliding_bool = self._unstable_mask.reshape(self.grid.shape)
-        labels, _ = self._calculate_regions(sliding_bool, connect_val=8)
-        self._labels = labels.reshape(self.grid.number_of_nodes)
-        self.grid.at_node["landslide__region_labels"] = self._labels
+        with _log_stage("_identify_regions"):
+            sliding_bool = self._unstable_mask.reshape(self.grid.shape)
+            labels, n_regions = self._calculate_regions(sliding_bool, connect_val=8)
+            self._labels = labels.reshape(self.grid.number_of_nodes)
+            self.grid.at_node["landslide__region_labels"] = self._labels
+
+            sizes = np.bincount(self._labels)[1:]  # exclude background label 0
+            if len(sizes) > 0:
+                logger.info(
+                    f"  Connected regions: {n_regions:,} | "
+                    f"size min={sizes.min()} median={int(np.median(sizes))} "
+                    f"max={sizes.max():,} (pixels)"
+                )
+            else:
+                logger.info("  No connected regions found.")
 
     def _filter_by_aspect_and_split(self):
         """
@@ -485,39 +556,58 @@ class ShallowLandslider(Component):
         - `landslide__aspect_subgroup_labels`
         - `landslide__dimension_split_labels` (if splitting is configured)
         """
-        logger.info("Starting _filter_by_aspect_and_split...")
+        with _log_stage("_filter_by_aspect_and_split"):
+            n_before = int(np.max(self._labels)) if self._labels is not None else 0
+            logger.info(f"  Input regions: {n_before:,}")
 
-        zones = self._create_zones(interval=self.aspect_interval)
-        aspect_grid = self._aspect.reshape(self.grid.shape)
-        aspect_subgroups, _, _ = self._split_groups_by_aspect(
-            groups=self._labels.reshape(self.grid.shape),
-            aspect_array=aspect_grid,
-            zones=zones,
-            handle_small=self.handle_small,
-            verbose=self.verbose,
-        )
-        self._aspect_labels = aspect_subgroups.reshape(self.grid.number_of_nodes)
-        self.grid.at_node["landslide__aspect_subgroup_labels"] = self._aspect_labels
+            zones = self._create_zones(interval=self.aspect_interval)
+            logger.debug(f"  Aspect interval: {self.aspect_interval}° → {len(zones)} zones")
 
-        if self.split_by_width_config is not None:
-            cfg = self.split_by_width_config
-            split_labels, _ = self._recursive_split_wide_regions(
-                labeled_2d=self._aspect_labels.reshape(self.grid.shape),
-                aspect_2d=self._aspect.reshape(self.grid.shape),
-                slopes_2d=self._slope_deg32.reshape(self.grid.shape),
-                kde_results=cfg.get("kde_data"),
-                transform_info=cfg.get("kde_transform"),
-                width_threshold=cfg.get("width_threshold", 1.5),
-                max_iterations=cfg.get("max_iterations", 10),
-                min_region_size=cfg.get("min_region_size", 10),
-                convergence_threshold=cfg.get("convergence_threshold", 0.75),
+            aspect_grid = self._aspect.reshape(self.grid.shape)
+            aspect_subgroups, _, _ = self._split_groups_by_aspect(
+                groups=self._labels.reshape(self.grid.shape),
+                aspect_array=aspect_grid,
+                zones=zones,
+                handle_small=self.handle_small,
                 verbose=self.verbose,
             )
-            self._split_labels = split_labels.reshape(self.grid.number_of_nodes)
-            self.grid.at_node["landslide__dimension_split_labels"] = self._split_labels
-        else:
-            logger.info("KDE splitting skipped: no split_by_width_config provided.")
-            return
+            self._aspect_labels = aspect_subgroups.reshape(self.grid.number_of_nodes)
+            self.grid.at_node["landslide__aspect_subgroup_labels"] = self._aspect_labels
+
+            n_after_aspect = int(np.max(self._aspect_labels))
+            logger.info(
+                f"  After aspect split: {n_after_aspect:,} subgroups "
+                f"(+{n_after_aspect - n_before:,} from aspect splitting)"
+            )
+
+            if self.split_by_width_config is not None:
+                cfg = self.split_by_width_config
+                logger.info(
+                    f"  KDE split | width_threshold={cfg.get('width_threshold', 1.5)} | "
+                    f"max_iterations={cfg.get('max_iterations', 10)} | "
+                    f"convergence={cfg.get('convergence_threshold', 0.75)}"
+                )
+                split_labels, _ = self._recursive_split_wide_regions(
+                    labeled_2d=self._aspect_labels.reshape(self.grid.shape),
+                    aspect_2d=self._aspect.reshape(self.grid.shape),
+                    slopes_2d=self._slope_deg32.reshape(self.grid.shape),
+                    kde_results=cfg.get("kde_data"),
+                    transform_info=cfg.get("kde_transform"),
+                    width_threshold=cfg.get("width_threshold", 1.5),
+                    max_iterations=cfg.get("max_iterations", 10),
+                    min_region_size=cfg.get("min_region_size", 10),
+                    convergence_threshold=cfg.get("convergence_threshold", 0.75),
+                    verbose=self.verbose,
+                )
+                self._split_labels = split_labels.reshape(self.grid.number_of_nodes)
+                self.grid.at_node["landslide__dimension_split_labels"] = self._split_labels
+                n_after_kde = int(np.max(self._split_labels))
+                logger.info(
+                    f"  After KDE split: {n_after_kde:,} subgroups "
+                    f"(+{n_after_kde - n_after_aspect:,} from KDE splitting)"
+                )
+            else:
+                logger.info("  KDE splitting skipped: no split_by_width_config provided.")
 
     def _compute_group_properties(self):
         """
@@ -527,33 +617,39 @@ class ShallowLandslider(Component):
         ------
         - Stores DataFrame in `self._group_properties_df`
         """
-        logger.info("Starting _compute_group_properties...")
-        subgroup_array = (
-            self._split_labels
-            if self._split_labels is not None
-            else self._aspect_labels
-        )
-        slopes_deg = self._slope_deg32  # view; lightweight
+        with _log_stage("_compute_group_properties"):
+            subgroup_array = (
+                self._split_labels if self._split_labels is not None
+                else self._aspect_labels
+            )
+            n_groups = int(np.max(subgroup_array))
+            logger.info(f"  Computing properties for {n_groups:,} subgroups")
 
-        props_df, _working = self._calculate_region_properties(
-            labeled_2d=subgroup_array.reshape(self.grid.shape),
-            slopes_1d_deg=slopes_deg,
-            aspect_2d=self._aspect.reshape(self.grid.shape),
-            min_size=1,
-            handle_small=self.handle_small,
-        )
-        self._group_properties_df = props_df[
-            [
-                "max_elevation",
-                "median_elevation",
-                "area",
-                "slope_direction_length_new",
-                "perpendicular_width_new",
-                "local_relief",
-                "median_slope",
-                "mean_aspect",
-            ]
-        ]
+            slopes_deg = self._slope_deg32
+            props_df, _working = self._calculate_region_properties(
+                labeled_2d=subgroup_array.reshape(self.grid.shape),
+                slopes_1d_deg=slopes_deg,
+                aspect_2d=self._aspect.reshape(self.grid.shape),
+                min_size=1,
+                handle_small=self.handle_small,
+            )
+            self._group_properties_df = props_df[[
+                "max_elevation", "median_elevation", "area",
+                "slope_direction_length_new", "perpendicular_width_new",
+                "local_relief", "median_slope", "mean_aspect",
+            ]]
+
+            if len(self._group_properties_df) > 0:
+                areas = self._group_properties_df["area"]
+                logger.info(
+                    f"  Group areas (m²): min={areas.min():.0f} "
+                    f"median={areas.median():.0f} max={areas.max():.0f}"
+                )
+                slopes = self._group_properties_df["median_slope"]
+                logger.info(
+                    f"  Median slopes (°): min={slopes.min():.1f} "
+                    f"median={slopes.median():.1f} max={slopes.max():.1f}"
+                )
 
     def _select_groups(self):
         """
@@ -564,59 +660,90 @@ class ShallowLandslider(Component):
         - `landslide__selected_labels`
         - Stores `self._selected_proportion` (float)
         """
-        logger.info("Starting _select_groups...")
-        subgroup_array = (
-            self._split_labels
-            if self._split_labels is not None
-            else self._aspect_labels
-        )
-        if self.selection_method == "probabilistic":
-            probs, _meta = self._generate_landslide_probability(
-                labeled_2d=subgroup_array.reshape(self.grid.shape),
-                slope_deg_1d=self._slope_deg32,
-                critical_accel_1d=self._a_transient,
-                h_pga_1d=self._pga_h,
-                v_pga_1d=self._pga_v,
-                random_seed=self.random_seed,
-                normalize=True,
+        with _log_stage("_select_groups"):
+            subgroup_array = (
+                self._split_labels if self._split_labels is not None
+                else self._aspect_labels
             )
-            selected_groups, meta_sel = self._probabilistic_group_selection(
-                labeled_2d=subgroup_array.reshape(self.grid.shape),
-                probability_2d=probs,
-                proportion_method=self.proportion_method,
-                custom_proportion=self.custom_proportion,
-                random_seed=self.random_seed,
-                reproducible=True,
+            n_candidates = int(np.max(subgroup_array))
+            logger.info(
+                f"  Candidate groups: {n_candidates:,} | "
+                f"method={self.selection_method} | "
+                f"proportion_method={self.proportion_method}"
             )
-            self._selected_labels = selected_groups.reshape(self.grid.number_of_nodes)
-            self._selected_proportion = meta_sel.get("proportion_calculated", None)
-        elif self.selection_method == "pga_weighted":
-            probs, proportion, _meta = self._generate_landslide_proportion_from_pga(
-                labeled_2d=subgroup_array.reshape(self.grid.shape),
-                weight_2d=self._a_transient.reshape(self.grid.shape),
-                h_pga_1d=self._pga_h,
-                v_pga_1d=self._pga_v,
-                random_seed=self.random_seed,
-            )
-            groups, _labels = self._select_groups_by_proportion_weighted(
-                labeled_2d=subgroup_array.reshape(self.grid.shape),
-                probability_2d=probs,
-                proportion=proportion,
-            )
-            self._selected_labels = groups.reshape(self.grid.number_of_nodes)
-            self._selected_proportion = proportion
-        else:
-            raise ValueError(f"Unknown selection_method: {self.selection_method}")
-        self.grid.at_node["landslide__selected_labels"] = self._selected_labels
-        # Annotate selected groups in properties table
-        try:
-            if self._group_properties_df is not None:
-                sel = np.unique(self._selected_labels[self._selected_labels > 0])
-                self._group_properties_df["selected"] = (
-                    self._group_properties_df.index.isin(sel)
+
+            if self.selection_method == "probabilistic":
+                probs, _meta = self._generate_landslide_probability(
+                    labeled_2d=subgroup_array.reshape(self.grid.shape),
+                    slope_deg_1d=self._slope_deg32,
+                    critical_accel_1d=self._a_transient,
+                    h_pga_1d=self._pga_h,
+                    v_pga_1d=self._pga_v,
+                    random_seed=self.random_seed,
+                    normalize=True,
                 )
-        except Exception:
-            pass
+                logger.debug(
+                    f"  Probability array: min={float(probs.min()):.4f} "
+                    f"mean={float(probs.mean()):.4f} max={float(probs.max()):.4f}"
+                )
+                selected_groups, meta_sel = self._probabilistic_group_selection(
+                    labeled_2d=subgroup_array.reshape(self.grid.shape),
+                    probability_2d=probs,
+                    proportion_method=self.proportion_method,
+                    custom_proportion=self.custom_proportion,
+                    random_seed=self.random_seed,
+                    reproducible=True,
+                )
+                self._selected_labels   = selected_groups.reshape(self.grid.number_of_nodes)
+                self._selected_proportion = meta_sel.get("proportion_calculated", None)
+                logger.info(
+                    f"  Selected {meta_sel.get('num_groups_selected', '?'):,} / "
+                    f"{meta_sel.get('num_groups_total', '?'):,} groups | "
+                    f"proportion={self._selected_proportion:.4f}"
+                )
+
+            elif self.selection_method == "pga_weighted":
+                probs, proportion, _meta = self._generate_landslide_proportion_from_pga(
+                    labeled_2d=subgroup_array.reshape(self.grid.shape),
+                    weight_2d=self._a_transient.reshape(self.grid.shape),
+                    h_pga_1d=self._pga_h,
+                    v_pga_1d=self._pga_v,
+                    random_seed=self.random_seed,
+                )
+                groups, _labels = self._select_groups_by_proportion_weighted(
+                    labeled_2d=subgroup_array.reshape(self.grid.shape),
+                    probability_2d=probs,
+                    proportion=proportion,
+                )
+                self._selected_labels   = groups.reshape(self.grid.number_of_nodes)
+                self._selected_proportion = proportion
+                logger.info(
+                    f"  Selected proportion={proportion:.4f} | "
+                    f"n_selected_nodes="
+                    f"{int(np.sum(self._selected_labels > 0)):,}"
+                )
+
+            else:
+                raise ValueError(f"Unknown selection_method: {self.selection_method}")
+
+            self.grid.at_node["landslide__selected_labels"] = self._selected_labels
+            n_selected_nodes = int(np.sum(self._selected_labels > 0))
+            n_selected_groups = int(np.unique(
+                self._selected_labels[self._selected_labels > 0]
+            ).size) if n_selected_nodes > 0 else 0
+            logger.info(
+                f"  Final: {n_selected_groups:,} selected groups covering "
+                f"{n_selected_nodes:,} nodes"
+            )
+
+            try:
+                if self._group_properties_df is not None:
+                    sel = np.unique(self._selected_labels[self._selected_labels > 0])
+                    self._group_properties_df["selected"] = (
+                        self._group_properties_df.index.isin(sel)
+                    )
+            except Exception:
+                pass
 
     def _compute_displacement(self, time_shaking: float):
         """
@@ -632,22 +759,34 @@ class ShallowLandslider(Component):
         - `landslide__newmark_displacement`
         - Stores list of node indices exceeding `displacement_threshold`
         """
-        logger.info("Starting _compute_displacement...")
-        a_diff = self._a_diff.copy()
-        a_diff[a_diff < 0] = 0.0
-        time_map = (
-            np.ones_like(self._selected_labels).reshape(self.grid.shape) * time_shaking
-        )
-        newmark = self._calculate_newmark_displacement(
-            a_difference_1d=a_diff,
-            selected_labels_2d=self._selected_labels.reshape(self.grid.shape),
-            time_shaking_2d=time_map,
-        )
-        self._newmark = newmark
-        self.grid.at_node["landslide__newmark_displacement"] = newmark
-        mask = np.zeros(self.grid.number_of_nodes, dtype=bool)
-        mask[newmark > self.displacement_threshold] = True
-        self._high_disp_nodes = np.where(mask)[0]
+        with _log_stage("_compute_displacement"):
+            logger.info(f"  time_shaking={time_shaking}s | threshold={self.displacement_threshold}m")
+            a_diff = self._a_diff.copy()
+            a_diff[a_diff < 0] = 0.0
+            time_map = (
+                np.ones_like(self._selected_labels).reshape(self.grid.shape) * time_shaking
+            )
+            newmark = self._calculate_newmark_displacement(
+                a_difference_1d=a_diff,
+                selected_labels_2d=self._selected_labels.reshape(self.grid.shape),
+                time_shaking_2d=time_map,
+            )
+            self._newmark = newmark
+            self.grid.at_node["landslide__newmark_displacement"] = newmark
+
+            mask = np.zeros(self.grid.number_of_nodes, dtype=bool)
+            mask[newmark > self.displacement_threshold] = True
+            self._high_disp_nodes = np.where(mask)[0]
+
+            disp_valid = newmark[np.isfinite(newmark) & (newmark > 0)]
+            if len(disp_valid) > 0:
+                logger.info(
+                    f"  Displacement (m): min={disp_valid.min():.4f} "
+                    f"median={np.median(disp_valid):.4f} max={disp_valid.max():.4f}"
+                )
+            logger.info(
+                f"  Nodes above threshold: {len(self._high_disp_nodes):,}"
+            )
 
     # ---------------------------------------------------------------------
     # STABILITY (inlined from stability.py)
@@ -714,7 +853,7 @@ class ShallowLandslider(Component):
         tuple of np.ndarray
             (a_c_transient, a_s_driving, a_difference) in node order.
         """
-        soil_depth = np.array(grid["node"]["soil__depth"])
+        soil_depth = np.asarray(grid["node"]["soil__depth"], dtype=np.float64).copy()
         soil_depth[soil_depth == 0] += 0.001  # Avoids division by zero
 
         slope = self._slope_rad64
@@ -956,51 +1095,65 @@ class ShallowLandslider(Component):
         next_label = 1
         zone_names = list(zones.keys())
         small_regions = []
-        for group_id in self._progress_iter(
-            np.unique(groups), verbose=verbose, desc="Splitting by aspect"
-        ):
-            if group_id == 0:
-                continue
-            group_mask = groups == group_id
-            for zone_id in np.unique(zone_labels[group_mask]):
-                zone_mask = zone_labels == zone_id
-                combined_mask = group_mask & zone_mask
-                labels, num_features = _label(combined_mask)
+        # Use regionprops to get bounding boxes — avoids full-grid scans per group
+        region_props_list = _regionprops(groups)
+        for region in self._progress_iter(
+            region_props_list, verbose=verbose, desc="Splitting by aspect"):
+            group_id = region.label
+            r0, c0, r1, c1 = region.bbox
+            # Pad by 1 so dilation later stays in bounds
+            r0p = max(0, r0 - 1); r1p = min(groups.shape[0], r1 + 1)
+            c0p = max(0, c0 - 1); c1p = min(groups.shape[1], c1 + 1)
+
+            sub_groups = groups[r0p:r1p, c0p:c1p]
+            sub_zones  = zone_labels[r0p:r1p, c0p:c1p]
+            group_submask = sub_groups == group_id
+
+            for zone_id in np.unique(sub_zones[group_submask]):
+                combined_mask = group_submask & (sub_zones == zone_id)
+                sub_labels, num_features = _label(combined_mask)
                 for label_name in range(1, num_features + 1):
-                    component_mask = labels == label_name
-                    component_size = np.sum(component_mask)
+                    component_mask = sub_labels == label_name
+                    component_size = int(np.sum(component_mask))
+                    local_rows, local_cols = np.where(component_mask)
+                    abs_rows = local_rows + r0p
+                    abs_cols = local_cols + c0p
                     if component_size < min_size:
-                        small_region_rows, small_region_cols = np.where(component_mask)
-                        small_regions.append(
-                            {
-                                "rows": small_region_rows,
-                                "cols": small_region_cols,
-                                "group_id": group_id,
-                                "zone_id": zone_id,
-                                "size": component_size,
-                                "centroid": _center_of_mass(component_mask),
-                            }
-                        )
+                        small_regions.append({
+                            "rows": abs_rows,
+                            "cols": abs_cols,
+                            "group_id": group_id,
+                            "zone_id": zone_id,
+                            "size": component_size,
+                            "centroid": (float(np.mean(abs_rows)), float(np.mean(abs_cols))),
+                        })
                     else:
-                        new_groups[component_mask] = next_label
+                        new_groups[abs_rows, abs_cols] = next_label
                         group_info[next_label] = (group_id, zone_names[zone_id])
                         next_label += 1
+
         if small_regions and handle_small == "merge":
             small_regions.sort(key=lambda x: x["size"])
             for region in small_regions:
-                # Reconstruct mask only for this iteration, then let it be GC'd
-                mask = np.zeros(groups.shape, dtype=bool)
-                mask[region["rows"], region["cols"]] = True
+                rmin = int(region["rows"].min())
+                rmax = int(region["rows"].max()) + 1
+                cmin = int(region["cols"].min())
+                cmax = int(region["cols"].max()) + 1
+                # Bbox padded by 1 for dilation
+                r0 = max(0, rmin - 1); r1 = min(new_groups.shape[0], rmax + 1)
+                c0 = max(0, cmin - 1); c1 = min(new_groups.shape[1], cmax + 1)
 
-                dilated = _binary_dilation(mask)
-                neighbor_mask = dilated & ~mask
-                del mask  # free immediately
+                local = np.zeros((r1 - r0, c1 - c0), dtype=bool)
+                local[region["rows"] - r0, region["cols"] - c0] = True
+                dilated_local = _binary_dilation(local)
+                neighbor_local = dilated_local & ~local
 
-                neighbor_labels = np.unique(new_groups[neighbor_mask])
+                sub_new_groups = new_groups[r0:r1, c0:c1]
+                neighbor_labels = np.unique(sub_new_groups[neighbor_local])
                 neighbor_labels = neighbor_labels[neighbor_labels > 0]
                 if len(neighbor_labels) > 0:
                     neighbor_counts = [
-                        (nl, np.sum(new_groups[neighbor_mask] == nl))
+                        (nl, np.sum(sub_new_groups[neighbor_local] == nl))
                         for nl in neighbor_labels
                     ]
                     best_neighbor = max(neighbor_counts, key=lambda x: x[1])[0]
@@ -1392,7 +1545,7 @@ class ShallowLandslider(Component):
         random_seed : int or None
             Seed for reproducibility.
         normalize : bool
-            Min–max normalize group probabilities.
+            Min-max normalize group probabilities.
 
         Returns
         -------
@@ -1406,39 +1559,88 @@ class ShallowLandslider(Component):
         if random_seed is not None:
             np.random.seed(random_seed)
         if critical_accel_1d is None:
-            crit_grid = np.full_like(h_grid, 0.2, dtype=np.float32)
+            crit_grid = np.full(self.grid.shape, 0.2, dtype=np.float32)
         else:
             crit_grid = np.asarray(critical_accel_1d).reshape(self.grid.shape)
         slope_grid = None
         if slope_deg_1d is not None:
             slope_grid = np.asarray(slope_deg_1d).reshape(self.grid.shape)
+
         unique_labels = np.unique(labeled_2d)[1:]
-        prob_2d = np.zeros_like(labeled_2d, dtype=np.float32)
-        group_probs = {}
-        for lab in unique_labels:
-            mask = labeled_2d == lab
-            info = self._sel__calculate_group_probability(
-                h_grid, v_grid, crit_grid, mask, slope_grid=slope_grid
-            )
-            info["mask"] = mask
-            group_probs[int(lab)] = info
-        if normalize:
-            normalized, norm_meta = self._sel__normalize_group_probabilities(
-                group_probs
-            )
-            prob_2d = self._sel__apply_probabilities_to_array(
-                prob_2d, normalized, normalized=True
-            )
-            meta = self._sel__create_metadata(
-                normalized, prob_2d, norm_meta, normalized=True
-            )
+        if len(unique_labels) == 0:
+            return np.zeros_like(labeled_2d, dtype=np.float32), {}
+
+        # ------------------------------------------------------------------
+        # Compute all per-group means in one vectorised call each.
+        # scipy.ndimage.mean never materialises per-group boolean masks.
+        # ------------------------------------------------------------------
+        mean_h    = np.asarray(_nd.mean(h_grid,    labels=labeled_2d, index=unique_labels))
+        mean_v    = np.asarray(_nd.mean(v_grid,    labels=labeled_2d, index=unique_labels))
+        mean_crit = np.asarray(_nd.mean(crit_grid, labels=labeled_2d, index=unique_labels))
+        if slope_grid is not None:
+            mean_slope = np.asarray(_nd.mean(slope_grid, labels=labeled_2d, index=unique_labels))
         else:
-            prob_2d = self._sel__apply_probabilities_to_array(
-                prob_2d, group_probs, normalized=False
-            )
-            meta = self._sel__create_metadata(
-                group_probs, prob_2d, {"performed": False}, normalized=False
-            )
+            mean_slope = None
+
+        # Scalar results only — no masks stored anywhere.
+        group_probs = {}
+        raw_probs   = np.zeros(len(unique_labels), dtype=np.float64)
+
+        for i, lab in enumerate(unique_labels):
+            local_crit = float(mean_crit[i])
+            mh = float(mean_h[i])
+            mv = float(mean_v[i])
+            resultant  = float(np.sqrt(mh ** 2 + mv ** 2))
+            pga_ratio  = resultant / local_crit if local_crit > 0 else np.inf
+            base_prob  = self._sel___calculate_acceleration_probability(pga_ratio, local_crit)
+            if mean_slope is not None:
+                base_prob *= self._sel___calculate_slope_stability_factor(float(mean_slope[i]))
+            stochastic = float(np.random.lognormal(mean=0, sigma=0.2))
+            group_prob = float(np.clip(base_prob * stochastic, 0, 1))
+            raw_probs[i] = group_prob
+            group_probs[int(lab)] = {
+                "probability":            group_prob,
+                "critical_acceleration":  local_crit,
+                "resultant_pga":          resultant,
+                "pga_ratio":              pga_ratio,
+                "base_probability":       base_prob,
+                # no "mask" key — that was the memory killer
+            }
+
+        # ------------------------------------------------------------------
+        # Normalise if requested, then paint prob_2d with a lookup array.
+        # lookup[label] = probability; prob_2d = lookup[labeled_2d] is a
+        # single vectorised index — no per-group masks, no loop.
+        # ------------------------------------------------------------------
+        max_label   = int(labeled_2d.max())
+        prob_lookup = np.zeros(max_label + 1, dtype=np.float32)
+
+        if normalize and len(raw_probs) > 1:
+            min_p, max_p = float(raw_probs.min()), float(raw_probs.max())
+            if max_p > min_p:
+                norm_vals = (raw_probs - min_p) / (max_p - min_p)
+                norm_meta = {"performed": True,
+                             "min_raw_prob": min_p, "max_raw_prob": max_p}
+            else:
+                norm_vals = raw_probs.copy()
+                norm_meta = {"performed": False,
+                             "reason": "All groups have the same probability",
+                             "value": min_p}
+            for i, lab in enumerate(unique_labels):
+                nv = float(norm_vals[i])
+                prob_lookup[int(lab)] = nv
+                group_probs[int(lab)]["normalized_probability"] = nv
+        else:
+            norm_meta = {"performed": False, "reason": "Only one group present"}
+            for i, lab in enumerate(unique_labels):
+                prob_lookup[int(lab)] = raw_probs[i]
+
+        prob_2d = prob_lookup[labeled_2d].astype(np.float32)
+        del prob_lookup  # free immediately
+
+        meta = self._sel__create_metadata(
+            group_probs, prob_2d, norm_meta, normalized=normalize
+        )
         return prob_2d, meta
 
     def _sel__calculate_group_probability(
@@ -1627,7 +1829,11 @@ class ShallowLandslider(Component):
         selected = np.random.choice(
             unique_labels, num_to_select, replace=False, p=normalized
         )
-        selected_groups = np.isin(labeled_2d, selected) * labeled_2d
+        max_label       = int(labeled_2d.max())
+        sel_lookup      = np.zeros(max_label + 1, dtype=bool)
+        sel_lookup[selected] = True
+        selected_groups = np.where(sel_lookup[labeled_2d], labeled_2d, 0)
+        del sel_lookup
         metadata = {
             "method_used": method,
             "proportion_calculated": float(proportion),
@@ -1756,48 +1962,52 @@ class ShallowLandslider(Component):
         }
         if len(unique_labels) == 0:
             return prob_2d, 0.0, metadata
-        for lab in unique_labels:
-            mask = labeled_2d == lab
-            gh = h_arr[mask]
-            gv = v_arr[mask]
-            mean_h = float(np.nanmean(gh)) if np.size(gh) else 0.0
-            mean_v = float(np.nanmean(gv)) if np.size(gv) else 0.0
-            if np.isnan(mean_h):
-                mean_h = 0.0
-            if np.isnan(mean_v):
-                mean_v = 0.0
-            resultant = float(np.sqrt(mean_h**2 + mean_v**2))
-            vh_ratio = float(mean_v / mean_h) if mean_h > 0 else 0.0
-            h_prob = float(self._sel___calculate_prob_from_h_pga(mean_h))
-            r_prob = float(
-                self._sel___calculate_prob_from_resultant(resultant, vh_ratio)
-            )
-            base_prob = 0.7 * h_prob + 0.3 * r_prob
+
+        # Vectorised group means — no per-group boolean masks.
+        mean_h_arr = np.asarray(_nd.mean(h_arr, labels=labeled_2d, index=unique_labels))
+        mean_v_arr = np.asarray(_nd.mean(v_arr, labels=labeled_2d, index=unique_labels))
+        if weight_grid is not None:
+            mean_w_arr = np.asarray(_nd.mean(weight_grid, labels=labeled_2d, index=unique_labels))
+        else:
+            mean_w_arr = None
+
+        max_label   = int(labeled_2d.max())
+        prob_lookup = np.zeros(max_label + 1, dtype=np.float32)
+        group_probs_list = []
+
+        for i, lab in enumerate(unique_labels):
+            mean_h = float(mean_h_arr[i]) if not np.isnan(mean_h_arr[i]) else 0.0
+            mean_v = float(mean_v_arr[i]) if not np.isnan(mean_v_arr[i]) else 0.0
+            resultant  = float(np.sqrt(mean_h ** 2 + mean_v ** 2))
+            vh_ratio   = float(mean_v / mean_h) if mean_h > 0 else 0.0
+            h_prob     = float(self._sel___calculate_prob_from_h_pga(mean_h))
+            r_prob     = float(self._sel___calculate_prob_from_resultant(resultant, vh_ratio))
+            base_prob  = 0.7 * h_prob + 0.3 * r_prob
             weight_factor = 1.0
-            if weight_grid is not None:
-                gw = float(np.nanmean(weight_grid[mask]))
-                eps = 1e-10
-                weight_factor = float(1.0 / (gw + eps))
+            if mean_w_arr is not None:
+                gw = float(mean_w_arr[i])
+                weight_factor = float(1.0 / (gw + 1e-10))
                 base_prob *= weight_factor
             stochastic = float(np.random.lognormal(mean=0, sigma=0.3))
             group_prob = float(np.clip(base_prob * stochastic, 0.0, 1.0))
-            prob_2d[mask] = group_prob
-            group_probs.append(group_prob)
-            metadata["group_data"].append(
-                {
-                    "label": int(lab),
-                    "mean_h_pga": mean_h,
-                    "mean_v_pga": mean_v,
-                    "resultant_pga": resultant,
-                    "vh_ratio": vh_ratio,
-                    "h_prob": h_prob,
-                    "r_prob": r_prob,
-                    "base_prob": float(base_prob),
-                    "weight_factor": weight_factor,
-                    "final_prob": group_prob,
-                }
-            )
-        proportion = float(np.mean(group_probs))
+            prob_lookup[int(lab)] = group_prob
+            group_probs_list.append(group_prob)
+            metadata["group_data"].append({
+                "label":        int(lab),
+                "mean_h_pga":   mean_h,
+                "mean_v_pga":   mean_v,
+                "resultant_pga": resultant,
+                "vh_ratio":     vh_ratio,
+                "h_prob":       h_prob,
+                "r_prob":       r_prob,
+                "base_prob":    float(base_prob),
+                "weight_factor": weight_factor,
+                "final_prob":   group_prob,
+            })
+
+        prob_2d = prob_lookup[labeled_2d].astype(np.float32)
+        del prob_lookup
+        proportion = float(np.mean(group_probs_list))
         metadata["overall_proportion"] = proportion
         return prob_2d, proportion, metadata
 
@@ -1820,18 +2030,22 @@ class ShallowLandslider(Component):
             num_to_select = max(1, min(num_to_select, num_groups))
         else:
             num_to_select = num_groups
-        group_probs = np.array(
-            [
-                float(np.nanmean(probability_2d[labeled_2d == lab]))
-                for lab in unique_labels
-            ],
+        # ndimage.mean over all groups at once — no per-label mask loop.
+        group_means = np.asarray(
+            _nd.mean(probability_2d, labels=labeled_2d, index=unique_labels),
             dtype=float,
         )
-        group_probs = np.nan_to_num(group_probs, nan=0.0, posinf=0.0, neginf=0.0)
-        total = group_probs.sum()
-        p = (np.ones(num_groups) / num_groups) if total <= 0 else (group_probs / total)
+        group_means = np.nan_to_num(group_means, nan=0.0, posinf=0.0, neginf=0.0)
+        total = group_means.sum()
+        p = (np.ones(num_groups) / num_groups) if total <= 0 else (group_means / total)
         selected = np.random.choice(unique_labels, num_to_select, replace=False, p=p)
-        selected_groups = np.isin(labeled_2d, selected) * labeled_2d
+
+        # Lookup-array painting — avoids np.isin() + multiplication.
+        max_label       = int(labeled_2d.max())
+        sel_lookup      = np.zeros(max_label + 1, dtype=bool)
+        sel_lookup[selected] = True
+        selected_groups = np.where(sel_lookup[labeled_2d], labeled_2d, 0)
+        del sel_lookup
         return selected_groups, selected.tolist()
 
     def _sel___calculate_prob_from_h_pga(self, h_pga: float) -> float:
@@ -1896,74 +2110,76 @@ class ShallowLandslider(Component):
         elevation_grid = self.grid.at_node["topographic__elevation"]
         current_labels = labeled_2d.copy()
         all_split_info = []
-        logger.info("Starting recursive splitting...")
+        logger.info(
+            f"  Recursive split | max_iterations={max_iterations} | "
+            f"width_threshold={width_threshold} | convergence={convergence_threshold}"
+        )
+
         for iteration in range(max_iterations):
-            logger.info(f"[Split] Iteration {iteration + 1}")
-            if verbose:
-                print(f"\n=== Iteration {iteration + 1} ===")
+            import time as _time
+            t_iter = _time.perf_counter()
             unique_labels = np.unique(current_labels)
             unique_labels = unique_labels[unique_labels != 0]
-            if verbose:
-                print(f"Calculating dimensions for {len(unique_labels)} regions...")
+            logger.info(
+                f"  [Split] Iteration {iteration + 1}/{max_iterations} — "
+                f"{len(unique_labels):,} regions to evaluate"
+            )
+
             props = self._split__calculate_region_dimensions(
-                current_labels,
-                elevation_grid,
-                aspect_2d,
-                slopes_2d,
-                self.grid,
-                unique_labels,
+                current_labels, elevation_grid, aspect_2d, slopes_2d,
+                self.grid, unique_labels,
             )
-            region_df = pd.DataFrame(
-                {
-                    "label": props["label"],
-                    "length_m": props["slope_direction_length_new"],
-                    "width_m": props["perpendicular_width_new"],
-                    "area": props["area"],
-                    "direction_method": props["direction_method"],
-                }
-            )
+            region_df = pd.DataFrame({
+                "label":            props["label"],
+                "length_m":         props["slope_direction_length_new"],
+                "width_m":          props["perpendicular_width_new"],
+                "area":             props["area"],
+                "direction_method": props["direction_method"],
+            })
             region_df = region_df[region_df["area"] >= min_region_size]
+
             if len(region_df) == 0:
-                if verbose:
-                    print("No regions left to process.")
+                logger.info("  [Split] No regions meet min_region_size — stopping.")
                 break
+
             new_labels, split_info = self._split__split_wide_regions_single_iteration(
-                self.grid,
-                current_labels,
-                region_df,
-                kde_results,
-                transform_info,
-                width_threshold,
+                self.grid, current_labels, region_df,
+                kde_results, transform_info, width_threshold,
             )
-            num_splits = len(split_info)
-            total_regions = len(region_df)
-            conforming_regions = total_regions - num_splits
-            conformance_rate = (
-                (conforming_regions / total_regions) if total_regions > 0 else 1.0
-            )
-            if verbose:
-                print(f"Split {num_splits} regions out of {total_regions}")
-                print(f"Conformance rate: {conformance_rate:.1%}")
+            num_splits     = len(split_info)
+            total_regions  = len(region_df)
+            conforming     = total_regions - num_splits
+            conformance_rate = (conforming / total_regions) if total_regions > 0 else 1.0
+
             for split in split_info:
                 split["iteration"] = iteration + 1
             all_split_info.extend(split_info)
+
+            logger.info(
+                f"  [Split] Iteration {iteration + 1} complete in "
+                f"{_time.perf_counter() - t_iter:.1f}s | "
+                f"split {num_splits:,}/{total_regions:,} regions | "
+                f"conformance {conformance_rate:.1%}"
+            )
+
             if num_splits == 0:
-                if verbose:
-                    print("No more regions need splitting. Converged!")
+                logger.info("  [Split] No regions needed splitting — converged.")
                 break
             elif conformance_rate >= convergence_threshold:
-                if verbose:
-                    print(
-                        f"Reached convergence threshold ({convergence_threshold:.1%}). Stopping."
-                    )
+                logger.info(
+                    f"  [Split] Conformance {conformance_rate:.1%} ≥ "
+                    f"threshold {convergence_threshold:.1%} — stopping early."
+                )
                 break
+
             current_labels = new_labels
-        if verbose:
-            print("\nCompleted recursive splitting:")
-            print(f"Total splits performed: {len(all_split_info)}")
-            final_unique = np.unique(current_labels)
-            final_unique = final_unique[final_unique != 0]
-            print(f"Final number of regions: {len(final_unique)}")
+
+        final_unique = np.unique(current_labels)
+        final_unique  = final_unique[final_unique != 0]
+        logger.info(
+            f"  [Split] Finished — {len(all_split_info):,} total splits | "
+            f"{len(final_unique):,} final regions"
+        )
         return current_labels, all_split_info
 
     def _split__calculate_region_dimensions(
@@ -1986,10 +2202,13 @@ class ShallowLandslider(Component):
             unique_labels = unique_labels[unique_labels != 0]
         regions = _regionprops(labeled_2d)
         labels, areas, min_elevations, max_elevations = [], [], [], []
+        region_coords_map = {}  # cache coords to avoid re-scanning full grid below
         for region in regions:
             labels.append(region.label)
             areas.append(region.area)
-            region_elev = elevation_grid[region.coords[:, 0], region.coords[:, 1]]
+            rc = region.coords  # shape (n_pixels, 2)
+            region_coords_map[region.label] = rc
+            region_elev = elevation_grid[rc[:, 0], rc[:, 1]]
             min_elevations.append(np.min(region_elev))
             max_elevations.append(np.max(region_elev))
         labels = np.array(labels)
@@ -2015,17 +2234,18 @@ class ShallowLandslider(Component):
                 continue
             prop_idx = prop_idx[0]
             elevation_relief = result_props["local_relief"][prop_idx]
-            region_mask = labeled_2d == label_num
-            row_coords, col_coords = np.where(region_mask)
-            if len(row_coords) == 0:
+            rc = region_coords_map.get(label_num)
+            if rc is None or len(rc) == 0:
                 continue
+            row_coords = rc[:, 0]
+            col_coords = rc[:, 1]
             x_coords = col_coords * grid.dx
             y_coords = row_coords * grid.dy
             coords = np.column_stack([x_coords, y_coords])
             gradient_direction = None
             method_used = None
             if elevation_relief > relief_threshold:
-                region_elev = elevation_grid[region_mask]
+                region_elev = elevation_grid[row_coords, col_coords]
                 max_elev = result_props["max_elevation"][prop_idx]
                 min_elev = result_props["min_elevation"][prop_idx]
                 tol = 0.1 * elevation_relief
@@ -2040,8 +2260,8 @@ class ShallowLandslider(Component):
                         gradient_direction = downslope_vec / grad_len
                         method_used = "elevation_gradient"
             if gradient_direction is None:
-                region_aspects = aspect_grid[region_mask]
-                region_slopes = slopes_grid[region_mask]
+                region_aspects = aspect_grid[row_coords, col_coords]
+                region_slopes = slopes_grid[row_coords, col_coords]
                 slope_threshold = max(np.percentile(region_slopes, 25), 1.0)
                 valid_mask = region_slopes > slope_threshold
                 if np.sum(valid_mask) > 0:
@@ -2123,16 +2343,14 @@ class ShallowLandslider(Component):
                 continue
             length_t = np.log(length) if log_x else length
             num_samples = 200
-            samples = []
-            attempts, max_attempts = 0, 500
-            while len(samples) < num_samples and attempts < max_attempts:
-                attempts += 1
-                s = kde.resample(1).T
-                if abs(s[0, 0] - length_t) < 0.05 * (1 + abs(length_t)):
-                    samples.append(s[0, 1])
+            max_attempts = 500
+            candidates = kde.resample(max_attempts) # (2, 500), one call
+            tol = 0.05 * (1 + abs(length_t))
+            keep = np.abs(candidates[0] - length_t) < tol
+            samples = candidates[1, keep][:num_samples]
             if len(samples) < 10:
                 samples = kde.resample(num_samples)[1, :]
-            expected_widths = np.exp(samples) if log_y else samples
+            expected_widths = np.exp(samples) if log_y else np.asarray(samples)
             expected_width = float(np.median(expected_widths))
             width_ratio = actual_width / expected_width
             if width_ratio > width_threshold:

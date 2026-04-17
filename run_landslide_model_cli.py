@@ -261,20 +261,15 @@ def main():
         )
 
         ls.run_one_step()
-        df = ls.results["group_properties"]
-
-        outfile = os.path.join(out_dir, f"results_seed_{seed}.csv")
-        df.to_csv(outfile, index=False)
+        save_model_run(
+            save_pickle=False,
+            ls=ls, config=config,
+            output_dir=config["output_dir"],
+            logger=logger
+            )
         
-        if save_pickle:
-            out_path = save_model_run(
-                ls=ls, config=config, output_dir=config["output_dir"]
-                )
-            logger.info(f"Model pickle saved to {out_path}")
-        else:
-            logger.info("Output pickling disabled")
 
-        logger.info(f"Results saved (full-grid mode) to csv: {outfile}")
+        logger.info("Results saved (full-grid mode) to csv")
         logger.info(f"=== FINISHED in {(time.time() - t0) / 3600:.2f} hours ===")
         return
 
@@ -461,20 +456,16 @@ def main():
     # Optional displacement
     if config["simulation"].get("compute_displacement", False):
         ls_global._compute_displacement(ls_global.time_shaking)
-
-    df = ls_global.results["group_properties"]
-    outfile = os.path.join(out_dir, f"results_seed_{seed}.csv")
-    df.to_csv(outfile, index=False)
     
-    if save_pickle:
-        out_path = save_model_run(
-            ls=ls_global, config=config, output_dir=config["output_dir"]
+    save_model_run(
+            save_pickle=False,
+            ls=ls_global, config=config,
+            output_dir=config["output_dir"],
+            logger=logger
             )
-        logger.info(f"Model pickle saved to {out_path}")
-    else:
-        logger.info("Output pickling disabled")
+        
 
-    logger.info(f"Results saved (chunked global mode): {outfile}")
+    logger.info("Results saved (chunked global mode) to csv")
     logger.info(f"=== FINISHED in {(time.time() - t0) / 3600:.2f} hours ===")
 
 

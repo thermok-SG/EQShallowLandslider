@@ -1228,7 +1228,8 @@ def pickle_or_not_to_pickle(
     return bundle
 
 
-def save_model_run(ls, config, output_dir):
+def save_model_run(save_pickle, ls, config, output_dir,
+                   logger):
     """
     Save a ShallowLandslider run in the exact format expected by load_all_runs()
     and parse_pickle_name(), i.e.:
@@ -1275,13 +1276,20 @@ def save_model_run(ls, config, output_dir):
     # Random seed
     tags.append(f"seed{sim["random_seed"]}")
     
-    filename = "_".join(tags) + "pkl"
-    out_path = os.path.join(output_dir, filename)
+    filename = "_".join(tags)
     
-    with open(out_path, 'wb') as f:
-        pickle.dump(bundle, f)
-
-    return out_path
+    df = ls.results["group_properties"]
+    
+    outfile = os.path.join(output_dir, f"{filename}.csv")
+    df.to_csv(outfile, index=False)
+    
+    if save_pickle:
+        out_pickle = os.path.join(output_dir, f"{filename}.pkl")
+        with open(out_pickle, 'wb') as f:
+            pickle.dump(bundle, f)
+        logger.info(f"Model pickle saved to {config["output_dir"]}")
+    
+    logger.info("Output pickling disabled")
 
 
 # %%% Bivariate kde fitting for region splitting
