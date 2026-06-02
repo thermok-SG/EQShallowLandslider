@@ -1274,7 +1274,7 @@ def save_model_run(save_pickle, ls, config, output_dir,
     tags.append(sim["selection_method"])
         
     # Random seed
-    tags.append(f"seed{sim["random_seed"]}")
+    tags.append(f"seed{config["random_seed"]}")
     
     filename = "_".join(tags)
     
@@ -1288,8 +1288,8 @@ def save_model_run(save_pickle, ls, config, output_dir,
         with open(out_pickle, 'wb') as f:
             pickle.dump(bundle, f)
         logger.info(f"Model pickle saved to {config["output_dir"]}")
-    
-    logger.info("Output pickling disabled")
+    else:
+        logger.info("Output pickling disabled")
 
 
 # %%% Bivariate kde fitting for region splitting
@@ -1785,6 +1785,25 @@ def _ecdf(values):
     return x, y
 
 
+def _first_existing_column(dataframe, candidates, label):
+    """Return the first matching dataframe column from a list of aliases."""
+    for column in candidates:
+        if column in dataframe.columns:
+            return column
+    raise KeyError(
+        f"Could not find {label} column. Tried {candidates}; "
+        f"available columns are {list(dataframe.columns)}"
+    )
+
+
+def _clean_numeric(values, positive=False):
+    values = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    values = values[np.isfinite(values)]
+    if positive:
+        values = values[values > 0]
+    return values
+
+
 def plot_comparison_panels_with_ecdf(
     observed_df,
     model_df,
@@ -1794,16 +1813,34 @@ def plot_comparison_panels_with_ecdf(
     title="Comparison Plots (Histograms + ECDF)",
     save_path=None,
 ):
+    obs_area_col = _first_existing_column(
+        observed_df, ("Area_m2", "area_m2", "Area", "area"), "observed area"
+    )
+    obs_elev_col = _first_existing_column(
+        observed_df,
+        ("Elevation_m_mean", "Elevation_mean", "mean_elev", "elevation", "median_elevation"),
+        "observed elevation",
+    )
+    obs_slope_col = _first_existing_column(
+        observed_df,
+        ("Slope_deg_mean", "Mean_slope", "mean_slope", "slope", "median_slope"),
+        "observed slope",
+    )
+
+    model_area = _clean_numeric(model_df["area"], positive=True)
+    obs_area = _clean_numeric(observed_df[obs_area_col], positive=True)
+    model_elev = _clean_numeric(model_df["median_elevation"])
+    obs_elev = _clean_numeric(observed_df[obs_elev_col])
+    model_slope = _clean_numeric(model_df["median_slope"])
+    obs_slope = _clean_numeric(observed_df[obs_slope_col])
+
+    if model_area.size == 0 or obs_area.size == 0:
+        raise ValueError("Area comparison requires positive observed and model areas.")
+
     # Combine data for shared bins
-    area_combined = np.concatenate(
-        [observed_df.get("Area_m2", []), model_df.get("area", [])]
-    )
-    elev_combined = np.concatenate(
-        [observed_df.get("Elevation_m_mean", []), model_df.get("median_elevation", [])]
-    )
-    slope_combined = np.concatenate(
-        [observed_df.get("Slope_deg_mean", []), model_df.get("median_slope", [])]
-    )
+    area_combined = np.concatenate([obs_area, model_area])
+    elev_combined = np.concatenate([obs_elev, model_elev])
+    slope_combined = np.concatenate([obs_slope, model_slope])
 
     # Use log-spaced bins for area
     bins_area = np.logspace(
@@ -1845,7 +1882,7 @@ def plot_comparison_panels_with_ecdf(
     # Panel 2: Area (log scale) - FIXED
     ax_area = axes[0, 1]
     sns.histplot(
-        model_df["area"],
+        model_area,
         bins=bins_area,
         stat="density",
         color=model_color,
@@ -1854,7 +1891,7 @@ def plot_comparison_panels_with_ecdf(
         ax=ax_area,
     )
     sns.histplot(
-        observed_df["Area_m2"],
+        obs_area,
         bins=bins_area,
         stat="density",
         color=obs_color,
@@ -1868,8 +1905,8 @@ def plot_comparison_panels_with_ecdf(
     ax_area.legend()
 
     ax_area_ecdf = ax_area.twinx()
-    x_obs, y_obs = _ecdf(observed_df["Area_m2"])
-    x_mod, y_mod = _ecdf(model_df["area"])
+    x_obs, y_obs = _ecdf(obs_area)
+    x_mod, y_mod = _ecdf(model_area)
     if x_obs.size:
         ax_area_ecdf.plot(
             x_obs, y_obs, color="black", linestyle="--", label="Observed ECDF"
@@ -1882,7 +1919,7 @@ def plot_comparison_panels_with_ecdf(
     # Panel 3: Elevation
     ax_elev = axes[1, 0]
     sns.histplot(
-        model_df["median_elevation"],
+        model_elev,
         bins=bins_elev,
         stat="density",
         color=model_color,
@@ -1891,7 +1928,7 @@ def plot_comparison_panels_with_ecdf(
         ax=ax_elev,
     )
     sns.histplot(
-        observed_df["Elevation_m_mean"],
+        obs_elev,
         bins=bins_elev,
         stat="density",
         color=obs_color,
@@ -1904,8 +1941,8 @@ def plot_comparison_panels_with_ecdf(
     ax_elev.legend()
 
     ax_elev_ecdf = ax_elev.twinx()
-    x_obs, y_obs = _ecdf(observed_df["Elevation_m_mean"])
-    x_mod, y_mod = _ecdf(model_df["median_elevation"])
+    x_obs, y_obs = _ecdf(obs_elev)
+    x_mod, y_mod = _ecdf(model_elev)
     if x_obs.size:
         ax_elev_ecdf.plot(x_obs, y_obs, color="black", linestyle="--")
     if x_mod.size:
@@ -1916,7 +1953,7 @@ def plot_comparison_panels_with_ecdf(
     # Panel 4: Slope
     ax_slope = axes[1, 1]
     sns.histplot(
-        model_df["median_slope"],
+        model_slope,
         bins=bins_slope,
         stat="density",
         color=model_color,
@@ -1925,7 +1962,7 @@ def plot_comparison_panels_with_ecdf(
         ax=ax_slope,
     )
     sns.histplot(
-        observed_df["Slope_deg_mean"],
+        obs_slope,
         bins=bins_slope,
         stat="density",
         color=obs_color,
@@ -1938,8 +1975,8 @@ def plot_comparison_panels_with_ecdf(
     ax_slope.legend()
 
     ax_slope_ecdf = ax_slope.twinx()
-    x_obs, y_obs = _ecdf(observed_df["Slope_deg_mean"])
-    x_mod, y_mod = _ecdf(model_df["median_slope"])
+    x_obs, y_obs = _ecdf(obs_slope)
+    x_mod, y_mod = _ecdf(model_slope)
     if x_obs.size:
         ax_slope_ecdf.plot(x_obs, y_obs, color="black", linestyle="--")
     if x_mod.size:

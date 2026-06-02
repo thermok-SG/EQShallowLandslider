@@ -3,8 +3,10 @@
 import numpy as np
 import pandas as pd
 import pytest
+import shutil
+from pathlib import Path
 from landlab import RasterModelGrid
-import utilities as util
+from utils import utilities as util
 
 
 def make_grid(ny=5, nx=5, spacing=10.0):
@@ -32,8 +34,9 @@ def test_apply_soil_depth_elevation_linear():
         mg, distribution="elevation", relationship="linear", max_soil_depth=2.0
     )
 
-    # Higher elevation → lower soil depth
-    assert soil[z.argmax()] < soil[z.argmin()]
+    # Higher core-node elevation -> lower soil depth.
+    core = mg.core_nodes
+    assert soil[core[np.argmax(z[core])]] < soil[core[np.argmin(z[core])]]
     assert np.all(soil >= 0)
 
 def test_apply_soil_depth_curvature_linear():
@@ -61,9 +64,9 @@ def test_fit_bivariate_kde_raises_on_nonpositive_log():
 
 def test_fit_bivariate_kde_with_categories():
     df = pd.DataFrame({
-        "length_m": [1, 2, 3, 4],
-        "width_m": [1, 2, 1, 2],
-        "zone": ["A", "A", "B", "B"]
+        "length_m": [1, 2, 3, 4, 5, 6, 2, 3, 5, 7, 8, 10],
+        "width_m": [1, 2, 1, 3, 2, 4, 1.5, 2.5, 2, 4, 3.5, 5],
+        "zone": ["A", "A", "A", "A", "A", "A", "B", "B", "B", "B", "B", "B"]
     })
 
     kde, info = util.fit_bivariate_kde(
@@ -89,32 +92,40 @@ def test_generate_acceleration_grid_reproducibility():
     assert np.allclose(v2, v3)
 
 
-def test_pickle_or_not_to_pickle_roundtrip(tmp_path, monkeypatch):
-    f1 = tmp_path / "areas.csv"
-    f2 = tmp_path / "zonal.csv"
-    f3 = tmp_path / "clipped.csv"
+def test_pickle_or_not_to_pickle_roundtrip(monkeypatch):
+    scratch = Path("tests") / "_scratch_pickle_roundtrip"
+    if scratch.exists():
+        shutil.rmtree(scratch)
+    scratch.mkdir()
 
-    pd.DataFrame({"length_m": [1, 2, 3], "width_m": [1, 2, 3]}).to_csv(f1, index=False)
-    pd.DataFrame({"Area": [1000, 1200, 800]}).to_csv(f2, index=False)
-    pd.DataFrame({"Area": [900, 950, 910]}).to_csv(f3, index=False)
+    try:
+        f1 = scratch / "areas.csv"
+        f2 = scratch / "zonal.csv"
+        f3 = scratch / "clipped.csv"
 
-    def fake_kde(*args, **kwargs):
-        return ({"overall": None}, {"x_bounds": (0, 1), "y_bounds": (0, 1)})
+        pd.DataFrame({"length_m": [1, 2, 3], "width_m": [1, 2, 3]}).to_csv(f1, index=False)
+        pd.DataFrame({"Area_m2": [1000, 1200, 800]}).to_csv(f2, index=False)
+        pd.DataFrame({"Area_m2": [900, 950, 910]}).to_csv(f3, index=False)
 
-    monkeypatch.setattr(util, "fit_bivariate_kde", fake_kde)
+        def fake_kde(*args, **kwargs):
+            return ({"overall": None}, {"x_bounds": (0, 1), "y_bounds": (0, 1)})
 
-    bundle = util.pickle_or_not_to_pickle(
-        {"file1": str(f1), "file2": str(f2), "file3": str(f3)},
-        pickle_path=str(tmp_path / "md.pkl"),
-    )
-    assert "measured_data" in bundle
-    assert "kde_data" in bundle
+        monkeypatch.setattr(util, "fit_bivariate_kde", fake_kde)
 
-    bundle2 = util.pickle_or_not_to_pickle(
-        {"file1": str(f1), "file2": str(f2), "file3": str(f3)},
-        pickle_path=str(tmp_path / "md.pkl"),
-    )
-    assert bundle2["kde_data"] == bundle["kde_data"]
+        bundle = util.pickle_or_not_to_pickle(
+            {"file1": str(f1), "file2": str(f2), "file3": str(f3)},
+            pickle_path=str(scratch / "md.pkl"),
+        )
+        assert "measured_data" in bundle
+        assert "kde_data" in bundle
+
+        bundle2 = util.pickle_or_not_to_pickle(
+            {"file1": str(f1), "file2": str(f2), "file3": str(f3)},
+            pickle_path=str(scratch / "md.pkl"),
+        )
+        assert bundle2["kde_data"] == bundle["kde_data"]
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def test_calculate_terrain_attribute_with_richdem():
@@ -144,3 +155,25 @@ def test_calculate_terrain_attribute_nodata():
 
     assert np.isnan(result[5])  # nodata preserved
     assert "slope" in mg.at_node
+
+
+def test_plot_comparison_panels_accepts_observed_column_aliases():
+    import matplotlib.pyplot as plt
+
+    observed = pd.DataFrame(
+        {
+            "area_m2": [1000.0, 1500.0, 2200.0],
+            "Elevation_mean": [100.0, 120.0, 130.0],
+            "Mean_slope": [25.0, 30.0, 35.0],
+        }
+    )
+    model = pd.DataFrame(
+        {
+            "area": [1100.0, 1800.0, 2100.0],
+            "median_elevation": [105.0, 125.0, 128.0],
+            "median_slope": [24.0, 31.0, 33.0],
+        }
+    )
+
+    util.plot_comparison_panels_with_ecdf(observed, model)
+    plt.close("all")

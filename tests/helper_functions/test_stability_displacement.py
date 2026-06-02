@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 from landlab import RasterModelGrid
-from shallow_landslide_component import ShallowLandslider
+from components.shallow_landslider import ShallowLandslider
 
 
 def make_grid(n=5, spacing=10.0):
@@ -18,10 +18,17 @@ def test_factor_of_safety_matches_formula(monkeypatch):
     mg = make_grid()
     slope_rad = np.deg2rad(30.0)
 
+    def constant_slope(elevs=None, **kwargs):
+        slope = np.ones(mg.number_of_nodes) * slope_rad
+        if kwargs.get("return_components", False):
+            return slope, (slope, slope)
+        return slope
+
+    monkeypatch.setattr(mg, "calc_slope_at_node", constant_slope)
     monkeypatch.setattr(
         mg,
-        "calc_slope_at_node",
-        lambda elevs=None: np.ones(mg.number_of_nodes) * slope_rad,
+        "calc_aspect_at_node",
+        lambda **kwargs: np.zeros(mg.number_of_nodes),
     )
 
     coh = 1000.0
@@ -57,10 +64,17 @@ def test_factor_of_safety_matches_formula(monkeypatch):
 def test_critical_transient_acceleration(monkeypatch):
     mg = make_grid()
     slope_rad = np.deg2rad(20)
+    def constant_slope(elevs=None, **kwargs):
+        slope = np.ones(mg.number_of_nodes) * slope_rad
+        if kwargs.get("return_components", False):
+            return slope, (slope, slope)
+        return slope
+
+    monkeypatch.setattr(mg, "calc_slope_at_node", constant_slope)
     monkeypatch.setattr(
         mg,
-        "calc_slope_at_node",
-        lambda elevs=None: np.ones(mg.number_of_nodes) * slope_rad,
+        "calc_aspect_at_node",
+        lambda **kwargs: np.zeros(mg.number_of_nodes),
     )
 
     g = 9.81
@@ -146,7 +160,7 @@ def test_critical_acceleration_sets_boundary_to_zero(monkeypatch):
 
     monkeypatch.setattr(
         mg, "calc_slope_at_node",
-        lambda elevs=None: np.ones(mg.number_of_nodes) * np.deg2rad(10)
+        lambda elevs=None, **kwargs: np.ones(mg.number_of_nodes) * np.deg2rad(10)
     )
 
     ac, *_ = comp._critical_transient_acceleration(

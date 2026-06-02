@@ -2,7 +2,13 @@
 __pycache__/
 auxiliary_functions/__pycache__/
 *.pyc
+.env
+.env.*
+output_data/
+runs/
 *.pkl
 *.pdf
 *.asc
+!input_data/dem/
+!input_data/dem/*.asc
 *.tif

@@ -3,13 +3,15 @@
 import numpy as np
 import pytest
 from landlab import RasterModelGrid
-from shallow_landslide_component import ShallowLandslider
+from components.shallow_landslider import ShallowLandslider
 
 
 def make_grid(shape=(6, 6), spacing=10.0):
     mg = RasterModelGrid(shape, xy_spacing=spacing)
     z = mg.add_zeros("topographic__elevation", at="node")
     z[:] = np.arange(z.size)
+    soil = mg.add_zeros("soil__depth", at="node")
+    soil[:] = 1.0
     return mg
 
 
@@ -81,7 +83,7 @@ def test_generate_landslide_proportion_from_pga_shapes():
     v = np.ones(mg.number_of_nodes) * 0.1
 
     probs, prop, meta = comp._generate_landslide_proportion_from_pga(
-        labeled, np.ones_like(h), h_pga_1d=h, v_pga_1d=v
+        labeled, np.ones_like(labeled), h_pga_1d=h, v_pga_1d=v
     )
 
     assert probs.shape == labeled.shape
@@ -145,7 +147,7 @@ def test_recursive_split_converges_early():
     class TinyKDE:
         def resample(self, n):
             # produce widths matching actual so no split
-            return np.vstack([np.ones(n) * 5.0, np.ones(n) * 5.0])
+            return np.vstack([np.ones(n) * 100.0, np.ones(n) * 100.0])
 
     kde = {"overall": TinyKDE()}
     info = {"log_x": False, "log_y": False}

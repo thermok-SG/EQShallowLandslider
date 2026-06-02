@@ -13,7 +13,7 @@ import pandas as pd
 import logging
 
 from landlab.core.model_component import Component
-from shallow_landslide_runout import ShallowLandslideRunout
+from .shallow_landslide_runout import ShallowLandslideRunout
 
 from scipy import ndimage as _nd
 from scipy.ndimage import (
@@ -62,6 +62,12 @@ class ShallowLandslider(Component):
     landslides with either probabilistic or PGA-weighted strategies, and can
     compute Newmark displacement.
 
+    Optional runout updates `soil__depth` after displacement is computed. To
+    use runout through this component, run `PriorityFloodFlowRouter` first with
+    `separate_hill_flow=True` so the grid contains `hill_flow__receiver_node`
+    and `hill_flow__receiver_proportions`, then initialize with
+    `compute_displacement=True`, `enable_runout=True`, and `update_soil=True`.
+
     Notes
     -----
     External setup (DEM, flow routing, terrain attributes, soil depth,
@@ -77,23 +83,23 @@ class ShallowLandslider(Component):
     _info = {
         # Inputs
         "topographic__elevation": {
-            "intent": ("in",),
+            "intent": "in",
             "mapping": "node",
             "dtype": float,
             "units": "m",
             "optional": False,
-            "doc": "Surface elevation at nodes.",
+            "doc": "Land surface topographic elevation",
         },
         "soil__depth": {
-            "intent": ("in",),
+            "intent": "in",
             "mapping": "node",
             "dtype": float,
             "units": "m",
-            "optional": True,
-            "doc": "Soil thickness at nodes (optional).",
+            "optional": False,
+            "doc": "Depth of soil or weathered bedrock",
         },
         "earthquake__horizontal_pga": {
-            "intent": ("in",),
+            "intent": "in",
             "mapping": "node",
             "dtype": float,
             "units": "g",
@@ -101,7 +107,7 @@ class ShallowLandslider(Component):
             "doc": "Horizontal PGA (multiples of g).",
         },
         "earthquake__vertical_pga": {
-            "intent": ("in",),
+            "intent": "in",
             "mapping": "node",
             "dtype": float,
             "units": "g",
@@ -110,7 +116,7 @@ class ShallowLandslider(Component):
         },
         # Outputs
         "landslide__factor_of_safety": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": float,
             "units": "-",
@@ -118,7 +124,7 @@ class ShallowLandslider(Component):
             "doc": "Static factor of safety (FoS).",
         },
         "landslide__critical_acceleration": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": float,
             "units": "m s^-2",
@@ -126,7 +132,7 @@ class ShallowLandslider(Component):
             "doc": "Critical transient acceleration (a_c).",
         },
         "landslide__driving_minus_critical_acceleration": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": float,
             "units": "m s^-2",
@@ -134,7 +140,7 @@ class ShallowLandslider(Component):
             "doc": "a_driving - a_critical (positive indicates potential sliding).",
         },
         "landslide__unstable_mask": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": bool,
             "units": "-",
@@ -142,15 +148,15 @@ class ShallowLandslider(Component):
             "doc": "Boolean mask of nodes where a_driving > a_critical.",
         },
         "landslide__region_labels": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": int,
             "units": "-",
-            "optional": True,
+            "optional": False,
             "doc": "Connected-component labels of unstable regions (0 for background).",
         },
         "landslide__aspect_subgroup_labels": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": int,
             "units": "-",
@@ -158,7 +164,7 @@ class ShallowLandslider(Component):
             "doc": "Labels after splitting unstable regions by aspect zones.",
         },
         "landslide__dimension_split_labels": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": int,
             "units": "-",
@@ -166,7 +172,7 @@ class ShallowLandslider(Component):
             "doc": "Labels after KDE-informed width-based splitting.",
         },
         "landslide__selected_labels": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": int,
             "units": "-",
@@ -174,7 +180,7 @@ class ShallowLandslider(Component):
             "doc": "Labels of selected candidate landslides (0 for unselected).",
         },
         "landslide__newmark_displacement": {
-            "intent": ("out",),
+            "intent": "out",
             "mapping": "node",
             "dtype": float,
             "units": "m",
@@ -186,8 +192,8 @@ class ShallowLandslider(Component):
     def __init__(
         self,
         grid,
-        cohesion_eff: float,
-        angle_int_frict: float,
+        cohesion_eff: float = 15000.0,
+        angle_int_frict: float = 30.0,
         submerged_soil_proportion: float = 0.5,
         pga_h: Optional[np.ndarray | float] = None,
         pga_v: Optional[np.ndarray | float] = None,
@@ -241,8 +247,14 @@ class ShallowLandslider(Component):
             If True, compute Newmark displacement on selected labels.
         displacement_threshold : float, optional
             Threshold (m) for reporting high-displacement nodes (not used internally).
+        enable_runout : bool, optional
+            If True, initialize the optional runout subcomponent. Requires
+            hill-flow receiver fields from `PriorityFloodFlowRouter` with
+            `separate_hill_flow=True`.
         update_soil : bool, optional
-            If True, create a default `soil__depth` field if absent.
+            If True, create a default `soil__depth` field if absent. When
+            combined with `compute_displacement=True` and `enable_runout=True`,
+            runout erosion/deposition modifies `soil__depth`.
         g : float, optional
             Gravitational acceleration (m s^-2). Default 9.81.
         split_by_width_config : dict, optional
@@ -250,7 +262,12 @@ class ShallowLandslider(Component):
         verbose : bool, optional
             If True, print progress information.
         """
+        if "soil__depth" not in grid.at_node and update_soil:
+            h = grid.add_zeros("soil__depth", at="node")
+            h[:] = 0.5
+
         super().__init__(grid)
+        self._initialize_required_output_fields()
         self.cohesion_eff = float(cohesion_eff)
         self.angle_int_frict = float(np.radians(angle_int_frict))
         self.submerged_soil_proportion = float(submerged_soil_proportion)
@@ -287,9 +304,6 @@ class ShallowLandslider(Component):
 
         # Ensure optional inputs
         z = self.grid.at_node["topographic__elevation"]
-        if "soil__depth" not in self.grid.at_node and self.update_soil:
-            h = self.grid.add_zeros("soil__depth", at="node")
-            h[:] = 0.5
         if "bedrock__elevation" not in self.grid.at_node:
             br = self.grid.add_zeros("bedrock__elevation", at="node")
             br[:] = z - self.grid.at_node.get("soil__depth", np.zeros_like(z))
@@ -318,6 +332,14 @@ class ShallowLandslider(Component):
         if self.enable_runout:
             
             self._runout = ShallowLandslideRunout(grid)
+
+    def _initialize_required_output_fields(self):
+        """Create required output fields for Landlab component metadata checks."""
+        for name, meta in self._info.items():
+            if meta["intent"] == "out" and not meta["optional"]:
+                at = meta["mapping"]
+                if name not in self.grid[at]:
+                    self.grid.add_zeros(name, at=at, dtype=meta["dtype"])
 
     @property
     def results(self) -> Dict[str, Any]:
@@ -1205,7 +1227,33 @@ class ShallowLandslider(Component):
         unique_labels = np.unique(working)
         unique_labels = unique_labels[unique_labels != 0]
         if len(unique_labels) == 0:
-            return pd.DataFrame(), working
+            return pd.DataFrame(
+                columns=[
+                    "area",
+                    "max_elevation",
+                    "median_elevation",
+                    "local_relief",
+                    "median_slope",
+                    "mean_aspect",
+                    "perimeter",
+                    "compactness",
+                    "bbox_width",
+                    "bbox_height",
+                    "bbox_area",
+                    "fill_ratio",
+                    "major_axis_length",
+                    "minor_axis_length",
+                    "orientation",
+                    "eccentricity",
+                    "slope_direction_length",
+                    "perpendicular_width",
+                    "hybrid_length",
+                    "hybrid_width",
+                    "slope_direction_length_new",
+                    "perpendicular_width_new",
+                    "direction_method",
+                ]
+            ), working
 
         # Views (no copies)
         elevation_grid = self.grid.at_node["topographic__elevation"].reshape(

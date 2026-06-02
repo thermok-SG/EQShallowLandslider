@@ -35,20 +35,25 @@ class ShallowLandslideRunout(Component):
             "dtype": int,
             "intent": "in",
             "mapping": "node",
+            "units": "-",
             "optional": False,
+            "doc": "Node IDs receiving routed hillslope flow from each node.",
         },
         "hill_flow__receiver_proportions": {
             "dtype": float,
             "intent": "in",
             "mapping": "node",
-            "optional": False
+            "units": "-",
+            "optional": False,
+            "doc": "Proportions of hillslope flow routed to receiver nodes.",
         },
         "topographic__elevation": {
             "dtype": float,
             "units": "m",
             "intent": "in",
             "mapping": "node",
-            "optional": False
+            "optional": False,
+            "doc": "Land surface topographic elevation.",
         },
     }
 

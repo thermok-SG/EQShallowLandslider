@@ -1,10 +1,8 @@
-dem_path:  "C:/Users/sghoshal/Documents/Python/nepal_cropped_dem_west_bilinear.asc"
-# "/users/sghoshal/.conda/envs/landlab_dev/ShallowLandslider/nepal_cropped_dem_west_bilinear.asc"
-# "/users/sghoshal/.conda/envs/landlab_dev/ShallowLandslider/gorkhadem_05g.asc"
+dem_path:  "input_data/dem/SRTMGL1_28.169999999999998_85.03_28.3_85.21000000000001.asc"
 smooth_num: 0
 
 save_pickle: false
-output_dir: "C:/Users/sghoshal/Documents/Python/EQShallowLandslider/runs_small/"
+output_dir: "runs/"
 
 random_seed: 5000
 
@@ -61,12 +59,18 @@ simulation:
   compute_displacement: false
   time_shaking: 10 # seconds (used for Newmark displacement if enabled)
   displacement_threshold: 0.0
+  # Runout requires compute_displacement: true, enable_runout: true,
+  # update_soil: true, and flow_params.separate_hill_flow: true.
   enable_runout: false
   update_soil: false
 
 split_by_width:
   enabled: true
-  pickle_path: "C:/Users/sghoshal/Documents/Python/EQShallowLandslider/utils/measured_data.pkl"
+  pickle_path: "input_data/nepal/measured_data.pkl"
+  min_area: 900
+  csv_paths:
+    inventory_csv: "input_data/nepal/measuredLandslides_all.csv"
+    zonal_stats_csv: "input_data/nepal/measuredLandslides_all_ZonalStats.csv"
   width_threshold: 1.5
   max_iterations: 5
   min_region_size: 10

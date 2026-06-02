@@ -3,7 +3,7 @@
 ## **Overview**
 `ShallowLandslider` is a _component_ designed to model the distribution of shallow landslides triggered by seismic shaking. It integrates physics-based stability calculations, probabilistic selection methods, and optional width-based recursive splitting to simulate landslide occurrence and distribution across a DEM.
 
-This tool is intended for **geomorphologists, hazard modellers, and Earth scientists** who need reproducible, scalable landslide simulations. It's landlab-based architecture means that it can be easily integrated within larger landscape evolution modelling scenarios.
+This tool is intended for **geomorphologists, hazard modellers, and Earth scientists** who need reproducible, scalable landslide simulations. Its Landlab-based architecture means that it can be integrated within larger landscape evolution modelling scenarios.
 
 ---
 
@@ -17,6 +17,7 @@ This tool is intended for **geomorphologists, hazard modellers, and Earth scient
 - **Easy DEM download from OpenTopography** using BMI-topography makes it easy to quickly test scenarios
 - **Flexible soil depth assignment** (uniform, elevation-based, curvature-based, drainage-area-based) to test the effect of different soil depth distributions
 - **Earthquake PGA grid** generator that can handle multiple spatial distributions to test the effect of different seismic scenarios
+- **Optional runout routing** that redistributes failed soil along hill-flow receiver paths after Newmark displacement is computed
 
 ## **Installation**
 ### **Requirements**
@@ -24,8 +25,23 @@ This tool is intended for **geomorphologists, hazard modellers, and Earth scient
 - [Landlab](https://landlab.readthedocs.io/)
 - NumPy, Pandas, SciPy, scikit-image
 
+Create the provided environment:
+
+```bash
+conda env create -f environment.yml
+conda activate shallow_landslider
+```
+
+Or install the Python dependencies into an existing environment:
+
+```bash
+pip install -r requirements.txt
+```
+
 ## **Measured Data & KDE Bundle (Recommended)**
 Many workflows **benefit strongly** from measured landslide data to guide *statistically based region splitting* and to compare modelled vs observed characteristics. While technically optional, this step is **highly recommended** for realistic run outcomes.
+
+For physics-only runs, omit `split_by_width_config` or set it to `None`. The component will still compute stability, unstable regions, aspect subgroups, candidate selection, and optional displacement; it simply skips KDE-informed width splitting.
 
 ### What this provides
 - A **preprocessed bundle** (a single pickle) containing:
@@ -40,22 +56,39 @@ Use `pickle_or_not_to_pickle(...)` to *load an existing pickle* (fast), or *buil
 - The first build may take a few minutes depending on dataset size. Subsequent runs read the pickle in milliseconds. 
 
 ### Data requirements
+- Keep the **CSV files** in version control. The `measured_data.pkl` files are derived caches and can be regenerated from the CSVs when the notebook or CLI runs.
 - **CSV columns** for KDE fitting: `length_m`, `width_m`. Values must be **positive** if log-transform is enabled (default).
 - If you enable grouping (`category_col`), ensure that each category has **≥ 5 samples**—sparser groups are skipped.
 - The function `fit_bivariate_kde(...)` internally called by `pickle_or_not_to_pickle` uses `scipy.stats.gaussian_kde` and supports optional log-transforms and per-category bandwidths.
+
+Recommended CSV structure:
+
+| File | Purpose | Required columns | Common optional columns |
+|---|---|---|---|
+| `measuredLandslides_all.csv` | Landslide inventory used to fit length-width KDEs | `length_m`, `width_m` | `area_m2`, `ID`, `name` |
+| `measuredLandslides_all_ZonalStats.csv` | Observed landslide terrain statistics used for comparison plots and filtering | `Area_m2` or `area_m2` | `Elevation_m_mean` or `Elevation_mean`, `Slope_deg_mean`, `Aspect_deg_median` |
+| Region-clipped zonal stats, optional | Subregion-specific observed comparison data | `Area_m2` or `area_m2` | `Elevation_m_mean`, `Slope_deg_mean`, `Aspect_deg_median` |
 
 ### Troubleshooting
 - `ValueError: Cannot log-transform ... contains values <= 0` → turn off log-transform or filter/clean your data.
 - If your CSV column names differ, pass the correct `x_col`/`y_col` into `fit_bivariate_kde(...)` when you build the pickle the first time.
 - Use `verbose=True` to see a concise progress log while building/loading the pickle.
 
+## **Optional Runout**
+Runout is available as an optional soil-depth update after selected landslides have Newmark displacement values. To enable it through `ShallowLandslider`, the grid must first be routed with `PriorityFloodFlowRouter` using `separate_hill_flow=True`, which creates the required `hill_flow__receiver_node` and `hill_flow__receiver_proportions` fields.
+
+Runout is only executed when all three component flags are enabled:
+- `compute_displacement=True`
+- `enable_runout=True`
+- `update_soil=True`
+
+In the YAML CLI config, this means keeping `flow_params.separate_hill_flow: true` and setting `simulation.compute_displacement`, `simulation.enable_runout`, and `simulation.update_soil` to `true`. Runout modifies `soil__depth` in place and caches diagnostic erosion/deposition arrays on the runout subcomponent.
+
 ## **Quick start**
 ```python
-import numpy as np
-import matplotlib.pyplot as plt
-from shallow_landslide_component import ShallowLandslider
+from components.shallow_landslider import ShallowLandslider
 
-from helper_functions import (
+from utils import (
     get_topo,
     apply_soil_depth,
     pickle_or_not_to_pickle,
@@ -64,16 +97,19 @@ from helper_functions import (
 )
 
 from landlab.components import PriorityFloodFlowRouter
-from landlab import imshowhs_grid  # to plot results
 
-# 0. Load measured data
+# 0. Load measured data and build the KDE cache from CSVs.
 file_name_dict = {
-    "file1": "/path/to/measuredLandslides_all.csv",     # area/length/width table for all measured landslides
-    "file2": "/path/to/measuredLandslides_spatialStats.csv",    # zonal stats for all measured landslides
-    "file3": "/path/to/region_spatialStats.csv",        # region-clipped zonal stats (optional but recommended if using subregion)
+    "file1": "input_data/nepal/measuredLandslides_all.csv",
+    "file2": "input_data/nepal/measuredLandslides_all_ZonalStats.csv",
 }
 
-bundle = pickle_or_not_to_pickle(file_name_dict, pickle_path="measured_data_east.pkl", min_area=900, verbose=True)
+bundle = pickle_or_not_to_pickle(
+    file_name_dict,
+    pickle_path="input_data/nepal/measured_data.pkl",
+    min_area=900,
+    verbose=True,
+)
 
 # Access KDE for recursive split
 kde_dict = {
@@ -81,23 +117,27 @@ kde_dict = {
     "kde_transform": bundle["kde_transform"],
 }
 
-# 1. Build a Landlab grid (example: fetch DEM from OpenTopography)
-grid, z = get_topo(north=27.94, south=27.82, east=85.98, west=85.82, buffer=0.01, api_key="<API_KEY>")
+# 1. Build a Landlab grid from the bundled DEM.
+grid, z, nodata_mask = get_topo(
+    buffer=0.01,
+    dem_type="SRTMGL1",
+    load_dem="input_data/dem/SRTMGL1_28.169999999999998_85.03_28.3_85.21000000000001.asc",
+)
 
 # 2. Initialize and run flow router
 pf = PriorityFloodFlowRouter(
-    mg,
-    flow_metric=config_dict["flow_params"]["flow_metric"],
-    separate_hill_flow=config_dict["flow_params"]["separate_hill_flow"],
-    depression_handler=config_dict["flow_params"]["depression_handling"],
-    update_hill_depressions=config_dict["flow_params"]["update_hill_depressions"],
-    accumulate_flow=config_dict["flow_params"]["accumulate_flow"],
+    grid,
+    flow_metric="D8",
+    separate_hill_flow=True,  # required for optional runout
+    depression_handler="fill",
+    update_hill_depressions=True,
+    accumulate_flow=True,
 )
 pf.run_one_step()
 
 # 3. Apply soil depth
 curv = calculate_terrain_attribute(
-    grid=mg,
+    grid=grid,
     field_name="topographic__elevation",
     attrib="planform_curvature",
 )
@@ -106,7 +146,7 @@ soil_depth = apply_soil_depth(grid, max_soil_depth=1.5, distribution="curvature"
 # 4. Generate earthquake PGA grids
 pga_h, pga_v = generate_acceleration_grid(grid, horizontal_max=0.6, vertical_max=0.2)
 
-# 4. Instantiate and run the component
+# 5. Instantiate and run the component.
 ls = ShallowLandslider(
     grid,
     cohesion_eff=20e3, # Pa
@@ -118,11 +158,10 @@ ls = ShallowLandslider(
     proportion_method="conservative",
     random_seed=5000,
     verbose=True,  # optional
-    # KDE-based splitting
     split_by_width_config={
         "kde_data": kde_dict["kde_data"],
         "kde_transform": kde_dict["kde_transform"],
-        "split_convergence": 0.75, # stops recursive splitting once proportion of regions match expectations
+        "convergence_threshold": 0.75,
         "min_region_size": 10, # minimum number of pixels a region must have to be a split candidate
         "max_iterations": 10, # max number of recursive iterations to prevent infinite loops
         "width_threshold": 1.5, # Ratio of actual width / expected width beyond which a region is flagged for splitting
@@ -131,7 +170,7 @@ ls = ShallowLandslider(
 
 ls.run_one_step()
 
-# 5. Access results
+# 6. Access results
 print(ls.results["group_properties"].head())
 ```
 
@@ -139,8 +178,8 @@ print(ls.results["group_properties"].head())
 
 ## **Configuration**
 You can control simulation parameters via:
-- **Component arguments** (e.g., `selection_method`, `random_seed`, `verbose`, etc. in configuration dictionary).
-- **JSON config files** for reproducible runs (see `example_config.json` in repo).
+- **Component arguments** (e.g., `selection_method`, `random_seed`, `verbose`, etc.).
+- **YAML config files** for reproducible CLI runs (see `ShallowLandslider_config.yaml`).
 
 ### **Main Parameters**
 | Parameter                | Description                                      |
@@ -160,10 +199,15 @@ You can control simulation parameters via:
 After `run_one_step()`, the component populates:
 - `landslide__factor_of_safety`
 - `landslide__critical_acceleration`
+- `landslide__driving_minus_critical_acceleration`
+- `landslide__unstable_mask`
+- `landslide__region_labels`
+- `landslide__aspect_subgroup_labels`
+- `landslide__dimension_split_labels` when KDE-informed splitting is enabled
 - `landslide__selected_labels`
-- `landslide__probability`
-- `landslide__metadata`
-- `group_properties` (DataFrame with region metrics)
+- `landslide__newmark_displacement` when displacement is enabled
+- updated `soil__depth` when runout is enabled
+- `ls.results["group_properties"]` (DataFrame with region metrics)
 
 ---
 
@@ -171,13 +215,21 @@ After `run_one_step()`, the component populates:
 ```
 ShallowLandslider/
 ├─ __init__.py
-├─ shallow_landslide_component.py       # Main component
+├─ components/
+│  └─ shallow_landslider/
+│     ├─ __init__.py
+│     ├─ shallow_landslide_component.py # Main component
+│     └─ shallow_landslide_runout.py    # Optional runout subcomponent
 ├─ utils/                               
 │   ├─ __init__.py
 │   ├─ utilities.py                     # Optional helpers (get_topo, generate_acceleration_grid, etc.)
-├─ input_data/                          # Suite of example data/notebooks to run full model
+├─ input_data/                          # Example DEMs and measured landslide data
+│  ├─ dem/                              # Bundled example DEMs
+│  ├─ nepal/, nz/, png/, japan/         # Example measured-landslide CSVs
 ├─ tests/                               # Pytest suite
-├─ ShallowLandslider_quickstart.ipynb   # Sample config
+├─ run_landslide_model_cli.py           # YAML-driven command line runner
+├─ ShallowLandslider_config.yaml        # Example CLI configuration
+├─ ShallowLandslider_quickstart.ipynb   # Tutorial notebook
 └─ README.md                            
 ```
 
@@ -192,4 +244,4 @@ ShallowLandslider/
 ---
 
 ## **License**
-GNU GPLv3 .See [LICENSE](LICENSE) for details.
+GNU GPLv3. See [LICENSE](LICENSE) for details.

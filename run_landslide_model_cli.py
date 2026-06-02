@@ -12,7 +12,7 @@ import yaml
 import gc
 import numpy as np
 
-from shallow_landslide_component import ShallowLandslider
+from components.shallow_landslider import ShallowLandslider
 from utils import (
     get_topo,
     apply_soil_depth,
@@ -86,6 +86,24 @@ def load_config(path):
     return config
 
 
+def _build_measured_file_dict(split_cfg):
+    csv_cfg = split_cfg.get("csv_paths", {})
+    if not csv_cfg:
+        return {}
+
+    file_name_dict = {
+        "file1": csv_cfg.get("inventory_csv"),
+        "file2": csv_cfg.get("zonal_stats_csv"),
+    }
+    missing = [key for key, value in file_name_dict.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "KDE CSV configuration is incomplete. "
+            f"Missing values for: {missing}"
+        )
+    return file_name_dict
+
+
 def heartbeat(logger, msg, last_time, interval=300):
     now = time.time()
     if now - last_time > interval:
@@ -137,11 +155,12 @@ def main():
 
     # Determine chunking threshold
     chunk_cfg = config.get("chunking", {})
+    chunk_auto = bool(chunk_cfg.get("enable_auto", True))
     chunk_threshold = int(chunk_cfg.get("threshold_cells", 20_000_000))
     tile_size = tuple(chunk_cfg.get("tile_size", (800, 800)))
     tile_overlap = int(chunk_cfg.get("overlap", 3))
 
-    use_chunking = ncells >= chunk_threshold
+    use_chunking = chunk_auto and ncells >= chunk_threshold
     if use_chunking:
         logger.info(f"DEM exceeds threshold ({chunk_threshold:,}). Using chunked mode.")
     else:
@@ -158,10 +177,18 @@ def main():
         if kde_pkl is None:
             raise RuntimeError("KDE splitting enabled but no pickle_path provided.")
 
-        # identical behaviour to original
+        file_name_dict = _build_measured_file_dict(split_cfg)
+        if not os.path.exists(kde_pkl) and not file_name_dict:
+            raise RuntimeError(
+                "KDE splitting is enabled, but the configured pickle does not exist "
+                f"({kde_pkl}) and no split_by_width.csv_paths were provided."
+            )
+
+        os.makedirs(os.path.dirname(kde_pkl) or ".", exist_ok=True)
         kde_bundle = pickle_or_not_to_pickle(
-            file_name_dict={},  # unused for pickle mode
+            file_name_dict=file_name_dict,
             pickle_path=kde_pkl,
+            min_area=split_cfg.get("min_area", 900),
             verbose=True,
         )
 
@@ -177,7 +204,7 @@ def main():
         # -----------------------------------
         # FLOW ROUTING
         # -----------------------------------
-        flow_cfg = config.get("flow_router", {})
+        flow_cfg = config.get("flow_params", config.get("flow_router", {}))
         if flow_cfg.get("enable", True):
             logger.info("Running PriorityFloodFlowRouter...")
             t1 = time.time()
@@ -185,7 +212,10 @@ def main():
                 mg_full,
                 flow_metric=flow_cfg.get("flow_metric", "D8"),
                 separate_hill_flow=flow_cfg.get("separate_hill_flow", True),
-                depression_handler=flow_cfg.get("depression_handler", "fill"),
+                depression_handler=flow_cfg.get(
+                    "depression_handler",
+                    flow_cfg.get("depression_handling", "fill"),
+                ),
                 update_hill_depressions=flow_cfg.get("update_hill_depressions", True),
                 accumulate_flow=flow_cfg.get("accumulate_flow", True),
             )
@@ -236,10 +266,22 @@ def main():
             submerged_soil_proportion=soil_cfg.get("submerged_soil_proportion", 0.5),
             pga_h=pga_h,
             pga_v=pga_v,
+            aspect_interval=config["simulation"].get("aspect_interval", 20),
+            selection_method=config["simulation"].get(
+                "selection_method", "probabilistic"
+            ),
+            proportion_method=config["simulation"].get(
+                "proportion_method", "conservative"
+            ),
+            custom_proportion=config["simulation"].get("custom_proportion"),
             random_seed=seed,
             handle_small=config["simulation"].get("handle_small", "merge"),
             compute_displacement=config["simulation"].get(
                 "compute_displacement", False
+            ),
+            time_shaking=config["simulation"].get("time_shaking", 0.0),
+            displacement_threshold=config["simulation"].get(
+                "displacement_threshold", 0.0
             ),
             enable_runout=config["simulation"].get("enable_runout", False),
             update_soil=config["simulation"].get("update_soil", False),
@@ -262,7 +304,7 @@ def main():
 
         ls.run_one_step()
         save_model_run(
-            save_pickle=False,
+            save_pickle=save_pickle,
             ls=ls, config=config,
             output_dir=config["output_dir"],
             logger=logger
@@ -416,16 +458,28 @@ def main():
     ls_global = ShallowLandslider(
         mg_global,
         cohesion_eff=soil_cfg.get("cohesion_eff", 15e3),
-        angle_int_frict=soil_cfg.get.get("angle_int_frict", 30),
-        submerged_soil_proportion=soil_cfg.get.get(
+        angle_int_frict=soil_cfg.get("angle_int_frict", 30),
+        submerged_soil_proportion=soil_cfg.get(
             "submerged_soil_proportion", 0.5
         ),
         pga_h=pga_h,
         pga_v=pga_v,
+        aspect_interval=config["simulation"].get("aspect_interval", 20),
+        selection_method=config["simulation"].get(
+            "selection_method", "probabilistic"
+        ),
+        proportion_method=config["simulation"].get(
+            "proportion_method", "conservative"
+        ),
+        custom_proportion=config["simulation"].get("custom_proportion"),
         random_seed=seed,
         handle_small=config["simulation"].get("handle_small", "merge"),
         compute_displacement=config["simulation"].get(
             "compute_displacement", False
+        ),
+        time_shaking=config["simulation"].get("time_shaking", 0.0),
+        displacement_threshold=config["simulation"].get(
+            "displacement_threshold", 0.0
         ),
         verbose=config["simulation"].get("verbose", False),
         split_by_width_config=(
@@ -458,7 +512,7 @@ def main():
         ls_global._compute_displacement(ls_global.time_shaking)
     
     save_model_run(
-            save_pickle=False,
+            save_pickle=save_pickle,
             ls=ls_global, config=config,
             output_dir=config["output_dir"],
             logger=logger
