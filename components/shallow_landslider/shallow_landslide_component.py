@@ -503,7 +503,10 @@ class ShallowLandslider(Component):
             )
 
             self._fos = self._factor_of_safety(
-                self.grid, self.cohesion_eff, self.angle_int_frict
+                self.grid,
+                self.cohesion_eff,
+                self.angle_int_frict,
+                submerged_soil_proportion=self.submerged_soil_proportion,
             )
             self.grid.at_node["landslide__factor_of_safety"] = self._fos
 

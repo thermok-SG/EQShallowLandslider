@@ -12,3 +12,4 @@ runs/
 !input_data/dem/
 !input_data/dem/*.asc
 *.tif
+*.code-workspace

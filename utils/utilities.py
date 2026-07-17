@@ -4,6 +4,9 @@ Important utility functions to run ShallowLandslider separately
 
 # %% Import required packages
 from pathlib import Path
+from datetime import datetime, timezone
+from importlib import metadata as importlib_metadata
+import json
 import numpy as np
 from scipy import stats
 import richdem as rd
@@ -15,12 +18,15 @@ import sys
 import pickle
 from typing import Dict, Any
 import logging
+import platform
+import subprocess
 from logging.handlers import RotatingFileHandler
 
 from landlab import RasterModelGrid, imshowhs_grid
 from landlab.io import esri_ascii
 
 from bmi_topography import Topography
+from version import __version__
 
 
 # %% Getting topography from OpenTopography
@@ -1008,6 +1014,9 @@ def generate_acceleration_grid(
 
         # Create mask of valid (non-NaN) nodes
         valid_mask = ~np.isnan(node_x) & ~np.isnan(node_y)
+        if "nodata__mask" in grid.at_node:
+            valid_mask &= ~np.asarray(grid.at_node["nodata__mask"], dtype=bool)
+        valid_mask &= grid.status_at_node != grid.BC_NODE_IS_CLOSED
 
         # Calculate center coordinates
         if random_center:
@@ -1225,68 +1234,347 @@ def pickle_or_not_to_pickle(
     return bundle
 
 
-def save_model_run(save_pickle, ls, config, output_dir,
-                   logger):
-    """
-    Save a ShallowLandslider run in the exact format expected by load_all_runs()
-    and parse_pickle_name(), i.e.:
-        SL_c15000_phi30_sub50_curvature-linear_std_local_probabilistic_seed5000.pkl
-    """
+def _json_safe(value):
+    """Convert common NumPy/path values into JSON-compatible values."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
-    os.makedirs(output_dir, exist_ok=True)
 
-    # 1. Extract required results
-    bundle = {
-        "selected_group_props": ls.results["group_properties"],
-        "grid_arrays": {
-            "selected_labels": ls.results["selected_labels"],
-            "fos": ls.results["factor_of_safety"],
-            "a_diff": ls.results["a_diff"],
-        },
-        "config": config,
+def _git_provenance():
+    """Return best-effort Git provenance without making saving depend on Git."""
+    repo = Path(__file__).resolve().parents[1]
+
+    def run_git(*args):
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    try:
+        status = run_git("status", "--porcelain")
+        commit = run_git("rev-parse", "HEAD")
+        branch = run_git("branch", "--show-current")
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return {
+            "commit": None,
+            "commit_short": None,
+            "branch": None,
+            "tag": None,
+            "dirty": None,
+        }
+    try:
+        tag = run_git("describe", "--tags", "--exact-match") or None
+    except subprocess.CalledProcessError:
+        tag = None
+    return {
+        "commit": commit,
+        "commit_short": commit[:7],
+        "branch": branch,
+        "tag": tag,
+        "dirty": bool(status),
     }
 
-    # 2. Build filename parts
-    sim = config["simulation"]
-    soil = config["soil_params"]
-    
-    tags = []
-    
-    # Model ID
-    tags.append("SL")
-    
-    # Mechanical parameters
-    tags.append(f"c{int(soil['cohesion_eff'])}")
-    tags.append(f"phi{int(soil['angle_int_frict'])}")
-    tags.append(f"sub{int(round(soil['submerged_soil_proportion'] * 100))}")
-    
-    # Soil / thickness distribution
-    dist = soil["distribution"]
-    if dist == "uniform" or dist == "drainage_area":
-        tags.append(f"{dist}")
-    else:
-        tags.append(f"{dist}-{soil["relationship"]}")
-    
-    # Selection method
-    tags.append(sim["selection_method"])
-        
-    # Random seed
-    tags.append(f"seed{config["random_seed"]}")
-    
-    filename = "_".join(tags)
-    
-    df = ls.results["group_properties"]
-    
-    outfile = os.path.join(output_dir, f"{filename}.csv")
-    df.to_csv(outfile, index=False)
-    
+
+def _software_versions():
+    packages = ("landlab", "numpy", "pandas", "scipy", "scikit-image", "richdem")
+    versions = {}
+    for package in packages:
+        try:
+            versions[package] = importlib_metadata.version(package)
+        except importlib_metadata.PackageNotFoundError:
+            versions[package] = None
+    return versions
+
+
+def _run_name(config):
+    """Build a readable parameter name without using it as the run identity."""
+    soil = config.get("soil_params", {})
+    simulation = config.get("simulation", {})
+    distribution = str(soil.get("distribution", "uniform"))
+    if distribution not in {"uniform", "drainage_area"}:
+        distribution += f"-{soil.get('relationship', 'linear')}"
+    return "_".join(
+        [
+            "SL",
+            f"c{int(soil.get('cohesion_eff', 15000))}",
+            f"phi{int(soil.get('angle_int_frict', 30))}",
+            f"sub{int(round(soil.get('submerged_soil_proportion', 0.5) * 100))}",
+            distribution,
+            str(simulation.get("selection_method", "probabilistic")),
+            f"seed{config.get('random_seed', 5000)}",
+        ]
+    )
+
+
+def _mean_by_label(values, labels, label_ids):
+    values = np.asarray(values).ravel()
+    labels = np.asarray(labels, dtype=np.int64).ravel()
+    valid = (labels > 0) & np.isfinite(values)
+    size = int(labels.max()) + 1 if labels.size else 1
+    sums = np.bincount(labels[valid], weights=values[valid], minlength=size)
+    counts = np.bincount(labels[valid], minlength=size)
+    means = np.full(size, np.nan, dtype=float)
+    np.divide(sums, counts, out=means, where=counts > 0)
+    return means[np.asarray(label_ids, dtype=int)]
+
+
+def _max_by_label(values, labels, label_ids):
+    values = np.asarray(values).ravel()
+    labels = np.asarray(labels, dtype=np.int64).ravel()
+    size = int(labels.max()) + 1 if labels.size else 1
+    valid = (labels > 0) & np.isfinite(values)
+    maxima = np.full(size, -np.inf, dtype=float)
+    np.maximum.at(maxima, labels[valid], values[valid])
+    maxima[~np.isfinite(maxima)] = np.nan
+    return maxima[np.asarray(label_ids, dtype=int)]
+
+
+def _build_region_output(ls, config, run_id):
+    """Create a label-preserving, analysis-ready region table."""
+    results = ls.results
+    regions = results["group_properties"].copy()
+    if "label" not in regions.columns:
+        index_name = regions.index.name or "index"
+        regions = regions.reset_index().rename(columns={index_name: "label"})
+    regions["label"] = regions["label"].astype(int)
+
+    final_labels = results.get("split_labels")
+    if final_labels is None:
+        final_labels = results.get("aspect_labels")
+    final_labels = np.asarray(final_labels, dtype=np.int64)
+    label_ids = regions["label"].to_numpy()
+    selected_labels = np.asarray(results["selected_labels"], dtype=np.int64)
+    selected_ids = np.unique(selected_labels[selected_labels > 0])
+    regions["selected"] = regions["label"].isin(selected_ids)
+
+    counts = np.bincount(final_labels, minlength=int(final_labels.max()) + 1)
+    regions["cell_count"] = counts[label_ids]
+    grid = ls.grid
+    regions["centroid_x"] = _mean_by_label(grid.node_x, final_labels, label_ids)
+    regions["centroid_y"] = _mean_by_label(grid.node_y, final_labels, label_ids)
+    regions["mean_fos"] = _mean_by_label(
+        results["factor_of_safety"], final_labels, label_ids
+    )
+    regions["mean_critical_acceleration"] = _mean_by_label(
+        results["a_transient"], final_labels, label_ids
+    )
+    regions["mean_a_diff"] = _mean_by_label(results["a_diff"], final_labels, label_ids)
+    if results.get("newmark") is not None:
+        regions["max_newmark_displacement"] = _max_by_label(
+            results["newmark"], final_labels, label_ids
+        )
+
+    soil = config.get("soil_params", {})
+    simulation = config.get("simulation", {})
+    regions.insert(0, "run_id", run_id)
+    regions["cohesion_eff"] = soil.get("cohesion_eff")
+    regions["angle_int_frict"] = soil.get("angle_int_frict")
+    regions["submerged_soil_proportion"] = soil.get("submerged_soil_proportion")
+    regions["soil_distribution"] = soil.get("distribution")
+    regions["soil_relationship"] = soil.get("relationship")
+    regions["selection_method"] = simulation.get("selection_method")
+    regions["random_seed"] = config.get("random_seed")
+    return regions
+
+
+def _collect_raster_arrays(ls):
+    """Collect available node arrays under stable v1.2 output names."""
+    results = ls.results
+    arrays = {
+        "factor_of_safety": results.get("factor_of_safety"),
+        "critical_acceleration": results.get("a_transient"),
+        "driving_acceleration": results.get("a_driving"),
+        "driving_minus_critical_acceleration": results.get("a_diff"),
+        "unstable_mask": results.get("unstable_mask"),
+        "region_labels": results.get("labels"),
+        "aspect_labels": results.get("aspect_labels"),
+        "split_labels": results.get("split_labels"),
+        "selected_labels": results.get("selected_labels"),
+        "newmark_displacement": results.get("newmark"),
+    }
+    grid_fields = {
+        "topographic_elevation": "topographic__elevation",
+        "soil_depth": "soil__depth",
+        "nodata_mask": "nodata__mask",
+        "horizontal_pga": "earthquake__horizontal_pga",
+        "vertical_pga": "earthquake__vertical_pga",
+        "runout_erosion": "landslide__erosion",
+        "runout_deposition": "landslide__deposition",
+    }
+    for output_name, field_name in grid_fields.items():
+        if field_name in ls.grid.at_node:
+            arrays[output_name] = ls.grid.at_node[field_name]
+    return {name: np.asarray(value) for name, value in arrays.items() if value is not None}
+
+
+def _write_rasters(run_dir, ls, run_id, output_cfg, logger):
+    arrays = _collect_raster_arrays(ls)
+    shape = tuple(int(value) for value in ls.grid.shape)
+    outputs = []
+    write_zarr = bool(output_cfg.get("write_zarr", True))
+    wrote_zarr = False
+
+    if write_zarr:
+        try:
+            import xarray as xr
+            import zarr  # noqa: F401
+
+            data_vars = {
+                name: (("y", "x"), values.reshape(shape))
+                for name, values in arrays.items()
+            }
+            x = ls.grid.node_x.reshape(shape)[0, :]
+            y = ls.grid.node_y.reshape(shape)[:, 0]
+            dataset = xr.Dataset(data_vars=data_vars, coords={"x": x, "y": y})
+            dataset.attrs.update(
+                {"model_version": __version__, "run_id": run_id, "schema_version": 1}
+            )
+            chunk_cfg = output_cfg.get("zarr_chunks", [1024, 1024])
+            chunks = (min(int(chunk_cfg[0]), shape[0]), min(int(chunk_cfg[1]), shape[1]))
+            encoding = {name: {"chunks": chunks} for name in data_vars}
+            zarr_path = run_dir / "rasters.zarr"
+            dataset.to_zarr(
+                zarr_path, mode="w", encoding=encoding, zarr_format=3
+            )
+            outputs.append("rasters.zarr")
+            wrote_zarr = True
+        except (ImportError, ModuleNotFoundError) as exc:
+            logger.warning("Zarr output unavailable (%s); using .npy rasters.", exc)
+
+    if not wrote_zarr and output_cfg.get("write_npy_fallback", True):
+        raster_dir = run_dir / "rasters"
+        raster_dir.mkdir(exist_ok=True)
+        for name, values in arrays.items():
+            np.save(raster_dir / f"{name}.npy", values.reshape(shape), allow_pickle=False)
+        with open(raster_dir / "metadata.json", "w", encoding="utf-8") as stream:
+            json.dump(
+                {
+                    "shape": list(shape),
+                    "dx": float(ls.grid.dx),
+                    "dy": float(ls.grid.dy),
+                    "fields": sorted(arrays),
+                },
+                stream,
+                indent=2,
+            )
+        outputs.append("rasters/")
+    return outputs
+
+
+def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata=None):
+    """Save a versioned, self-describing ShallowLandslider v1.2 run directory."""
+    git_provenance = _git_provenance()
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    created_at = datetime.now(timezone.utc)
+    parameter_name = _run_name(config)
+    run_id = f"{created_at.strftime('%Y%m%dT%H%M%S%fZ')}_{parameter_name}"
+    run_dir = output_root / run_id
+    run_dir.mkdir()
+    output_cfg = config.get("outputs", {})
+
+    regions = _build_region_output(ls, config, run_id)
+    regions.to_csv(run_dir / "regions.csv", index=False)
+    output_files = ["regions.csv"]
+    if output_cfg.get("write_parquet", True):
+        try:
+            regions.to_parquet(run_dir / "regions.parquet", index=False)
+            output_files.append("regions.parquet")
+        except (ImportError, ModuleNotFoundError) as exc:
+            logger.warning("Parquet output unavailable (%s); regions.csv was saved.", exc)
+
+    selected = regions[regions["selected"]]
+    valid_nodes = int(np.sum(ls.grid.status_at_node != ls.grid.BC_NODE_IS_CLOSED))
+    selected_nodes = int(np.sum(np.asarray(ls.results["selected_labels"]) > 0))
+    summary = {
+        "run_id": run_id,
+        "model_version": __version__,
+        "candidate_region_count": int(len(regions)),
+        "selected_region_count": int(len(selected)),
+        "selected_node_count": selected_nodes,
+        "valid_node_count": valid_nodes,
+        "affected_node_percent": (100.0 * selected_nodes / valid_nodes) if valid_nodes else 0.0,
+        "selected_area_m2": float(selected["area"].sum()) if "area" in selected else 0.0,
+        "selected_area_m2_median": (
+            float(selected["area"].median()) if len(selected) and "area" in selected else None
+        ),
+        "selected_area_m2_max": (
+            float(selected["area"].max()) if len(selected) and "area" in selected else None
+        ),
+        "selected_proportion": ls.results.get("selected_proportion"),
+    }
+    with open(run_dir / "summary.json", "w", encoding="utf-8") as stream:
+        json.dump(_json_safe(summary), stream, indent=2)
+    output_files.append("summary.json")
+    output_files.extend(_write_rasters(run_dir, ls, run_id, output_cfg, logger))
+
     if save_pickle:
-        out_pickle = os.path.join(output_dir, f"{filename}.pkl")
-        with open(out_pickle, 'wb') as f:
-            pickle.dump(bundle, f)
-        logger.info(f"Model pickle saved to {config["output_dir"]}")
-    else:
-        logger.info("Output pickling disabled")
+        bundle = {
+            "selected_group_props": regions,
+            "grid_arrays": _collect_raster_arrays(ls),
+            "config": config,
+            "run_id": run_id,
+            "model_version": __version__,
+        }
+        with open(run_dir / "run.pkl", "wb") as stream:
+            pickle.dump(bundle, stream)
+        output_files.append("run.pkl")
+
+    dem_path = Path(config["dem_path"]) if config.get("dem_path") else None
+    dem_info = {"path": str(dem_path) if dem_path else None}
+    if dem_path and dem_path.exists():
+        stat = dem_path.stat()
+        dem_info.update(
+            {
+                "size_bytes": stat.st_size,
+                "modified_utc": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat(),
+            }
+        )
+    manifest = {
+        "schema_version": 1,
+        "model": {"name": "ShallowLandslider", "version": __version__},
+        "run_id": run_id,
+        "parameter_name": parameter_name,
+        "created_utc": created_at.isoformat(),
+        "git": git_provenance,
+        "runtime": _json_safe(runtime_metadata or {}),
+        "grid": {
+            "shape": list(ls.grid.shape),
+            "number_of_nodes": int(ls.grid.number_of_nodes),
+            "dx": float(ls.grid.dx),
+            "dy": float(ls.grid.dy),
+            "xy_axis_units": str(getattr(ls.grid, "xy_axis_units", "unknown")),
+            "crs": config.get("crs"),
+        },
+        "dem": dem_info,
+        "config": _json_safe(config),
+        "software": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "packages": _software_versions(),
+        },
+        "outputs": output_files + ["manifest.json"],
+    }
+    with open(run_dir / "manifest.json", "w", encoding="utf-8") as stream:
+        json.dump(manifest, stream, indent=2)
+
+    logger.info("ShallowLandslider v%s outputs saved to %s", __version__, run_dir)
+    return run_dir
 
 
 # %%% Bivariate kde fitting for region splitting

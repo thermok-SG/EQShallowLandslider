@@ -82,7 +82,11 @@ Runout is only executed when all three component flags are enabled:
 - `enable_runout=True`
 - `update_soil=True`
 
-In the YAML CLI config, this means keeping `flow_params.separate_hill_flow: true` and setting `simulation.compute_displacement`, `simulation.enable_runout`, and `simulation.update_soil` to `true`. Runout modifies `soil__depth` in place and caches diagnostic erosion/deposition arrays on the runout subcomponent.
+In the YAML CLI config, this means using `chunking.mode: never`, keeping
+`flow_params.enable` and `flow_params.separate_hill_flow` true, and setting
+`simulation.compute_displacement`, `simulation.enable_runout`, and
+`simulation.update_soil` to true. Runout modifies `soil__depth` in place and
+caches diagnostic erosion/deposition arrays on the runout subcomponent.
 
 ## **Quick start**
 ```python
@@ -173,6 +177,78 @@ ls.run_one_step()
 # 6. Access results
 print(ls.results["group_properties"].head())
 ```
+
+## CLI outputs and analysis (v1.2)
+
+Validate a YAML file without loading its DEM or starting a model run:
+
+```bash
+python run_landslide_model_cli.py \
+  --config ShallowLandslider_config.yaml \
+  --validate-only
+```
+
+`chunking.mode` accepts `auto`, `always`, or `never`; the command-line
+`--chunking` option can override it for a particular job. Curvature soil models
+automatically increase an undersized tile overlap. Drainage-area soil depth and
+runout require global flow-routing fields and therefore fail early if chunked
+execution is selected. A non-null `simulation.custom_proportion` overrides
+`proportion_method`; leave it as `null` to use the named method.
+
+Each CLI execution writes a unique, self-describing directory beneath
+`output_dir`:
+
+```text
+runs/<timestamp>_<parameter-name>/
+├── manifest.json
+├── summary.json
+├── regions.csv
+├── regions.parquet       # when pyarrow is available
+├── rasters.zarr/         # when xarray/zarr are available
+└── rasters/              # .npy fallback when Zarr is unavailable
+```
+
+The manifest records the complete configuration, Git revision, package versions,
+grid metadata, execution mode, and an output inventory. The region table keeps
+the model label as an explicit column and includes selection status plus summary
+statistics from the raster fields.
+
+Load one run without reading its large rasters:
+
+```python
+from analysis import load_run
+
+run = load_run("runs/<run-directory>")
+selected = run["regions"].query("selected")
+print(run["summary"])
+```
+
+Open raster output lazily and plot the principal region distributions:
+
+```python
+from analysis import load_run, plot_run
+
+run = load_run("runs/<run-directory>", load_rasters=True)
+plot_run(run, selected_only=True, output_path="selected_distributions.png")
+```
+
+Combine all selected regions from an HPC parameter ensemble:
+
+```python
+from analysis import load_region_ensemble
+
+regions = load_region_ensemble("runs", selected_only=True)
+regions.groupby(["cohesion_eff", "soil_distribution"])["area"].describe()
+```
+
+The command-line analysis wrapper creates a combined CSV and one plot per run:
+
+```bash
+python analyse_landslide_outputs.py --runs runs --output analysis_output
+```
+
+See [CHANGELOG.md](CHANGELOG.md) for scientific-output implications and the Git
+commit associated with the large-DEM curvature fixes.
 
 
 

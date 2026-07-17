@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import yaml
 from landlab import RasterModelGrid
 
 import run_landslide_model_cli as cli
@@ -118,3 +119,94 @@ def test_required_curvature_overlap_rejects_invalid_window():
                 "window": 0,
             }
         )
+
+
+def test_forced_chunked_cli_writes_complete_acceleration_outputs(tmp_path, monkeypatch):
+    """Exercise YAML parsing, NaN-edge curvature tiles, selection, and saving."""
+    shape = (12, 13)
+    rows, cols = np.indices(shape)
+    elevation = 1000.0 + rows**2 + 0.25 * cols**2
+    elevation = elevation.astype(float)
+    elevation[:2, :] = -9999
+    elevation[:, :2] = -9999
+    elevation[-1, -5:] = -9999
+    dem_path = tmp_path / "nan_edges.asc"
+    header = (
+        f"ncols {shape[1]}\n"
+        f"nrows {shape[0]}\n"
+        "xllcorner 0\n"
+        "yllcorner 0\n"
+        "cellsize 1\n"
+        "NODATA_value -9999\n"
+    )
+    dem_path.write_text(
+        header + "\n".join(" ".join(map(str, row)) for row in elevation),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "runs"
+    config = {
+        "dem_path": str(dem_path),
+        "dem_type": "SRTMGL1",
+        "output_dir": str(output_dir),
+        "smooth_num": 0,
+        "random_seed": 7,
+        "save_pickle": False,
+        "flow_params": {"enable": False},
+        "chunking": {
+            "mode": "always",
+            "threshold_cells": 1,
+            "tile_size": [5, 6],
+            "overlap": 2,
+        },
+        "soil_params": {
+            "cohesion_eff": 1000,
+            "angle_int_frict": 30,
+            "submerged_soil_proportion": 0.4,
+            "max_soil_depth": 1.5,
+            "distribution": "curvature",
+            "relationship": "linear_std_local",
+            "window": 3,
+        },
+        "pga": {
+            "horizontal_max": 0.8,
+            "vertical_max": 0.1,
+            "distribution": "circular",
+            "center": [6, 6],
+        },
+        "simulation": {
+            "selection_method": "probabilistic",
+            "proportion_method": "conservative",
+            "custom_proportion": None,
+            "handle_small": "keep",
+            "aspect_interval": 20,
+            "compute_displacement": False,
+            "enable_runout": False,
+            "update_soil": False,
+            "n_jobs": 1,
+        },
+        "split_by_width": {"enabled": False},
+        "outputs": {
+            "write_parquet": False,
+            "write_zarr": False,
+            "write_npy_fallback": True,
+            "zarr_chunks": [8, 8],
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv", ["run_landslide_model_cli.py", "--config", str(config_path)]
+    )
+
+    cli.main()
+
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    rasters = run_dir / "rasters"
+    critical = np.load(rasters / "critical_acceleration.npy")
+    driving = np.load(rasters / "driving_acceleration.npy")
+    nodata = np.load(rasters / "nodata_mask.npy")
+    assert critical.shape == shape
+    assert driving.shape == shape
+    assert np.isfinite(critical[~nodata]).any()
+    assert np.isfinite(driving[~nodata]).any()
+    assert np.isnan(critical[nodata]).all()

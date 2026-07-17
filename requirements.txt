@@ -6,6 +6,11 @@ scipy
 scikit-image
 richdem
 
+# Analysis-ready v1.2 outputs
+xarray
+zarr >= 3, <4
+pyarrow
+
 # Plotting (optional but recommended for visualization)
 matplotlib>=3.7
 

@@ -6,6 +6,9 @@ dependencies:
   - numpy >= 2.0
   - scipy
   - pandas
+  - pyarrow
+  - xarray
+  - zarr >= 3,<4
   - matplotlib
   - seaborn
   - scikit-image

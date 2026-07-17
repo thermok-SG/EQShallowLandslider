@@ -1,8 +1,19 @@
 dem_path:  "input_data/dem/SRTMGL1_28.169999999999998_85.03_28.3_85.21000000000001.asc"
+# Used to assign metric grid spacing to geographic ASCII DEMs. Supported values
+# in get_topo include SRTMGL1, NASADEM, AW3D30, COP30, SRTMGL3, and COP90.
+dem_type: "SRTMGL1"
 smooth_num: 0
 
 save_pickle: false
 output_dir: "runs/"
+
+# v1.2 analysis outputs. CSV is always written. If Zarr or Parquet support is
+# unavailable, rasters fall back to memory-mappable .npy files and CSV remains.
+outputs:
+  write_parquet: true
+  write_zarr: true
+  write_npy_fallback: true
+  zarr_chunks: [1024, 1024]
 
 random_seed: 5000
 
@@ -11,15 +22,15 @@ flow_params:
   enable: true
   flow_metric: "D8"
   separate_hill_flow: true
-  depression_handling: "fill"
+  depression_handler: "fill"
   update_hill_depressions: true
   accumulate_flow: true
 
 chunking:
-  enable_auto: true              # auto-switch to chunking mode  
-  threshold_cells: 20000000      # DEMs >20M cells → chunked mode  
-  tile_size: [2500, 2500]        # Size of tile core region  
-  overlap: 10                     # Necessary for slope/aspect stability  
+  mode: "auto"                  # auto | always | never
+  threshold_cells: 20000000      # DEMs >20M cells → chunked mode
+  tile_size: [2500, 2500]        # Size of tile core region
+  overlap: 10                     # Necessary for slope/aspect stability
 
 soil_params:
   cohesion_eff: 15000
@@ -46,21 +57,27 @@ soil_params:
 pga:
   horizontal_max: 0.5
   vertical_max: 0.2
-  distribution: "uniform"
+  distribution: "uniform"       # uniform | circular | square | diamond | exponential
+  center: null                   # optional [row, column] in the global DEM
+  random_center: false           # overrides center when true
+  seed: null                     # null uses the top-level random_seed
 
 simulation:
   selection_method: "probabilistic"
   proportion_method: "conservative" # empirical|statistical|risk_profile|adaptive|conservative
-  custom_proportion: 0.25
+  # A non-null value overrides proportion_method and must be in (0, 1].
+  custom_proportion: null
   handle_small: "merge"
   aspect_interval: 20 # interval for topographic aspect zones
   verbose: false
+  n_jobs: 1
 
   compute_displacement: false
   time_shaking: 10 # seconds (used for Newmark displacement if enabled)
   displacement_threshold: 0.0
-  # Runout requires compute_displacement: true, enable_runout: true,
-  # update_soil: true, and flow_params.separate_hill_flow: true.
+  # Runout requires full-grid mode, compute_displacement: true,
+  # enable_runout: true, update_soil: true, flow_params.enable: true,
+  # and flow_params.separate_hill_flow: true.
   enable_runout: false
   update_soil: false
 
