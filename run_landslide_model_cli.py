@@ -16,13 +16,12 @@ from components.shallow_landslider import ShallowLandslider
 from utils import (
     get_topo,
     apply_soil_depth,
-    calculate_terrain_attribute,
     generate_acceleration_grid,
     pickle_or_not_to_pickle,
     setup_logger,
     save_model_run
 )
-from scipy.ndimage import label as cc_label
+from scipy.ndimage import distance_transform_edt, label as cc_label
 
 from landlab.components import PriorityFloodFlowRouter
 from landlab import RasterModelGrid
@@ -69,6 +68,57 @@ def iterate_tiles(array, tile_size=(800, 800), overlap=3):
 def write_back_core(global_arr, tile_arr, r0, r1, c0, c1, re0, ce0):
     core = tile_arr[(r0 - re0) : (r1 - re0), (c0 - ce0) : (c1 - ce0)]
     global_arr[r0:r1, c0:c1] = core
+
+
+def fill_nodata_for_terrain(elevation, nodata_mask):
+    """Fill nodata from the nearest valid cell for tile terrain calculations."""
+    elevation = np.asarray(elevation, dtype=float)
+    nodata_mask = np.asarray(nodata_mask, dtype=bool) | ~np.isfinite(elevation)
+    if elevation.shape != nodata_mask.shape:
+        raise ValueError("elevation and nodata_mask must have the same shape")
+    if nodata_mask.all():
+        return np.zeros_like(elevation), nodata_mask
+    if not nodata_mask.any():
+        return elevation.copy(), nodata_mask
+
+    nearest_valid = distance_transform_edt(
+        nodata_mask, return_distances=False, return_indices=True
+    )
+    filled = elevation[tuple(nearest_valid)]
+    return filled, nodata_mask
+
+
+def apply_configured_soil_depth(grid, soil_cfg):
+    """Apply the configured soil model, including optional relationship settings."""
+    params = dict(soil_cfg)
+    params.setdefault("max_soil_depth", 1.5)
+    params.setdefault("distribution", "uniform")
+    params.setdefault("relationship", "linear_std_local")
+    params.setdefault("P0", 0.05)
+    params.setdefault("h_star", 1.0)
+    params.setdefault("D", 0.01)
+    params.setdefault("h_min", 0.1)
+    params.setdefault("h_no_ss", 0.0)
+    params["plot"] = False
+    return apply_soil_depth(grid, **params)
+
+
+def required_curvature_overlap(soil_cfg):
+    """Return the tile halo needed by a curvature-based soil model."""
+    if soil_cfg.get("distribution", "uniform") not in {
+        "curvature",
+        "mean_elev_curv",
+    }:
+        return 0
+
+    # RichDEM curvature uses neighboring cells. The local-standard-deviation
+    # relationship needs an additional half-window beyond that stencil.
+    if soil_cfg.get("relationship", "linear_std_local") == "linear_std_local":
+        window = int(soil_cfg.get("window", 5))
+        if window < 1:
+            raise ValueError("soil_params.window must be at least 1")
+        return 1 + window // 2
+    return 1
 
 
 def parse_args():
@@ -138,7 +188,7 @@ def main():
     # DEM LOAD
     # -----------------------------------
     logger.info(f"Loading DEM: {dem_path}")
-    mg_full, z_full, _ = get_topo(
+    mg_full, z_full, nodata_full = get_topo(
         dem_type=None,
         load_dem=dem_path,
         buffer=0,
@@ -147,6 +197,12 @@ def main():
 
     z_full_2d = z_full.reshape(mg_full.shape)
     z_full_2d = z_full_2d.astype(float)
+    nodata_full_2d = np.asarray(nodata_full, dtype=bool).reshape(mg_full.shape)
+    nodata_full_2d |= ~np.isfinite(z_full_2d)
+    if nodata_full_2d.all():
+        raise ValueError("DEM contains no valid elevation cells")
+    nodata_fallback = np.min(z_full_2d[~nodata_full_2d])
+    z_full_2d[nodata_full_2d] = nodata_fallback
     
     nrows, ncols = z_full_2d.shape
     ncells = nrows * ncols
@@ -198,6 +254,16 @@ def main():
     soil_cfg = config.get("soil_params", {})
     eq_cfg = config.get("pga", {})
 
+    required_overlap = required_curvature_overlap(soil_cfg)
+    if use_chunking and tile_overlap < required_overlap:
+        logger.warning(
+            "Increasing chunk overlap from %d to %d cells for the configured "
+            "curvature soil relationship.",
+            tile_overlap,
+            required_overlap,
+        )
+        tile_overlap = required_overlap
+
     if not use_chunking:
         logger.info("Running full-grid model...")
 
@@ -232,18 +298,7 @@ def main():
         # Soil
         if "soil__depth" not in mg_full.at_node:
             mg_full.add_zeros("soil__depth", at="node")
-        apply_soil_depth(
-            mg_full,
-            max_soil_depth=soil_cfg.get("max_soil_depth", 1.5),
-            distribution=soil_cfg.get("distribution", "uniform"),
-            relationship=soil_cfg.get("relationship", "linear_std_local"),
-            P0=soil_cfg.get("P0", 0.05),
-            h_star=soil_cfg.get("h_star", 1.0),
-            D=soil_cfg.get("D", 0.01),
-            h_min=soil_cfg.get("h_min", 0.1),
-            h_no_ss=soil_cfg.get("h_no_ss", 0.0),
-            plot=False,
-        )
+        apply_configured_soil_depth(mg_full, soil_cfg)
         mg_full.add_zeros("bedrock__elevation", at="node", clobber=True)
         mg_full.at_node["bedrock__elevation"][:] = (
             mg_full.at_node["topographic__elevation"] - mg_full.at_node["soil__depth"]
@@ -324,40 +379,29 @@ def main():
     global_fos = np.full_like(z_full_2d, np.nan, dtype=float)
     global_diff = np.full_like(z_full_2d, np.nan, dtype=float)
     global_unstable = np.zeros_like(z_full_2d, dtype=bool)
+    global_soil = np.zeros_like(z_full_2d, dtype=np.float32)
 
     # ---- TILE LOOP ----
     for r0, r1, c0, c1, re0, re1, ce0, ce1, tile_z in iterate_tiles(
         z_full_2d, tile_size=tile_size, overlap=tile_overlap
     ):
         logger.info(f"Tile r[{r0}:{r1}], c[{c0}:{c1}]")
-        tile_z = tile_z.astype(float)
+        tile_mask = nodata_full_2d[re0:re1, ce0:ce1]
+        tile_z, tile_mask = fill_nodata_for_terrain(tile_z, tile_mask)
+        if tile_mask.all():
+            logger.info("Skipping tile because it contains only nodata cells")
+            continue
+        write_back_core(z_full_2d, tile_z, r0, r1, c0, c1, re0, ce0)
 
         # Create tile-local Landlab grid
         mg_tile = RasterModelGrid((re1 - re0, ce1 - ce0), xy_spacing=mg_full.dx)
         mg_tile.add_field("topographic__elevation", tile_z.ravel(), at="node")
-
-        # Terrain attribute
-        calculate_terrain_attribute(
-            grid=mg_tile,
-            field_name="topographic__elevation",
-            attrib="planform_curvature",
-        )
+        mg_tile.add_field("nodata__mask", tile_mask.ravel(), at="node")
+        mg_tile.status_at_node[tile_mask.ravel()] = mg_tile.BC_NODE_IS_CLOSED
 
         # Soil
-        if "soil__depth" not in mg_tile.at_node:
-            mg_tile.add_zeros("soil__depth", at="node")
-        apply_soil_depth(
-            mg_tile,
-            max_soil_depth=soil_cfg.get("max_soil_depth", 1.5),
-            distribution=soil_cfg.get("distribution", "uniform"),
-            relationship=soil_cfg.get("relationship", "linear_std_local"),
-            P0=soil_cfg.get("P0", 0.05),
-            h_star=soil_cfg.get("h_star", 1.0),
-            D=soil_cfg.get("D", 0.01),
-            h_min=soil_cfg.get("h_min", 0.1),
-            h_no_ss=soil_cfg.get("h_no_ss", 0.0),
-            plot=False,
-        )
+        soil_tile = apply_configured_soil_depth(mg_tile, soil_cfg)
+        soil_tile[tile_mask.ravel()] = 0.0
         mg_tile.add_zeros("bedrock__elevation", at="node", clobber=True)
         mg_tile.at_node["bedrock__elevation"][:] = (
             mg_tile.at_node["topographic__elevation"] - mg_tile.at_node["soil__depth"]
@@ -396,10 +440,23 @@ def main():
         unstable_tile = mg_tile.at_node["landslide__unstable_mask"].reshape(
             tile_z.shape
         )
+        fos_tile[tile_mask] = np.nan
+        diff_tile[tile_mask] = np.nan
+        unstable_tile[tile_mask] = False
 
         write_back_core(global_fos, fos_tile, r0, r1, c0, c1, re0, ce0)
         write_back_core(global_diff, diff_tile, r0, r1, c0, c1, re0, ce0)
         write_back_core(global_unstable, unstable_tile, r0, r1, c0, c1, re0, ce0)
+        write_back_core(
+            global_soil,
+            soil_tile.reshape(tile_z.shape),
+            r0,
+            r1,
+            c0,
+            c1,
+            re0,
+            ce0,
+        )
 
         del mg_tile, ls_tile
         gc.collect()
@@ -416,25 +473,18 @@ def main():
     # ================================================================
     mg_global = RasterModelGrid((nrows, ncols), xy_spacing=mg_full.dx)
     mg_global.add_field("topographic__elevation", z_full_2d.ravel(), at="node")
+    mg_global.add_field("nodata__mask", nodata_full_2d.ravel(), at="node")
+    mg_global.status_at_node[nodata_full_2d.ravel()] = mg_global.BC_NODE_IS_CLOSED
     mg_global.add_field("landslide__factor_of_safety", global_fos.ravel(), at="node")
     mg_global.add_field(
         "landslide__driving_minus_critical_acceleration", global_diff.ravel(), at="node"
     )
     mg_global.add_field("landslide__unstable_mask", global_unstable.ravel(), at="node")
 
-    # Soil field must be recomputed globally or stitched. We recompute for simplicity:
-    mg_global.add_zeros("soil__depth", at="node")
-    apply_soil_depth(
-        mg_global,
-        max_soil_depth=soil_cfg.get("max_soil_depth", 1.5),
-        distribution=soil_cfg.get("distribution", "uniform"),
-        relationship=soil_cfg.get("relationship", "linear_std_local"),
-        P0=soil_cfg.get("P0", 0.05),
-        h_star=soil_cfg.get("h_star", 1.0),
-        D=soil_cfg.get("D", 0.01),
-        h_min=soil_cfg.get("h_min", 0.1),
-        h_no_ss=soil_cfg.get("h_no_ss", 0.0),
-        plot=False,
+    # Reuse the soil depths that produced the tile stability results. Recomputing
+    # curvature here would allocate full-DEM RichDEM arrays and defeat chunking.
+    mg_global.add_field(
+        "soil__depth", global_soil.ravel(), at="node", copy=True
     )
     mg_global.add_zeros("bedrock__elevation", at="node", clobber=True)
     mg_global.at_node["bedrock__elevation"][:] = (

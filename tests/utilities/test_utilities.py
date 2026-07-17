@@ -54,6 +54,38 @@ def test_apply_soil_depth_curvature_linear():
     assert np.nanmax(soil) <= 1.5
 
 
+def test_apply_soil_depth_accepts_constant_curvature():
+    mg = make_grid()
+    mg.add_field("curvature", np.zeros(mg.number_of_nodes), at="node")
+
+    soil = util.apply_soil_depth(
+        mg,
+        distribution="curvature",
+        relationship="linear_std_local",
+        max_soil_depth=0.8,
+    )
+
+    assert np.allclose(soil[mg.core_nodes], 0.4)
+
+
+def test_curvature_soil_respects_configured_maximum():
+    mg = make_grid()
+    mg.add_field(
+        "curvature", np.linspace(-10.0, 10.0, mg.number_of_nodes), at="node"
+    )
+
+    soil = util.apply_soil_depth(
+        mg,
+        distribution="curvature",
+        relationship="linear",
+        a=5.0,
+        b=0.0,
+        max_soil_depth=0.8,
+    )
+
+    assert np.allclose(soil[mg.core_nodes], 0.8)
+
+
 def test_fit_bivariate_kde_raises_on_nonpositive_log():
     df = pd.DataFrame({"length_m": [1, 2, 3], "width_m": [0, 1, 2]})
     with pytest.raises(ValueError):

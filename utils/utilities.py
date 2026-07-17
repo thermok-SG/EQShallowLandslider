@@ -380,10 +380,6 @@ def apply_soil_depth(
             kappa_map = grid.at_node["curvature"]
 
         core_kappa = kappa_map[core_nodes]
-        min_kappa, max_kappa = np.nanmin(core_kappa), np.nanmax(core_kappa)
-
-        if max_kappa == min_kappa:
-            raise ValueError("No variation in curvature. Check inputs")
 
         a = kwargs.get("a", max_soil_depth / 2.0)
         scale = kwargs.get("scale", 0.01)  # default scaling for Patton regression
@@ -392,7 +388,7 @@ def apply_soil_depth(
             # Plain linear
             b = kwargs.get("b", -1.0)
             soil_depth[core_nodes] = np.clip(
-                a + b * core_kappa, 0.0, kwargs.get("max_soil_depth", 1.5)
+                a + b * core_kappa, 0.0, max_soil_depth
             )
 
         elif relationship == "piecewise":
@@ -417,7 +413,7 @@ def apply_soil_depth(
                     else:
                         h_vals[i] = h_min
             soil_depth[core_nodes] = np.clip(
-                h_vals, 0.0, kwargs.get("max_soil_depth", 1.5)
+                h_vals, 0.0, max_soil_depth
             )
 
         elif relationship == "linear_std_global":
@@ -425,7 +421,7 @@ def apply_soil_depth(
             curv_std = np.nanstd(core_kappa)
             b = (-446.3 * curv_std + 30.3) * scale
             soil_depth[core_nodes] = np.clip(
-                a + b * core_kappa, 0.0, kwargs.get("max_soil_depth", 1.5)
+                a + b * core_kappa, 0.0, max_soil_depth
             )
             if verbose:
                 print(f"Global curvature std: {curv_std:.3e}, slope b={b:.3f}")
@@ -448,7 +444,7 @@ def apply_soil_depth(
             core_local_b = local_b.ravel()[core_nodes]
 
             soil_depth[core_nodes] = np.clip(
-                a + core_local_b * core_kappa, 0.0, kwargs.get("max_soil_depth", 1.5)
+                a + core_local_b * core_kappa, 0.0, max_soil_depth
             )
 
             if verbose:
@@ -600,8 +596,9 @@ def apply_soil_depth(
             soil_field=soil_field,
             max_soil_depth=max_soil_depth,
             distribution="curvature",
-            relationship="linear_std_local",
+            relationship=relationship,
             plot=False,
+            **kwargs,
         )
 
         soil_depth[:] = np.mean([elev_depth, curv_depth], axis=0)
