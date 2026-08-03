@@ -64,6 +64,23 @@ def test_runout_flag_dependencies_are_validated():
         prepare_config(config)
 
 
+def test_runout_rejects_single_flow_hill_metric():
+    config = minimal_config()
+    config["simulation"].update(
+        {
+            "compute_displacement": True,
+            "enable_runout": True,
+            "update_soil": True,
+        }
+    )
+    config["flow_params"].update(
+        {"enable": True, "separate_hill_flow": True, "hill_flow_metric": "D8"}
+    )
+
+    with pytest.raises(ValueError, match="multiple-flow"):
+        prepare_config(config)
+
+
 def test_chunked_mode_rejects_global_only_features():
     config = prepare_config(minimal_config())
     config["soil_params"]["distribution"] = "drainage_area"
@@ -92,4 +109,3 @@ def test_configured_pga_honours_center_seed_and_nodata():
     assert np.isclose(vertical[center_node], 0.2)
     assert np.isnan(horizontal[7])
     assert np.isnan(vertical[7])
-

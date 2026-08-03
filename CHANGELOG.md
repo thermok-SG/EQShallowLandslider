@@ -1,152 +1,315 @@
 # Changelog
 
-This project follows semantic versioning from ShallowLandslider 1.2 onward.
-The repository did not contain Git release tags before version 1.2, so earlier
-milestones are referenced by commit hash.
+This project follows semantic versioning from ShallowLandslider 1.2 onward. It
+also records the main content of every commit currently reachable in the
+repository, in reverse chronological order. Earlier releases were not tagged,
+so their milestones are identified by commit hash. Descriptions are based on
+the committed diffs and messages and summarise the main changes rather than
+every edited line.
 
-## 1.2.0 - In development (2026-07-17)
+## Unreleased working tree - multiflow runout and notebook integration
 
-Release status: not yet tagged. Development branch:
-`fix/curvature-regolith-chunking`.
+- Restored runout to the 2025 source-to-endpoint transport concept while using
+  Quinn multiple-flow routing. Every selected node above the displacement
+  threshold independently starts a branch tree; its original soil column is
+  excavated once and divided among terminated endpoints.
+- Kept stopped Quinn proportions as terminated branches, normalised transported
+  amounts per source, conserved mass, and prevented negative soil depths.
+- Made the runout subcomponent own its source nodes, paths, proportions,
+  per-source path counts and proportion totals, erosion, deposition, and net
+  soil-depth-change diagnostics.
+- Added stable runout raster fields and JSON summary metrics. Selected
+  initiation, excavated sources, deposition endpoints, runout-only area,
+  selected/runout overlap, and combined area are reported separately.
+- Required a multiple-flow hill-routing metric for runout. The main drainage
+  network may still use D8, but the separate hillslope routing used by runout is
+  Quinn by default; single-flow hill routing is rejected.
+- Reworked the quick-start notebook into a small, reproducible run that writes
+  an analysis-ready run directory, and added an output-analysis notebook that
+  reads those results and writes CSV and readable JSON summaries and figures.
+- Added regression coverage for multiflow validation, source-to-endpoint branch
+  splitting, mass conservation, non-negative soil depth, output footprints,
+  JSON summaries, and CLI configuration.
 
-### Added
+### Scientific behaviour and compatibility
 
-- Versioned, unique output directories for every CLI run.
-- A JSON manifest recording:
-  - model and output-schema versions;
-  - complete model configuration;
-  - Git commit, branch, exact tag when available, and dirty status;
-  - Python and scientific-package versions;
-  - grid shape, spacing, DEM details, execution mode, and runtime;
-  - an inventory of output files.
-- A compact `summary.json` containing candidate/selected region counts,
-  affected-node percentage, selected area statistics, and selected proportion.
-- Label-preserving region output in CSV and, when `pyarrow` is installed,
-  Parquet format.
-- Per-region analysis fields including cell count, centroid, mean factor of
-  safety, mean critical acceleration, mean acceleration difference, and maximum
-  Newmark displacement.
-- Chunked Zarr raster output when `xarray` and `zarr` are installed.
-- A dependency-safe fallback of one memory-mappable NumPy file per raster.
-- Analysis utilities for discovering runs, loading one run lazily, combining
-  ensemble region tables, and plotting histograms with ECDF overlays.
-- The `analyse_landslide_outputs.py` command-line analysis entry point.
-- Regression tests for the v1.2 output schema, analysis loading, and plotting.
+- The core factor-of-safety, critical-acceleration, driving-acceleration, and
+  Newmark equations were not changed by the current multiflow/notebook work.
+- Intermediate routing nodes are not modified unless they independently qualify
+  as sources. A selected node with no valid moving path is retained.
+- Runout output from the former segment-by-segment 2026 implementation is not
+  directly comparable with the restored source-to-endpoint result.
+- The primary analysis output is a run directory rather than a flat CSV/pickle
+  pair. Legacy `run.pkl` output remains optional inside that directory.
+- The clearer `selected_footprint_percent` summary key retains
+  `affected_node_percent` as a backward-compatible alias.
 
-### Curvature and large-DEM fixes
+## 2026
 
-The following changes were first committed in `78adf99` on 2026-07-16
-(`sg/maybe fixed curvature issue for edge chunks of large DEMs`). No Git tag is
-associated with that commit.
+### `552c605` - 2026-07-17 - New analysis tools
 
-- Curvature-derived soil depth is calculated within overlapped tiles and the
-  tile-core soil depths are stitched into the global result. The CLI no longer
-  performs a second full-DEM RichDEM curvature calculation after chunking.
-- The minimum overlap is derived from the curvature stencil and local-standard-
-  deviation window. For a window of five cells, the required overlap is three
-  cells.
-- Configured curvature options such as `window` and `scale` are forwarded to the
-  soil-depth calculation.
-- Constant-curvature tiles no longer raise `ValueError`; the configured
-  relationship is evaluated with zero curvature variance.
-- Curvature relationships now clip against the `max_soil_depth` argument rather
-  than an independent hard-coded 1.5 m fallback.
-- Composite elevation-curvature soil depth now uses the configured curvature
-  relationship and its options.
-- DEM nodata masks are retained during chunking.
-- NaN-heavy edge tiles are temporarily padded from their nearest valid elevation
-  before RichDEM curvature calculation. The original nodata cells remain closed,
-  receive zero soil depth, and cannot be classified as unstable.
-- Tiles containing only nodata are skipped.
-- The finite, padded tile cores are reused when constructing the global grid so
-  edge NaNs do not re-enter downstream calculations.
-
-### CLI and configuration fixes
-
-- Added complete YAML validation and a `--validate-only` CLI option.
-- Added explicit `chunking.mode` values (`auto`, `always`, and `never`) and a
-  matching command-line override; the older `enable_auto` key remains accepted.
-- Added YAML controls for PGA centre, random centre, PGA seed, and component
-  worker count.
-- Non-uniform PGA distributions are now generated once in global coordinates
-  and sliced into tiles. Previously, every tile independently changed the PGA
-  centre and distance normalization.
-- Chunked runs now stitch and retain critical and driving acceleration in
-  addition to factor of safety and acceleration difference. These arrays are
-  also supplied to global candidate selection and v1.2 raster/region outputs.
-- Stitched soil depth is retained as the `float64` dtype required by Landlab;
-  the former `float32` global field stopped chunked runs before selection.
-- The configured submerged-soil proportion is now forwarded to the static
-  factor-of-safety calculation. Critical acceleration already used this value.
-- Unsupported chunked combinations (runout and drainage-area soil depth) now
-  stop with an actionable error rather than being ignored or failing later.
-- Runout flag dependencies, soil/PGA methods, numerical ranges, tile geometry,
-  Zarr chunks, and selection options are validated before model execution.
-- Zarr output explicitly writes the version 3 format supported by the v1.2
-  dependency range.
-
-### Scientific-output implications
-
-- Core factor-of-safety, critical-acceleration, driving-acceleration, and Newmark
-  equations were not changed by commit `78adf99`.
-- Results can change near nodata boundaries because curvature is now evaluated
-  from nearest-valid padding rather than propagating NaNs or failing.
-- Curvature runs with a non-default maximum soil depth can change because the
-  configured maximum is now applied correctly.
-- Chunked curvature results can change because the globally reconstructed model
-  now uses the same stitched soil depths that produced tile stability, rather
-  than independently recomputing soil depth on the full DEM.
-- Constant-curvature tiles now produce results where previous runs terminated.
-- Factor-of-safety results change when `submerged_soil_proportion` differs from
-  0.5 because the configured value is now used instead of that equation's
-  default. The underlying equation itself is unchanged.
-- Chunked runs using a spatial PGA distribution now use one continuous global
-  forcing field rather than a separately normalized distribution in each tile.
-
-### Output compatibility
-
-- The primary output is now a run directory rather than a flat CSV/pickle pair.
-- `regions.csv` is always written. `regions.parquet` and `rasters.zarr` depend on
-  their optional storage libraries.
-- Legacy pickle output remains available through `save_pickle: true`, but the
-  pickle is stored as `run.pkl` inside the run directory.
+- Introduced version 1.2 metadata and a versioned run-directory output schema.
+- Added manifests, JSON run summaries, explicit region tables, optional
+  Parquet/Zarr output, and NumPy raster fallbacks.
+- Added the `analysis` package and command-line output-analysis entry point.
+- Expanded configuration validation, provenance capture, tests, requirements,
+  README documentation, and the release-oriented changelog.
+- Made `regions.csv` the always-available region output, with Parquet and Zarr
+  dependent on optional libraries and memory-mappable NumPy rasters as the
+  dependency-safe fallback.
 - Existing flat-output consumers should migrate to `analysis.load_run()` or
   `analysis.load_region_ensemble()`.
 
-## Earlier unversioned milestones
+### `78adf99` - 2026-07-17 - Curvature and large-DEM fixes
 
-These entries document important scientific changes identified from Git history;
-they are not retroactive semantic-version releases.
+- Reworked curvature-derived soil depth for overlapped chunk processing and
+  stitched tile cores into the global result.
+- Preserved nodata masks, padded NaN-heavy edge tiles for curvature evaluation,
+  skipped all-nodata tiles, and enforced sufficient overlap.
+- Forwarded curvature configuration consistently and respected the configured
+  maximum soil depth.
+- Added CLI regression tests for chunked curvature and edge/nodata cases.
+- Derived the minimum tile overlap from the curvature stencil and local-
+  standard-deviation window, and handled constant-curvature and all-nodata
+  tiles without terminating the run.
+- Reused stitched finite tile cores when building the global grid instead of
+  recomputing curvature-derived soil depth over the full DEM.
+- These fixes can change results near nodata boundaries, with non-default soil-
+  depth maxima, and in chunked curvature runs. The underlying stability and
+  Newmark equations were unchanged.
 
-### `8c47f1d` - 2026-06-02
+### `25187e9` - 2026-06-02 - Remove derived measured-data cache
 
-- Prepared the standalone component layout used by the current repository.
-- Consolidated selection, splitting, stability, displacement, and runout code
-  beneath `components/shallow_landslider`.
+- Removed `utils/measured_data.pkl`; measured-data caches became generated
+  artefacts rather than repository source files.
 
-### `9f5d887` - 2026-04-09
+### `8dd4a92` - 2026-06-02 - Restore package initializer
 
-- Added the runout subcomponent and soil erosion/deposition updates.
-- Cached slope arrays and changed factor-of-safety soil depth to `float32`.
-- Changed the factor-of-safety depth guard from replacing exactly zero depth to
-  clamping all depths below 0.001 m.
-- Revised region geometry and slope-direction dimension calculations.
+- Added the root `__init__.py` omitted from the preceding standalone-release
+  restructuring.
 
-### `6008942` - 2026-01-06
+### `8c47f1d` - 2026-06-02 - Prepare standalone release
 
-- Converted the component friction-angle input from degrees to radians before
-  scientific calculations.
-- Changed the default submerged-soil proportion from 0.0 to 0.5.
-- Revised probabilistic/PGA-weighted selection behavior and NaN handling.
-- Added analytic regression tests for stability and displacement equations.
+- Moved the main and runout components into the current
+  `components/shallow_landslider` package and added package initializers.
+- Revised the component, runout implementation, CLI, YAML configuration,
+  quick-start notebook, utilities, tests, README, and ignore rules.
+- Added bundled Nepal and New Zealand example DEMs for reproducible runs.
+- Established the repository layout used by the current standalone component.
 
-### `596019f` - 2025-12-02
+### `d3bc9c6` - 2026-04-17 - Logging and HPC processing
 
-- Expanded soil depth beyond uniform/elevation relationships to curvature,
-  drainage-area, and composite parameterisations.
-- Introduced global and local curvature-standard-deviation relationships.
+- Added structured progress logging and revised the CLI for smoother HPC
+  execution.
+- Refactored and optimised component processing, including staged execution and
+  reduced intermediate overhead.
+- Updated the quick-start notebook and utilities to match the new workflow.
 
-### `a31114e` - 2025-05-15
+### `a389072` - 2026-04-09 - README corrections
 
-- Added the original factor-of-safety, transient critical acceleration, driving
-  acceleration, and Newmark displacement implementations.
+- Corrected and simplified documentation following the runout/CLI integration.
+
+### `9f5d887` - 2026-04-09 - Runout, CLI, configuration, and datasets
+
+- Added the dedicated runout subcomponent and connected soil erosion/deposition
+  updates to Newmark displacement.
+- Added the first YAML-driven CLI, example configuration, and environment file.
+- Added measured-landslide inventories and zonal statistics for Japan, Nepal,
+  New Zealand, and Papua New Guinea.
+- Substantially revised utilities, quick-start usage, region geometry and
+  splitting calculations, slope caching, and soil-depth handling.
+- Changed the factor-of-safety soil-depth array to `float32` at that point in
+  history and changed its depth guard from replacing exactly zero to clamping
+  depths below 0.001 m.
+- Removed the older standalone simulator trial and moved workflows toward the
+  component plus CLI architecture.
+
+### `1d21981` - 2026-02-10 - Test-suite update
+
+- Reworked component, stability/displacement, region-selection/splitting, and
+  utility tests to match the refactored implementation.
+
+### `d9dfbfc` - 2026-02-10 - Pre-merge polish
+
+- Applied small fixes to the trial runner, component, utility exports, and
+  utility implementation before merging the refactored work.
+
+### `7d6a74c` - 2026-01-09 - Remove integration debug code
+
+- Removed temporary debugging and demonstration code left in the integrated
+  component.
+
+### `f7dcb63` - 2026-01-09 - Quick-start measured-data cache
+
+- Added an example derived measured-data pickle for the original quick-start
+  workflow. This cache was later removed by `25187e9`.
+
+### `2679719` - 2026-01-09 - Integrate helpers into the component
+
+- Consolidated stability, displacement, region, selection, and split helpers
+  into the main component.
+- Moved general-purpose helpers into the current `utils` package.
+- Added the first `ShallowLandslider_quickstart.ipynb` and updated the working
+  simulator script.
+
+### `8c6e885` - 2026-01-08 - Merge pull request 4
+
+- Merged the final-release branch containing Arc/ASCII DEM input support and
+  the updated utilities/working script. The merge message noted possible NaN
+  edge behaviour, addressed later in the curvature/chunking work.
+
+### `77294e7` - 2026-01-08 - Arc DEM utility updates
+
+- Updated utilities and the working simulator to accept Arc-output DEMs.
+- Revised dependency constraints and DEM/nodata handling in the example flow.
+
+### `6f98173` - 2026-01-07 - Remove superseded implementations
+
+- Deleted the old `auxiliary_functions`, `data_analysis`, legacy scripts, and
+  earlier class variants after the helper/component refactor.
+
+### `6008942` - 2026-01-06 - Full testing suite
+
+- Added analytic and integration tests for the component, stability,
+  displacement, region selection/splitting, and utilities.
+- Corrected friction-angle conversion before scientific calculations, changed
+  the default submerged-soil proportion to 0.5, and improved selection and NaN
+  handling while making the code testable.
+- Added package exports and updated requirements and the simulator trial.
+
+### `f4da8ab` - 2026-01-06 - Repository data cleanup
+
+- Removed tracked DEM rasters and large derived measured-data pickle files from
+  the repository.
+
+### `7d2099e` - 2026-01-06 - Refactored helpers and README
+
+- Introduced the `helper_functions` package for displacement, stability,
+  regions, selection, splitting, and shared utilities.
+- Expanded the README and revised the component and simulator to use the new
+  helper layout.
+- Removed the obsolete first-generation test module pending the new suite.
+
+### `aa1e19c` - 2026-01-03 - Landlab component update
+
+- Added a dedicated `shallow_landslide_component.py` and a simulator trial,
+  beginning the transition from experimental classes to a Landlab component.
+
+## 2025
+
+### `e94761c` - 2025-12-02 - Merge excess-topography work
+
+- Merged the `excess_topo_calculation` branch before the final component
+  refactor; the merge itself introduced no separate file changes.
+
+### `596019f` - 2025-12-02 - Soil-depth and analysis expansion
+
+- Expanded soil-depth generation beyond uniform/elevation relationships to
+  curvature, drainage-area, and composite parameterisations.
+- Added global and local curvature-standard-deviation relationships and
+  extensively revised terrain, region, selection, Newmark, and analysis code.
+- Added an eastern measured-data cache and updated trial workflows.
+
+### `ad2f9e0` - 2025-09-29 - Data-analysis package
+
+- Split statistical analysis into a new `data_analysis` package.
+- Expanded statistical helpers and refactored the main/trial classes and model
+  analysis script around those tools.
+
+### `b225a69` - 2025-09-12 - Dataset statistics
+
+- Added a model-data analysis script and statistical comparison workflows.
+- Expanded topographic and terrain analysis and added a southern measured-data
+  cache.
+
+### `5b4fbf1` - 2025-08-28 - Measured-data pickling
+
+- Added loading/building of cached measured-landslide data and revised
+  selection and terrain helpers to use it.
+- Added an experimental soil-depth model script and the first tracked
+  measured-data pickle.
+
+### `5e493e6` - 2025-08-12 - Untrack IDE files
+
+- Removed remaining tracked Spyder project configuration files after adding
+  ignore rules.
+
+### `6c1e384` - 2025-08-12 - Add ignore rules
+
+- Added the initial `.gitignore` for generated and local-development files.
+
+### `1f17f58` - 2025-08-12 - Remove generated files
+
+- Removed tracked Spyder configuration, Python bytecode, and cache directories.
+
+### `ec6ced4` - 2025-08-12 - Pre-Windows update
+
+- Added the first requirements file and broadly revised I/O, simulation,
+  terrain, statistics, topographic helpers, and trial scripts.
+- Included portability and workflow adjustments made before moving development
+  to Windows 11.
+
+### `cb0754f` - 2025-07-07 - Topographic helper branch
+
+- Added a dedicated topographic-functions module and exposed it from the
+  auxiliary package.
+- Updated the trial workflow to use the new helpers.
+
+### `e7b489d` - 2025-06-25 - Merge pull request 2
+
+- Merged the `add_region_splitting` branch; the merge itself introduced no
+  separate changes beyond the commits below.
+
+### `1a70861` - 2025-06-25 - Region splitting milestone
+
+- Completed the first region-splitting workflow and integrated it into the
+  shallow-landslider class and trial script.
+- Revised region/statistical/I/O helpers and added the first substantial test
+  module.
+
+### `3b8aa75` - 2025-06-19 - Splitting fixes
+
+- Applied minor corrections to the main and trial classes after initial region
+  splitting was introduced.
+
+### `6eabe58` - 2025-06-17 - Initial working splitting
+
+- Added the first working statistical region-splitting implementation and
+  connected it to the main/trial classes.
+- Marked the implementation as needing further testing, which followed in
+  `1a70861`.
+
+### `63f3317` - 2025-06-16 - Merge pull request 1
+
+- Merged the then-current master branch; the merge commit contains no separate
+  file changes.
+
+### `79303e0` - 2025-06-16 - Intermediate plotting and experiments
+
+- Expanded intermediate plotting and region/statistical helpers.
+- Added several experimental class variants, an inverse-gamma script, example
+  DEMs, and development artefacts used during early exploration.
+
+### `aaa8d6f` - 2025-06-10 - Split auxiliary functions into modules
+
+- Replaced the single large `auxiliary_functions.py` with modules for I/O,
+  Newmark calculations, regions, selection, simulation, statistics, and
+  terrain processing.
+- Updated the main class to use the modular helper package.
+
+### `a02e08f` - 2025-06-04 - Intermediate plotting
+
+- Added intermediate diagnostic plotting and revised the main and trial classes
+  and the original auxiliary-function collection.
+
+### `a31114e` - 2025-05-15 - First shallow-landslider implementation
+
+- Added the original experimental class, trial script, and comprehensive
+  auxiliary-function module.
+- Introduced the first factor-of-safety, transient critical acceleration,
+  driving acceleration, region selection, Newmark displacement, and early
+  source-to-endpoint runout/path implementations.
+
+### `b0856cc` - 2025-05-08 - Initial repository
+
+- Created the repository with the GNU GPLv3 licence and an initial README.

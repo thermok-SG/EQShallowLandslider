@@ -47,6 +47,7 @@ def make_completed_run():
         "selected_labels": selected,
         "selected_proportion": 0.5,
         "newmark": np.where(selected > 0, 0.25, np.nan),
+        "runout": None,
     }
     return SimpleNamespace(grid=grid, results=results)
 
@@ -100,6 +101,65 @@ def test_save_model_run_writes_v12_analysis_bundle(tmp_path):
     assert summary["candidate_region_count"] == 2
     assert summary["selected_region_count"] == 1
     assert summary["selected_area_m2"] == 2700.0
+    assert summary["selected_footprint_node_count"] == 3
+    assert summary["selected_footprint_area_m2"] == 2700.0
+    assert summary["affected_node_percent"] == summary["selected_footprint_percent"]
+    assert summary["runout_enabled"] is False
+
+
+def test_save_model_run_includes_runout_diagnostics(tmp_path):
+    completed = make_completed_run()
+    completed.results["runout"] = {
+        "failed_nodes": np.array([9, 10, 13]),
+        "paths": [(9, 5), (9, 6), (10, 6), (13, 9)],
+        "source_proportion_sums": {9: 1.0, 10: 1.0, 13: 1.0},
+        "source_path_counts": {9: 2, 10: 1, 13: 1},
+    }
+    completed.grid.add_field(
+        "landslide__erosion", np.linspace(0.0, 0.15, 16), at="node"
+    )
+    completed.grid.add_field(
+        "landslide__deposition", np.linspace(0.15, 0.0, 16), at="node"
+    )
+    completed.grid.add_field(
+        "landslide__soil_depth_change",
+        completed.grid.at_node["landslide__deposition"]
+        - completed.grid.at_node["landslide__erosion"],
+        at="node",
+    )
+
+    run_dir = save_model_run(
+        False,
+        completed,
+        make_config(),
+        tmp_path,
+        logging.getLogger("runout-output-test"),
+    )
+    loaded = load_run(run_dir, load_rasters=True)
+
+    assert "runout_erosion" in loaded["rasters"]
+    assert "runout_deposition" in loaded["rasters"]
+    assert "runout_soil_depth_change" in loaded["rasters"]
+    assert "selected_footprint" in loaded["rasters"]
+    assert "runout_affected_footprint" in loaded["rasters"]
+    assert "runout_only_footprint" in loaded["rasters"]
+    assert "combined_affected_footprint" in loaded["rasters"]
+    assert loaded["summary"]["runout_enabled"] is True
+    assert loaded["summary"]["runout_changed_node_count"] == 16
+    assert loaded["summary"]["runout_source_node_count"] == 3
+    assert loaded["summary"]["runout_moving_source_node_count"] == 3
+    assert loaded["summary"]["runout_terminated_path_count"] == 4
+    assert np.isclose(
+        loaded["summary"]["runout_mean_paths_per_moving_source"], 4 / 3
+    )
+    assert loaded["summary"]["runout_max_paths_per_source"] == 2
+    assert loaded["summary"]["runout_source_proportion_error_count"] == 0
+    assert loaded["summary"]["runout_affected_footprint_node_count"] == 16
+    assert loaded["summary"]["runout_only_footprint_node_count"] == 13
+    assert loaded["summary"]["selected_and_runout_overlap_node_count"] == 3
+    assert loaded["summary"]["combined_affected_footprint_node_count"] == 16
+    assert np.isclose(loaded["summary"]["runout_mass_balance_error_node_m"], 0.0)
+    assert loaded["summary"]["negative_final_soil_depth_node_count"] == 0
 
 
 def test_analysis_loaders_and_plot(tmp_path):

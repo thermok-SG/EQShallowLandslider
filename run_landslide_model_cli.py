@@ -7,25 +7,26 @@ This script is not required to use the component itself.
 #!/usr/bin/env python3
 import argparse
 import copy
+import gc
 import os
 import time
-import yaml
-import gc
+
 import numpy as np
+import yaml
+from landlab import RasterModelGrid
+from landlab.components import PriorityFloodFlowRouter
+from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import label as cc_label
 
 from components.shallow_landslider import ShallowLandslider
 from utils import (
-    get_topo,
     apply_soil_depth,
     generate_acceleration_grid,
+    get_topo,
     pickle_or_not_to_pickle,
+    save_model_run,
     setup_logger,
-    save_model_run
 )
-from scipy.ndimage import distance_transform_edt, label as cc_label
-
-from landlab.components import PriorityFloodFlowRouter
-from landlab import RasterModelGrid
 
 
 # ---------------------------------------------------------------------
@@ -285,6 +286,13 @@ def prepare_config(config, chunking_override=None):
             raise ValueError(
                 "Runout requires flow_params.enable and separate_hill_flow to be true"
             )
+        if flow.get("hill_flow_metric", "Quinn") not in {
+            "Quinn", "Freeman", "Holmgren", "Dinf"
+        }:
+            raise ValueError(
+                "Runout requires a multiple-flow flow_params.hill_flow_metric "
+                "such as Quinn"
+            )
 
     chunks = config["outputs"].get("zarr_chunks", [1024, 1024])
     if (
@@ -515,6 +523,7 @@ def main():
                 mg_full,
                 flow_metric=flow_cfg.get("flow_metric", "D8"),
                 separate_hill_flow=flow_cfg.get("separate_hill_flow", True),
+                hill_flow_metric=flow_cfg.get("hill_flow_metric", "Quinn"),
                 depression_handler=flow_cfg.get(
                     "depression_handler",
                     flow_cfg.get("depression_handling", "fill"),

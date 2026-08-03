@@ -17,7 +17,10 @@ This tool is intended for **geomorphologists, hazard modellers, and Earth scient
 - **Easy DEM download from OpenTopography** using BMI-topography makes it easy to quickly test scenarios
 - **Flexible soil depth assignment** (uniform, elevation-based, curvature-based, drainage-area-based) to test the effect of different soil depth distributions
 - **Earthquake PGA grid** generator that can handle multiple spatial distributions to test the effect of different seismic scenarios
-- **Optional runout routing** that redistributes failed soil along hill-flow receiver paths after Newmark displacement is computed
+- **Optional multiflow runout routing** that divides each failed source node's
+  soil among Quinn hill-flow branches and deposits it at their endpoints.
+- **Analysis-ready outputs** with JSON provenance and summaries, region tables,
+  memory-mappable rasters, and separate selected/runout footprints.
 
 ## **Installation**
 ### **Requirements**
@@ -75,9 +78,44 @@ Recommended CSV structure:
 - Use `verbose=True` to see a concise progress log while building/loading the pickle.
 
 ## **Optional Runout**
-Runout is available as an optional soil-depth update after selected landslides have Newmark displacement values. To enable it through `ShallowLandslider`, the grid must first be routed with `PriorityFloodFlowRouter` using `separate_hill_flow=True`, which creates the required `hill_flow__receiver_node` and `hill_flow__receiver_proportions` fields.
+
+Runout is available as an optional soil-depth update after selected landslides
+have Newmark displacement values. The grid must first be routed with
+`PriorityFloodFlowRouter` using `separate_hill_flow=True` and a multiple-flow
+hill metric such as `hill_flow_metric="Quinn"`.
+
+The router exposes two distinct routing systems:
+
+- `flow_metric="D8"` may still be used for the main drainage network.
+- `hill_flow_metric="Quinn"` creates the multiple-receiver proportions used by
+  sediment runout. The runout component does not route sediment with the main
+  D8 receiver field.
+
+Single-receiver hill routing is rejected when runout is enabled because it
+cannot divide material among branching sediment paths.
+
+### Source and endpoint behaviour
+
+The selected and runout footprints have related but different meanings:
+
+- A **selected node** has `landslide__selected_labels > 0`.
+- A **runout source** is a selected node whose finite Newmark displacement is
+  greater than `displacement_threshold`.
+- Every runout source independently starts its own Quinn branch tree. A node is
+  not treated as one bulk source merely because it belongs to a selected
+  region.
+- The source's original soil column is divided among its terminated branch
+  proportions and excavated exactly once.
+- Material is deposited only at branch endpoints. An intermediate routing node
+  is not eroded or deposited upon merely because another path crosses it; it
+  can nevertheless be excavated independently if it is also a runout source.
+- A source with no valid moving path is retained rather than artificially
+  excavated.
+- Stopped Quinn proportions are retained as terminated branches. Per-source
+  allocation is mass conserving and does not allow negative soil depth.
 
 Runout is only executed when all three component flags are enabled:
+
 - `compute_displacement=True`
 - `enable_runout=True`
 - `update_soil=True`
@@ -86,7 +124,22 @@ In the YAML CLI config, this means using `chunking.mode: never`, keeping
 `flow_params.enable` and `flow_params.separate_hill_flow` true, and setting
 `simulation.compute_displacement`, `simulation.enable_runout`, and
 `simulation.update_soil` to true. Runout modifies `soil__depth` in place and
-caches diagnostic erosion/deposition arrays on the runout subcomponent.
+caches the source nodes, paths, proportions, per-source branch totals, and
+erosion/deposition arrays on the runout subcomponent.
+
+The latest runout diagnostics are available at `ls.results["runout"]`:
+
+| Key | Meaning |
+|---|---|
+| `failed_nodes` | Selected nodes above the displacement threshold |
+| `paths` | Terminated multiflow paths, including their source and endpoint |
+| `path_proportions` | Quinn branch weight corresponding to each path |
+| `path_details` | Paths and weights grouped by initiating source |
+| `source_proportion_sums` | Sum of terminated branch weights per source |
+| `source_path_counts` | Number of terminated branches per source |
+| `erosion` | Soil thickness removed at source nodes in the latest step |
+| `deposition` | Soil thickness deposited at endpoints in the latest step |
+| `soil_depth_change` | Net deposition minus erosion at every node |
 
 ## **Quick start**
 ```python
@@ -133,6 +186,7 @@ pf = PriorityFloodFlowRouter(
     grid,
     flow_metric="D8",
     separate_hill_flow=True,  # required for optional runout
+    hill_flow_metric="Quinn",  # multiflow proportions split runout paths
     depression_handler="fill",
     update_hill_depressions=True,
     accumulate_flow=True,
@@ -161,6 +215,11 @@ ls = ShallowLandslider(
     selection_method="probabilistic",  # or "pga_weighted"
     proportion_method="conservative",
     random_seed=5000,
+    compute_displacement=True,
+    time_shaking=5.0,
+    displacement_threshold=0.0,
+    enable_runout=True,
+    update_soil=True,
     verbose=True,  # optional
     split_by_width_config={
         "kde_data": kde_dict["kde_data"],
@@ -176,7 +235,13 @@ ls.run_one_step()
 
 # 6. Access results
 print(ls.results["group_properties"].head())
+print(ls.results["runout"]["source_path_counts"])
 ```
+
+For a faster first run, use
+[`ShallowLandslider_quickstart.ipynb`](ShallowLandslider_quickstart.ipynb). It
+crops the bundled DEM to a small domain, enables Quinn runout, and writes an
+analysis-ready directory beneath `runs/`.
 
 ## CLI outputs and analysis (v1.2)
 
@@ -247,8 +312,40 @@ The command-line analysis wrapper creates a combined CSV and one plot per run:
 python analyse_landslide_outputs.py --runs runs --output analysis_output
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for scientific-output implications and the Git
-commit associated with the large-DEM curvature fixes.
+For an interactive workflow, open
+[`ShallowLandslider_output_analysis.ipynb`](ShallowLandslider_output_analysis.ipynb).
+The notebook discovers run directories, builds run and region summaries,
+compares parameter groups, saves distribution plots, and loads large raster
+outputs only when requested. It writes tables as both CSV and indented JSON and
+separately reports:
+
+- selected initiation nodes;
+- excavated source nodes;
+- deposition endpoints;
+- all runout-affected nodes;
+- runout-only nodes outside the selected footprint;
+- selected/runout overlap and the combined affected footprint;
+- terminated path counts, branch-proportion checks, mass balance, and final
+  soil-depth checks.
+
+The intended small-model workflow is:
+
+1. Run `ShallowLandslider_quickstart.ipynb` from top to bottom.
+2. Leave `RUNS_ROOT = Path("runs")` and `RUN_INDEX = -1` in the analysis
+   notebook to select the newest run.
+3. Run `ShallowLandslider_output_analysis.ipynb` from top to bottom.
+4. Inspect the readable JSON summaries, CSV tables, and figures in
+   `analysis_output/`.
+
+As an end-to-end check, the current 80 × 80 quick-start configuration produced
+490 threshold-qualified sources, 487 moving/excavated sources, and 5,616
+terminated Quinn branches. All per-source branch sums were one within floating-
+point tolerance, erosion equalled deposition exactly, and no final soil depth
+was negative. These counts are a reproducibility snapshot for the bundled DEM
+and current example parameters, not fixed model constants.
+
+See [CHANGELOG.md](CHANGELOG.md) for scientific-output implications and a
+reverse-chronological description of every commit in the repository.
 
 
 
@@ -267,6 +364,10 @@ You can control simulation parameters via:
 | `selection_method`     | `"probabilistic"` or `"pga_weighted"`           |
 | `proportion_method`    | `"empirical"`, `"conservative"`, etc.           |
 | `random_seed`          | For reproducibility                             |
+| `compute_displacement` | Calculate Newmark displacement for selected nodes |
+| `displacement_threshold` | Minimum displacement for a node to become a runout source |
+| `enable_runout`        | Enable the optional multiflow runout subcomponent |
+| `update_soil`          | Allow runout to update source and endpoint soil depth |
 | `verbose`              | Print progress and info (default: False)        |
 
 ---
@@ -282,8 +383,12 @@ After `run_one_step()`, the component populates:
 - `landslide__dimension_split_labels` when KDE-informed splitting is enabled
 - `landslide__selected_labels`
 - `landslide__newmark_displacement` when displacement is enabled
+- `landslide__erosion` when runout is enabled
+- `landslide__deposition` when runout is enabled
+- `landslide__soil_depth_change` when runout is enabled
 - updated `soil__depth` when runout is enabled
 - `ls.results["group_properties"]` (DataFrame with region metrics)
+- `ls.results["runout"]` (multiflow sources, paths, proportions, and mass-change diagnostics)
 
 ---
 
@@ -303,10 +408,14 @@ ShallowLandslider/
 │  ├─ dem/                              # Bundled example DEMs
 │  ├─ nepal/, nz/, png/, japan/         # Example measured-landslide CSVs
 ├─ tests/                               # Pytest suite
+├─ analysis/                            # Lazy run loading and ensemble analysis
 ├─ run_landslide_model_cli.py           # YAML-driven command line runner
+├─ analyse_landslide_outputs.py         # Command-line output analysis
 ├─ ShallowLandslider_config.yaml        # Example CLI configuration
 ├─ ShallowLandslider_quickstart.ipynb   # Tutorial notebook
-└─ README.md                            
+├─ ShallowLandslider_output_analysis.ipynb # Interactive output analysis
+├─ CHANGELOG.md                         # Release, compatibility, and complete commit history
+└─ README.md
 ```
 
 ---

@@ -5,7 +5,7 @@ import pytest
 from landlab import RasterModelGrid
 from landlab.components import PriorityFloodFlowRouter
 from landlab.field.errors import FieldError
-from components.shallow_landslider import ShallowLandslider
+from components.shallow_landslider import ShallowLandslider, ShallowLandslideRunout
 
 
 def make_grid(ny=5, nx=5, spacing=10.0, add_soil=False):
@@ -32,6 +32,7 @@ def make_runout_grid(ny=8, nx=8, spacing=10.0):
         mg,
         flow_metric="D8",
         separate_hill_flow=True,
+        hill_flow_metric="Quinn",
         depression_handler="fill",
         update_hill_depressions=True,
         accumulate_flow=True,
@@ -155,11 +156,69 @@ def test_runout_updates_soil_depth_when_enabled():
     assert np.any(mg.at_node["landslide__selected_labels"] > 0)
     assert np.any(np.abs(mg.at_node["soil__depth"] - soil_before) > 0.0)
     assert hasattr(comp._runout, "_last_erosion")
+    assert "landslide__erosion" in mg.at_node
+    assert "landslide__deposition" in mg.at_node
+    assert "landslide__soil_depth_change" in mg.at_node
+    np.testing.assert_allclose(
+        mg.at_node["landslide__soil_depth_change"],
+        mg.at_node["landslide__deposition"] - mg.at_node["landslide__erosion"],
+    )
     assert hasattr(comp._runout, "_last_deposition")
     assert np.isclose(
         np.sum(comp._runout._last_erosion),
         np.sum(comp._runout._last_deposition),
     )
+    assert np.all(mg.at_node["soil__depth"] >= 0)
+    runout_results = comp.results["runout"]
+    np.testing.assert_array_equal(
+        runout_results["failed_nodes"], comp.results["high_displacement_nodes"]
+    )
+    assert all(
+        path[0] in set(runout_results["failed_nodes"])
+        for path in runout_results["paths"]
+    )
+    assert set(np.flatnonzero(runout_results["erosion"])) <= set(
+        runout_results["failed_nodes"]
+    )
+    assert len(runout_results["paths"]) == len(
+        runout_results["path_proportions"]
+    )
+
+
+def test_runout_restores_source_to_endpoint_transport():
+    mg = make_runout_grid()
+    runout = ShallowLandslideRunout(mg)
+    soil = np.ones(mg.number_of_nodes)
+
+    updated, erosion, deposition = runout._update_soil_depth(
+        paths=[(27, 20, 13), (27, 26, 25)],
+        proportions=[0.5, 0.5],
+        soil_depth=soil,
+    )
+
+    assert erosion[27] == 1.0
+    assert deposition[13] == 0.5
+    assert deposition[25] == 0.5
+    assert erosion[20] == 0.0
+    assert deposition[20] == 0.0
+    assert erosion[26] == 0.0
+    assert deposition[26] == 0.0
+    assert updated[27] == 0.0
+    assert updated[20] == 1.0
+    assert updated[26] == 1.0
+    assert updated[13] == 1.5
+    assert updated[25] == 1.5
+    assert np.sum(erosion) == np.sum(deposition) == 1.0
+
+
+def test_runout_rejects_single_flow_hill_routing():
+    mg = make_runout_grid()
+    node_count = mg.number_of_nodes
+    mg.at_node["hill_flow__receiver_node"] = np.arange(node_count)
+    mg.at_node["hill_flow__receiver_proportions"] = np.ones(node_count)
+
+    with pytest.raises(ValueError, match="multiflow hill routing"):
+        ShallowLandslideRunout(mg)
 
 
 def test_runout_requires_hill_flow_routing_fields():

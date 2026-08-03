@@ -352,7 +352,8 @@ class ShallowLandslider(Component):
             Contains keys: `factor_of_safety`, `a_transient`, `a_driving`, `a_diff`,
             `unstable_mask`, `labels`, `aspect_labels`, `split_labels`,
             `selected_labels`, `selected_proportion`, `newmark`,
-            `high_displacement_nodes`, and `group_properties` (DataFrame).
+            `high_displacement_nodes`, `group_properties` (DataFrame), and
+            runout-owned diagnostics under `runout` when enabled.
         """
         return {
             "factor_of_safety": self._fos,
@@ -368,6 +369,7 @@ class ShallowLandslider(Component):
             "newmark": self._newmark,
             "high_displacement_nodes": self._high_disp_nodes,
             "group_properties": self._group_properties_df,
+            "runout": self._runout.results if self.enable_runout else None,
         }
 
     def run_one_step(
@@ -424,11 +426,12 @@ class ShallowLandslider(Component):
                     np.isfinite(disp) & (disp > self.displacement_threshold)
                 )[0]
 
-                if failed_nodes.size > 0:
-                    self._runout.run_one_step(
-                        failed_nodes=failed_nodes,
-                        runout_distance=disp,
-                    )
+                # Run even for an empty source set so the runout component
+                # clears fields and diagnostics from any preceding step.
+                self._runout.run_one_step(
+                    failed_nodes=failed_nodes,
+                    runout_distance=disp,
+                )
 
         # Safe to delete labels only after runout
         del self._labels

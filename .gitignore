@@ -6,6 +6,7 @@ auxiliary_functions/__pycache__/
 .env.*
 output_data/
 runs/
+analysis_output/
 *.pkl
 *.pdf
 *.asc

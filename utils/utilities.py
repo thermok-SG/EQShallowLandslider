@@ -1413,10 +1413,29 @@ def _collect_raster_arrays(ls):
         "vertical_pga": "earthquake__vertical_pga",
         "runout_erosion": "landslide__erosion",
         "runout_deposition": "landslide__deposition",
+        "runout_soil_depth_change": "landslide__soil_depth_change",
     }
     for output_name, field_name in grid_fields.items():
         if field_name in ls.grid.at_node:
             arrays[output_name] = ls.grid.at_node[field_name]
+    selected_labels = arrays.get("selected_labels")
+    if selected_labels is not None:
+        selected_footprint = np.asarray(selected_labels) > 0
+        arrays["selected_footprint"] = selected_footprint
+        if "runout_erosion" in arrays and "runout_deposition" in arrays:
+            erosion_footprint = np.asarray(arrays["runout_erosion"]) > 0
+            deposition_footprint = np.asarray(arrays["runout_deposition"]) > 0
+            runout_footprint = erosion_footprint | deposition_footprint
+            arrays.update(
+                {
+                    "runout_erosion_footprint": erosion_footprint,
+                    "runout_deposition_footprint": deposition_footprint,
+                    "runout_affected_footprint": runout_footprint,
+                    "runout_only_footprint": runout_footprint & ~selected_footprint,
+                    "combined_affected_footprint": runout_footprint
+                    | selected_footprint,
+                }
+            )
     return {name: np.asarray(value) for name, value in arrays.items() if value is not None}
 
 
@@ -1499,14 +1518,23 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
     selected = regions[regions["selected"]]
     valid_nodes = int(np.sum(ls.grid.status_at_node != ls.grid.BC_NODE_IS_CLOSED))
     selected_nodes = int(np.sum(np.asarray(ls.results["selected_labels"]) > 0))
+    node_area_m2 = float(ls.grid.dx * ls.grid.dy)
+    selected_footprint_percent = (
+        100.0 * selected_nodes / valid_nodes
+    ) if valid_nodes else 0.0
     summary = {
         "run_id": run_id,
         "model_version": __version__,
         "candidate_region_count": int(len(regions)),
         "selected_region_count": int(len(selected)),
         "selected_node_count": selected_nodes,
+        "selected_footprint_node_count": selected_nodes,
+        "selected_footprint_area_m2": selected_nodes * node_area_m2,
         "valid_node_count": valid_nodes,
-        "affected_node_percent": (100.0 * selected_nodes / valid_nodes) if valid_nodes else 0.0,
+        "selected_footprint_percent": selected_footprint_percent,
+        # Backward-compatible v1.2 alias. Prefer selected_footprint_percent,
+        # which states explicitly that this is not the runout footprint.
+        "affected_node_percent": selected_footprint_percent,
         "selected_area_m2": float(selected["area"].sum()) if "area" in selected else 0.0,
         "selected_area_m2_median": (
             float(selected["area"].median()) if len(selected) and "area" in selected else None
@@ -1516,6 +1544,115 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
         ),
         "selected_proportion": ls.results.get("selected_proportion"),
     }
+    if "landslide__erosion" in ls.grid.at_node:
+        erosion = np.asarray(ls.grid.at_node["landslide__erosion"])
+        deposition = np.asarray(ls.grid.at_node["landslide__deposition"])
+        runout_results = ls.results.get("runout") or {}
+        failed_nodes = np.asarray(
+            runout_results.get("failed_nodes", []), dtype=int
+        )
+        source_sums = np.asarray(
+            list(runout_results.get("source_proportion_sums", {}).values()),
+            dtype=float,
+        )
+        path_count_by_source = runout_results.get("source_path_counts", {})
+        moving_sources = set(map(int, path_count_by_source)) & set(
+            np.flatnonzero(erosion > 0).tolist()
+        )
+        source_path_counts = np.asarray(
+            [
+                count for source, count in path_count_by_source.items()
+                if int(source) in moving_sources
+            ],
+            dtype=int,
+        )
+        selected_footprint = np.asarray(ls.results["selected_labels"]) > 0
+        erosion_footprint = erosion > 0
+        deposition_footprint = deposition > 0
+        runout_footprint = erosion_footprint | deposition_footprint
+        runout_only_footprint = runout_footprint & ~selected_footprint
+        combined_footprint = runout_footprint | selected_footprint
+        final_soil_depth = np.asarray(ls.grid.at_node["soil__depth"])
+        summary.update(
+            {
+                "runout_enabled": True,
+                "runout_changed_node_count": int(
+                    np.count_nonzero(np.abs(deposition - erosion) > 0)
+                ),
+                "runout_source_node_count": int(failed_nodes.size),
+                "runout_excavated_source_node_count": int(
+                    np.count_nonzero(erosion > 0)
+                ),
+                "runout_traced_source_node_count": int(
+                    len(runout_results.get("source_proportion_sums", {}))
+                ),
+                "runout_moving_source_node_count": int(len(moving_sources)),
+                "runout_terminated_path_count": int(
+                    len(runout_results.get("paths", []))
+                ),
+                "runout_mean_paths_per_moving_source": (
+                    float(np.mean(source_path_counts))
+                    if source_path_counts.size else 0.0
+                ),
+                "runout_max_paths_per_source": (
+                    int(np.max(source_path_counts))
+                    if source_path_counts.size else 0
+                ),
+                "runout_source_proportion_sum_min": (
+                    float(np.min(source_sums)) if source_sums.size else None
+                ),
+                "runout_source_proportion_sum_max": (
+                    float(np.max(source_sums)) if source_sums.size else None
+                ),
+                "runout_source_proportion_error_count": int(
+                    np.count_nonzero(~np.isclose(source_sums, 1.0))
+                ),
+                "runout_erosion_footprint_node_count": int(
+                    np.count_nonzero(erosion_footprint)
+                ),
+                "runout_deposition_footprint_node_count": int(
+                    np.count_nonzero(deposition_footprint)
+                ),
+                "runout_affected_footprint_node_count": int(
+                    np.count_nonzero(runout_footprint)
+                ),
+                "runout_affected_footprint_area_m2": float(
+                    np.count_nonzero(runout_footprint) * node_area_m2
+                ),
+                "runout_affected_footprint_percent": (
+                    100.0 * np.count_nonzero(runout_footprint) / valid_nodes
+                ) if valid_nodes else 0.0,
+                "selected_and_runout_overlap_node_count": int(
+                    np.count_nonzero(runout_footprint & selected_footprint)
+                ),
+                "runout_only_footprint_node_count": int(
+                    np.count_nonzero(runout_only_footprint)
+                ),
+                "runout_only_footprint_area_m2": float(
+                    np.count_nonzero(runout_only_footprint) * node_area_m2
+                ),
+                "combined_affected_footprint_node_count": int(
+                    np.count_nonzero(combined_footprint)
+                ),
+                "combined_affected_footprint_area_m2": float(
+                    np.count_nonzero(combined_footprint) * node_area_m2
+                ),
+                "combined_affected_footprint_percent": (
+                    100.0 * np.count_nonzero(combined_footprint) / valid_nodes
+                ) if valid_nodes else 0.0,
+                "runout_total_erosion_node_m": float(np.sum(erosion)),
+                "runout_total_deposition_node_m": float(np.sum(deposition)),
+                "runout_mass_balance_error_node_m": float(
+                    np.sum(deposition) - np.sum(erosion)
+                ),
+                "final_soil_depth_min_m": float(np.nanmin(final_soil_depth)),
+                "negative_final_soil_depth_node_count": int(
+                    np.count_nonzero(final_soil_depth < 0)
+                ),
+            }
+        )
+    else:
+        summary["runout_enabled"] = False
     with open(run_dir / "summary.json", "w", encoding="utf-8") as stream:
         json.dump(_json_safe(summary), stream, indent=2)
     output_files.append("summary.json")

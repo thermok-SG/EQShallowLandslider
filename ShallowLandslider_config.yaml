@@ -22,6 +22,7 @@ flow_params:
   enable: true
   flow_metric: "D8"
   separate_hill_flow: true
+  hill_flow_metric: "Quinn"       # multiflow routing required by runout
   depression_handler: "fill"
   update_hill_depressions: true
   accumulate_flow: true
