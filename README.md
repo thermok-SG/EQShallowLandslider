@@ -288,13 +288,15 @@ selected = run["regions"].query("selected")
 print(run["summary"])
 ```
 
-Open raster output lazily and plot the principal region distributions:
+Open raster output lazily and plot both the principal region distributions and
+the spatial diagnostics:
 
 ```python
-from analysis import load_run, plot_run
+from analysis import load_run, plot_run, plot_run_maps
 
 run = load_run("runs/<run-directory>", load_rasters=True)
 plot_run(run, selected_only=True, output_path="selected_distributions.png")
+plot_run_maps(run, output_path="spatial_diagnostics.png")
 ```
 
 Combine all selected regions from an HPC parameter ensemble:
@@ -306,11 +308,123 @@ regions = load_region_ensemble("runs", selected_only=True)
 regions.groupby(["cohesion_eff", "soil_distribution"])["area"].describe()
 ```
 
-The command-line analysis wrapper creates a combined CSV and one plot per run:
+### Parameter ensembles
+
+[`run_landslide_ensemble.py`](run_landslide_ensemble.py) reads the optional
+`ensemble` block in an ordinary model configuration, expands its Cartesian
+parameter grid into member YAML files, and launches the existing CLI once per
+combination. The model and ensemble therefore have one source configuration:
 
 ```bash
-python analyse_landslide_outputs.py --runs runs --output analysis_output
+python run_landslide_ensemble.py \
+  --config ShallowLandslider_config.yaml \
+  --dry-run
 ```
+
+The dry run validates the base configuration and every generated member, but
+does not load the DEM or start a model. Remove `--dry-run` to execute it:
+
+```bash
+python run_landslide_ensemble.py \
+  --config ShallowLandslider_config.yaml
+```
+
+The top-level `ensemble` mapping is an explicit mode marker. This is safer than
+interpreting every YAML list as a sweep because normal settings such as
+`chunking.tile_size`, `outputs.zarr_chunks`, and coordinate pairs are also
+lists. Sweep values are keyed by dotted paths in the same model YAML:
+
+```yaml
+random_seed: 5000
+output_dir: runs/soil_sensitivity
+
+soil_params:
+  cohesion_eff: 15000
+  angle_int_frict: 30
+
+ensemble:
+  enabled: true
+  name: soil_sensitivity
+  jobs: 1
+  parameters:
+    soil_params.cohesion_eff: [10000, 15000, 20000]
+    soil_params.angle_int_frict: [25, 30, 35]
+```
+
+This example creates nine members while keeping `random_seed: 5000` in every
+member. Sweeping `random_seed` or `pga.seed` under `ensemble.parameters` is
+intentionally rejected so parameter comparisons use the same stochastic
+realization. A fixed explicit `pga.seed` in the model configuration is
+preserved; a null `pga.seed` uses the top-level fixed seed as usual.
+
+The output root contains an `ensemble_manifest.json` index and one directory per
+member beneath `members/`. Each member directory keeps its generated
+`config.yaml`, `run.log`, and timestamped model-run directories together. A
+forced rerun therefore adds another timestamped attempt without overwriting the
+member configuration or previous results. Analysis discovers run manifests
+recursively, and completed members are skipped when the launcher is restarted.
+Use `--force` to rerun them.
+
+```text
+runs/soil_sensitivity/
+├── ensemble_manifest.json
+└── members/
+    └── member-0000-<digest>/
+        ├── config.yaml
+        ├── run.log
+        └── <timestamp>_SL_<parameters>/
+            ├── manifest.json
+            ├── summary.json
+            ├── regions.csv
+            └── rasters.zarr  # or rasters/*.npy
+```
+
+Set `jobs` in the YAML or pass `--jobs N` to run members concurrently. Each
+member is a separate process, so account for the memory use of a full model per
+worker.
+
+The command-line analysis wrapper recursively discovers completed run
+directories beneath `--runs`. It creates these products in `--output`:
+
+| Product | Contents |
+|---|---|
+| `region_ensemble.csv` | Combined selected-region table, or all candidates with `--include-candidates` |
+| `distribution_summary.csv` | Count, mean, median, standard deviation, and 5th/95th percentiles by run, source, and metric |
+| `<run-id>.png` | Histograms and ECDFs for region area, terrain statistics, length, and width |
+| `<run-id>_maps.png` | Multi-panel spatial inputs, stability results, selected footprints, and available runout fields |
+| `distribution_comparison.csv` | KS, Kuiper, and Wasserstein results; written only when measured data are supplied |
+
+Run model-only analysis by omitting both observed arguments. Supply the measured
+inventory files to overlay observed histograms and ECDFs and calculate the
+comparison statistics:
+
+```bash
+python analyse_landslide_outputs.py \
+  --runs runs \
+  --output analysis_output \
+  --observed-inventory input_data/nepal/measuredLandslides_all.csv \
+  --observed-zonal-stats input_data/nepal/measuredLandslides_all_ZonalStats.csv \
+  --min-observed-area 900
+```
+
+Area, slope, elevation, length, and width are compared when present. Local
+relief remains model-only because it is not included in the bundled measured
+inventories. The command also writes a large spatial-diagnostics figure for
+each run. Depending on the available outputs, it includes elevation, soil
+depth, terrain slope, PGA, factor of safety, unstable and selected cells,
+Newmark displacement, erosion, deposition, net soil-depth change, and the
+combined affected footprint.
+
+When measured data are supplied, `distribution_comparison.csv` reports the
+two-sample Kolmogorov–Smirnov statistic and p-value, the two-sample Kuiper
+statistic and approximate p-value, and the Wasserstein distance for every
+shared metric. Wasserstein distances retain each metric's displayed units.
+KS is most sensitive to the largest CDF separation, whereas Kuiper adds the
+largest positive and negative separations and is equally sensitive across the
+CDF. Their p-values test equality of the sampled marginal distributions; they
+do not measure spatial coincidence. Large inventories can produce tiny
+p-values for modest differences, so inspect the ECDFs and Wasserstein magnitude
+alongside them. The reported Kuiper p-value is an asymptotic approximation.
 
 For an interactive workflow, open
 [`ShallowLandslider_output_analysis.ipynb`](ShallowLandslider_output_analysis.ipynb).
@@ -346,6 +460,102 @@ and current example parameters, not fixed model constants.
 
 See [CHANGELOG.md](CHANGELOG.md) for scientific-output implications and a
 reverse-chronological description of every commit in the repository.
+
+## Synthetic Landlab mountain range and ensembles
+
+The repository includes a deterministic 600 × 800 node, 30 m synthetic
+mountain range at `input_data/dem/synthetic_landlab_600x800_30m.asc`. Its 24 × 18 km
+footprint and 480,000 nodes are larger than both bundled subregional DEMs. It
+uses a Landlab-tutorial-based landscape-evolution setup. A low-relief 300 × 400
+grid is evolved for 250 kyr: `PriorityFloodFlowRouter` provides D8 routing,
+`SpaceLargeScaleEroder` co-evolves bedrock and sediment, and an elongated axial
+uplift field produces a mountain belt with an emergent divide and multiple
+drainage basins. The result is cubically resampled from 60 m to the final 30 m
+600 × 800 grid. The adjacent JSON file records the seed, evolution parameters,
+relief, slopes, soil thickness, and drainage area.
+
+The three generated terrain products have different purposes:
+
+| File | Purpose |
+|---|---|
+| `synthetic_landlab_600x800_30m.asc` | Elevation input consumed by the model CLI |
+| `synthetic_landlab_600x800_30m.json` | Generator settings, provenance, dimensions, relief, slope, soil, and drainage diagnostics |
+| `synthetic_landlab_600x800_30m_preview.png` | Quick visual inspection; not read by the model |
+
+Regenerate it, inspect all generator options, or request a different size or
+realization with:
+
+```bash
+python generate_synthetic_topography.py --help
+python generate_synthetic_topography.py
+python generate_synthetic_topography.py --nrows 700 --ncols 900 --seed 42
+```
+
+The final row and column counts must be divisible by `--refinement-factor`.
+Increasing iterations, grid dimensions, or reducing the refinement factor
+increases generation time. Reusing an output path replaces its ASC and JSON
+products, so choose a new basename when retaining multiple realizations.
+
+Two configurations with deliberately small optional factorial ensembles are
+provided. The stability ensemble has 16 members and the runout ensemble has 9:
+
+```bash
+python run_landslide_model_cli.py --config Synthetic_stability_config.yaml
+python run_landslide_ensemble.py --config Synthetic_stability_config.yaml --dry-run
+python run_landslide_ensemble.py --config Synthetic_stability_config.yaml
+
+python run_landslide_model_cli.py --config Synthetic_runout_config.yaml
+python run_landslide_ensemble.py --config Synthetic_runout_config.yaml --dry-run
+python run_landslide_ensemble.py --config Synthetic_runout_config.yaml
+```
+
+Runout is intentionally separated because it requires full-grid Quinn routing
+and is substantially more expensive. Start with one runout member before
+increasing `jobs`; simultaneous full-grid members multiply memory use.
+
+### Analysing synthetic runs
+
+The complete map and model-only distribution analysis works with synthetic
+topography and requires no measured inventory:
+
+```bash
+python analyse_landslide_outputs.py \
+  --runs runs/synthetic_stability \
+  --output analysis_output/synthetic_stability
+```
+
+There are three distinct ways to use the Nepal inventory, and they should not
+be given the same interpretation:
+
+1. With `split_by_width.enabled: false`, comparing synthetic area, length, and
+   width against Nepal is an external morphological benchmark. It may show
+   whether outputs occupy a plausible range, but it is not validation because
+   the synthetic landscape and event are not Nepal.
+2. With `split_by_width.enabled: true`, the Nepal length–width KDE influences
+   the modeled regions. Comparing area, length, or width back to Nepal is then a
+   calibration/consistency check and is partly circular. It is still useful for
+   confirming that splitting behaves as intended, but it is not independent
+   evidence of predictive skill.
+3. Nepal elevation and slope distributions should not be compared as if they
+   validate a generic synthetic landscape. Those variables describe a specific
+   real terrain. Only use them if the synthetic experiment was explicitly
+   designed to reproduce Nepal topography, and state that assumption.
+
+To show Nepal geometry as a reference without adding its terrain statistics,
+pass only the inventory CSV:
+
+```bash
+python analyse_landslide_outputs.py \
+  --runs runs/synthetic_stability \
+  --output analysis_output/synthetic_nepal_geometry_reference \
+  --observed-inventory input_data/nepal/measuredLandslides_all.csv \
+  --min-observed-area 900
+```
+
+For independent validation, reserve a measured inventory that was not used to
+fit the splitting KDE, or define synthetic ground-truth landslides from a known
+generative experiment. Parameter-ensemble comparisons and internal checks such
+as mass balance remain valid regardless of whether measured data are supplied.
 
 
 
@@ -409,9 +619,13 @@ ShallowLandslider/
 │  ├─ nepal/, nz/, png/, japan/         # Example measured-landslide CSVs
 ├─ tests/                               # Pytest suite
 ├─ analysis/                            # Lazy run loading and ensemble analysis
+├─ generate_synthetic_topography.py     # Reproducible Landlab terrain generator
+├─ run_landslide_ensemble.py            # Restartable Cartesian ensemble launcher
 ├─ run_landslide_model_cli.py           # YAML-driven command line runner
 ├─ analyse_landslide_outputs.py         # Command-line output analysis
 ├─ ShallowLandslider_config.yaml        # Example CLI configuration
+├─ Synthetic_stability_config.yaml      # Synthetic initiation/displacement run
+├─ Synthetic_runout_config.yaml         # Full-domain synthetic runout run
 ├─ ShallowLandslider_quickstart.ipynb   # Tutorial notebook
 ├─ ShallowLandslider_output_analysis.ipynb # Interactive output analysis
 ├─ CHANGELOG.md                         # Release, compatibility, and complete commit history

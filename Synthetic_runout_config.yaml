@@ -1,0 +1,135 @@
+# Runout-enabled configuration for the bundled synthetic mountain.
+#
+# Usage:
+#   python run_landslide_model_cli.py --config Synthetic_runout_config.yaml
+#   python analyse_landslide_outputs.py --runs runs/synthetic_runout \
+#     --output analysis_output/synthetic_runout
+#
+# This computes initiation, Newmark displacement, global Quinn runout, erosion,
+# deposition, and final soil-depth updates. It is substantially more expensive
+# than Synthetic_stability_config.yaml. Its ensemble block defines a nine-member
+# runout experiment in this same file. Run from the repository root.
+#
+# Bundled 24 x 18 km, 600 x 800 node terrain at 30 m spacing.
+dem_path: "input_data/dem/synthetic_landlab_600x800_30m.asc"
+# Selects 30 m native spacing in the DEM loader; no extra smoothing is applied.
+dem_type: "SRTMGL1"
+smooth_num: 0
+# Ordinary runs are written directly here; ensemble runs are grouped by member.
+output_dir: "runs/synthetic_runout"
+random_seed: 5000
+
+# Optional 3 x 3 Cartesian experiment. All combinations use random_seed above,
+# keeping the stochastic realization fixed across the ensemble.
+ensemble:
+  enabled: true
+  name: synthetic_runout
+  jobs: 1
+  parameters:
+    simulation.time_shaking: [5, 15, 30]
+    simulation.displacement_threshold: [0.0, 0.05, 0.2]
+
+# Write compact tables and lazily readable rasters. NumPy files are the fallback
+# if optional Parquet/Zarr support is unavailable.
+outputs:
+  write_parquet: true
+  write_zarr: true
+  write_npy_fallback: true
+  zarr_chunks: [600, 800]
+
+# Runout requires accumulated D8 catchment flow plus separate Quinn hillslope
+# receivers. Depression filling avoids internally trapped routing paths.
+flow_params:
+  enable: true
+  flow_metric: "D8"
+  separate_hill_flow: true
+  hill_flow_metric: "Quinn"
+  depression_handler: "fill"
+  update_hill_depressions: true
+  accumulate_flow: true
+
+# Runout needs global Quinn receiver fields and therefore cannot be chunked.
+chunking:
+  mode: "never"
+  # The following auto/tile settings are inactive. Do not enable chunking for
+  # runout because receiver fields and mass routing must span the full domain.
+  threshold_cells: 20000000
+  tile_size: [600, 800]
+  overlap: 5
+
+# Mohr-Coulomb material properties and soil-depth assignment. Units are Pa,
+# degrees, and metres. The selected uniform distribution uses max_soil_depth;
+# the remaining coefficients are retained for documented alternative schemes
+# and alternative configuration choices.
+soil_params:
+  cohesion_eff: 15000
+  angle_int_frict: 30
+  submerged_soil_proportion: 0.5
+  max_soil_depth: 1.5
+  distribution: "uniform"
+  # Inactive for uniform; used by curvature/elevation relationships.
+  relationship: "linear_std_local"
+  decay_rate: 1.0
+  exponent: 2.0
+  drainage_transform: "threshold"
+  drainage_threshold: 1.0e6
+  drainage_power: 0.3
+  b: -1.0
+  P0: 0.05
+  h_star: 1.0
+  D: 0.01
+  h_min: 0.1
+  h_no_ss: 0.0
+  eps: 1.0e-10
+  scale: 0.01
+  window: 5
+
+# Uniform peak accelerations, expressed as fractions of g. With seed: null, the
+# model derives deterministic PGA randomness from top-level random_seed.
+pga:
+  horizontal_max: 0.6
+  vertical_max: 0.2
+  distribution: "uniform"
+  center: null
+  random_center: false
+  seed: null
+
+simulation:
+  # Select a conservative probabilistic subset of candidate unstable regions.
+  selection_method: "probabilistic"
+  proportion_method: "conservative"
+  # Non-null values in (0, 1] override proportion_method.
+  custom_proportion: null
+  handle_small: "merge"
+  # Aspect grouping interval in degrees.
+  aspect_interval: 20
+  verbose: false
+  # Keep internal workers at 1 if running multiple ensemble processes.
+  n_jobs: 1
+  compute_displacement: true
+  # Effective shaking duration (s) used by Newmark displacement.
+  time_shaking: 10
+  # Only sources exceeding 0.05 m displacement enter runout.
+  displacement_threshold: 0.05
+  enable_runout: true
+  # Apply erosion/deposition to soil__depth and save the resulting fields.
+  update_soil: true
+
+# Optional observed-width-guided splitting. Disabled by default so the synthetic
+# experiment is not calibrated to Nepal morphology. Enabling it is legitimate
+# for a Nepal-informed scenario, but comparison back to Nepal length/width is a
+# consistency check rather than independent validation.
+split_by_width:
+  enabled: false
+  # Cache generated from the two CSVs when it does not yet exist.
+  pickle_path: "input_data/nepal/measured_data.pkl"
+  # Applied only while building the measured-data cache (m²).
+  min_area: 900
+  csv_paths:
+    inventory_csv: "input_data/nepal/measuredLandslides_all.csv"
+    zonal_stats_csv: "input_data/nepal/measuredLandslides_all_ZonalStats.csv"
+  width_threshold: 1.5
+  # Recursive splitting limits and minimum region size in grid cells.
+  max_iterations: 5
+  min_region_size: 10
+  convergence_threshold: 0.75

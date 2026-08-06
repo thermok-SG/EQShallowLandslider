@@ -222,6 +222,17 @@ def prepare_config(config, chunking_override=None):
         "linear", "piecewise", "linear_std_global", "linear_std_local"
     }:
         raise ValueError(f"Unsupported curvature soil relationship: {relationship}")
+    if distribution in {"curvature", "mean_elev_curv"} and relationship == "piecewise":
+        if float(soil.get("P0", 1.0)) <= 0:
+            raise ValueError("soil_params.P0 must be positive for piecewise curvature")
+        if float(soil.get("h_star", 1.0)) <= 0:
+            raise ValueError(
+                "soil_params.h_star must be positive for piecewise curvature"
+            )
+        if float(soil.get("D", 1.0)) < 0:
+            raise ValueError("soil_params.D cannot be negative for piecewise curvature")
+        if float(soil.get("eps", 1e-10)) <= 0:
+            raise ValueError("soil_params.eps must be positive for piecewise curvature")
     if soil.get("drainage_transform", "log") not in {
         "log", "sqrt", "power", "threshold", "linear"
     }:
@@ -402,12 +413,13 @@ def main():
     dem_path = config["dem_path"]
     out_dir = config.get("output_dir", "./output")
     seed = config.get("random_seed", 5000)
-    smooth_num = config.get("smooth_num", 4)
+    smooth_num = config.get("smooth_num", 0)
     save_pickle = config.get("save_pickle", False)
 
     logger = setup_logger(
         name="landslider",
         log_dir=out_dir,
+        log_file=config.get("log_file"),
         level=config.get("log_level", "INFO"),
         to_console=args.verbose_console,
     )

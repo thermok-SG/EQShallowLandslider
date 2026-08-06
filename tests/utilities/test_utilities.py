@@ -86,6 +86,45 @@ def test_curvature_soil_respects_configured_maximum():
     assert np.allclose(soil[mg.core_nodes], 0.8)
 
 
+def test_piecewise_curvature_reaches_each_physical_regime():
+    mg = RasterModelGrid((3, 5), xy_spacing=10.0)
+    mg.add_zeros("topographic__elevation", at="node")
+    curvature = mg.add_zeros("curvature", at="node")
+    curvature[mg.core_nodes] = [-1.0, -5.0, 1.0]
+
+    soil = util.apply_soil_depth(
+        mg,
+        distribution="curvature",
+        relationship="piecewise",
+        max_soil_depth=3.0,
+        P0=0.05,
+        h_star=1.0,
+        D=0.01,
+        h_min=0.1,
+        h_no_ss=0.0,
+    )
+
+    # s = -D * curvature / P0 gives 0.2, 1.0, and -0.2.
+    assert np.allclose(soil[mg.core_nodes], [-np.log(0.2), 0.0, 0.1])
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [("P0", 0.0), ("h_star", 0.0), ("D", -1.0), ("eps", 0.0)],
+)
+def test_piecewise_curvature_rejects_invalid_physical_parameters(parameter, value):
+    mg = make_grid()
+    mg.add_zeros("curvature", at="node")
+
+    with pytest.raises(ValueError, match=parameter):
+        util.apply_soil_depth(
+            mg,
+            distribution="curvature",
+            relationship="piecewise",
+            **{parameter: value},
+        )
+
+
 def test_fit_bivariate_kde_raises_on_nonpositive_log():
     df = pd.DataFrame({"length_m": [1, 2, 3], "width_m": [0, 1, 2]})
     with pytest.raises(ValueError):

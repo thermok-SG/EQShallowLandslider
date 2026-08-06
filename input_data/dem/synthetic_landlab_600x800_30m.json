@@ -1,0 +1,49 @@
+{
+  "generator": "Landlab tutorial-based mountain-range evolution",
+  "components": [
+    "PriorityFloodFlowRouter (D8)",
+    "SpaceLargeScaleEroder"
+  ],
+  "boundary_condition": "fixed-value open perimeter",
+  "shape": [
+    600,
+    800
+  ],
+  "source_evolution_shape": [
+    150,
+    200
+  ],
+  "refinement_factor": 4,
+  "cell_count": 480000,
+  "valid_cell_count": 480000,
+  "spacing_m": 30.0,
+  "source_spacing_m": 120.0,
+  "width_m": 23970.0,
+  "height_m": 17970.0,
+  "seed": 20260804,
+  "evolution": {
+    "iterations": 1000,
+    "timestep_years": 250.0,
+    "duration_years": 250000.0,
+    "uplift_rate_m_per_year": 0.001,
+    "rock_erodibility": 2.5e-05,
+    "sediment_erodibility": 2.5e-05,
+    "initial_soil_depth_m": 0.5,
+    "uplift_pattern": "elongated axial sine belt"
+  },
+  "elevation_min_m": 450.0,
+  "elevation_max_m": 709.3043970155903,
+  "elevation_relief_m": 259.3043970155903,
+  "slope_degrees": {
+    "p05": 1.185515557076013,
+    "p50": 8.065059669902311,
+    "p95": 22.179812057058566,
+    "maximum": 42.479033838638905
+  },
+  "maximum_drainage_area_m2": 25929900.0,
+  "final_soil_depth_m": {
+    "p50": 0.6743637462423845,
+    "p95": 0.7726452561522005,
+    "maximum": 3.310902652831639
+  }
+}

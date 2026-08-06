@@ -7,15 +7,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from landlab import RasterModelGrid
 
-from analysis import discover_runs, load_region_ensemble, load_run, plot_run
+from analysis import (
+    compare_run_distributions,
+    discover_runs,
+    load_observed_landslides,
+    load_region_ensemble,
+    load_run,
+    plot_run,
+    plot_run_maps,
+    summarize_run_distributions,
+)
 from utils.utilities import save_model_run
 
 
 def make_completed_run():
     grid = RasterModelGrid((4, 4), xy_spacing=30.0)
-    grid.add_field(
-        "topographic__elevation", np.arange(16, dtype=float), at="node"
-    )
+    grid.add_field("topographic__elevation", np.arange(16, dtype=float), at="node")
     grid.add_ones("soil__depth", at="node")
     labels = np.zeros(16, dtype=int)
     labels[[5, 6]] = 1
@@ -149,9 +156,7 @@ def test_save_model_run_includes_runout_diagnostics(tmp_path):
     assert loaded["summary"]["runout_source_node_count"] == 3
     assert loaded["summary"]["runout_moving_source_node_count"] == 3
     assert loaded["summary"]["runout_terminated_path_count"] == 4
-    assert np.isclose(
-        loaded["summary"]["runout_mean_paths_per_moving_source"], 4 / 3
-    )
+    assert np.isclose(loaded["summary"]["runout_mean_paths_per_moving_source"], 4 / 3)
     assert loaded["summary"]["runout_max_paths_per_source"] == 2
     assert loaded["summary"]["runout_source_proportion_error_count"] == 0
     assert loaded["summary"]["runout_affected_footprint_node_count"] == 16
@@ -163,11 +168,13 @@ def test_save_model_run_includes_runout_diagnostics(tmp_path):
 
 
 def test_analysis_loaders_and_plot(tmp_path):
+    member_dir = tmp_path / "members" / "member-0000-example"
+    member_dir.mkdir(parents=True)
     run_dir = save_model_run(
         False,
         make_completed_run(),
         make_config(),
-        tmp_path,
+        member_dir,
         logging.getLogger("analysis-test"),
     )
 
@@ -179,6 +186,55 @@ def test_analysis_loaders_and_plot(tmp_path):
 
     figure = plot_run(loaded, output_path=tmp_path / "plot.png")
     assert (tmp_path / "plot.png").exists()
+    plt.close(figure)
+
+
+def test_observed_landslides_are_normalized_filtered_and_plotted(tmp_path):
+    inventory_path = tmp_path / "inventory.csv"
+    pd.DataFrame(
+        {
+            "area_m2": [500.0, 1800.0, 2700.0],
+            "length_m": [20.0, 50.0, 70.0],
+            "width_m": [10.0, 30.0, 40.0],
+        }
+    ).to_csv(inventory_path, index=False)
+    zonal_path = tmp_path / "zonal.csv"
+    pd.DataFrame(
+        {
+            "Area_m2": [500.0, 1800.0, 2700.0],
+            "Elevation_m_mean": [100.0, 200.0, 300.0],
+            "Slope_deg_mean": [15.0, 25.0, 35.0],
+        }
+    ).to_csv(zonal_path, index=False)
+
+    observed = load_observed_landslides(inventory_path, zonal_path, min_area=1000.0)
+    assert observed["area"].tolist() == [1800.0, 2700.0]
+    assert observed["median_slope"].tolist() == [25.0, 35.0]
+    assert observed["slope_direction_length_new"].tolist() == [50.0, 70.0]
+
+    run_dir = save_model_run(
+        False,
+        make_completed_run(),
+        make_config(),
+        tmp_path / "runs",
+        logging.getLogger("observed-analysis-test"),
+    )
+    run = load_run(run_dir)
+    figure = plot_run(run, observed=observed, output_path=tmp_path / "comparison.png")
+    assert (tmp_path / "comparison.png").exists()
+    summary = summarize_run_distributions(run, observed=observed)
+    area = summary[summary["metric"] == "area"].set_index("source")
+    assert area.loc["model", "count"] == 1
+    assert area.loc["observed", "count"] == 2
+    comparison = compare_run_distributions(run, observed)
+    area_comparison = comparison.set_index("metric").loc["area"]
+    assert 0 <= area_comparison["ks_statistic"] <= 1
+    assert 0 <= area_comparison["kuiper_statistic"] <= 2
+    assert area_comparison["wasserstein_distance"] >= 0
+
+    map_figure = plot_run_maps(run, output_path=tmp_path / "maps.png")
+    assert (tmp_path / "maps.png").exists()
+    plt.close(map_figure)
     plt.close(figure)
 
 

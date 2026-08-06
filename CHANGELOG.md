@@ -9,6 +9,15 @@ every edited line.
 
 ## Unreleased working tree - multiflow runout and notebook integration
 
+- Added a resumable YAML ensemble launcher that expands dotted parameter grids,
+  holds the stochastic seed constant, validates and records every generated
+  member, supports process-level parallelism, and writes separate member logs.
+- Simplified the distributed YAML to active parameters, disabled unnecessary
+  flow routing for its default non-runout soil model, and aligned the execution
+  default for DEM smoothing with configuration validation.
+- Fixed the piecewise curvature soil-depth relationship so its finite
+  steady-state logarithmic branch is reachable, and added physical parameter
+  validation plus coverage for all three piecewise regimes.
 - Restored runout to the 2025 source-to-endpoint transport concept while using
   Quinn multiple-flow routing. Every selected node above the displacement
   threshold independently starts a branch tree; its original soil column is

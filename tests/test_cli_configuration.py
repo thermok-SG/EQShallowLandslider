@@ -64,6 +64,20 @@ def test_runout_flag_dependencies_are_validated():
         prepare_config(config)
 
 
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [("P0", 0.0), ("h_star", 0.0), ("D", -1.0), ("eps", 0.0)],
+)
+def test_piecewise_curvature_parameters_are_validated(parameter, value):
+    config = minimal_config()
+    config["soil_params"].update(
+        {"distribution": "curvature", "relationship": "piecewise", parameter: value}
+    )
+
+    with pytest.raises(ValueError, match=parameter):
+        prepare_config(config)
+
+
 def test_runout_rejects_single_flow_hill_metric():
     config = minimal_config()
     config["simulation"].update(

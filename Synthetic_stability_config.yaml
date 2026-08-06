@@ -1,0 +1,151 @@
+# Stability/displacement configuration for the bundled synthetic mountain.
+#
+# Usage:
+#   python run_landslide_model_cli.py --config Synthetic_stability_config.yaml
+#   python analyse_landslide_outputs.py --runs runs/synthetic_stability \
+#     --output analysis_output/synthetic_stability
+#
+# This configuration computes unstable regions, probabilistic selection, and
+# Newmark displacement without runout. The ensemble block below defines a
+# 16-member sensitivity experiment in this same file. Paths are relative to
+# the working directory, so run these commands from the repository root.
+#
+# Synthetic 24 x 18 km, 600 x 800 node Landlab mountain at 30 m spacing.
+dem_path: "input_data/dem/synthetic_landlab_600x800_30m.asc"
+# The loader uses dem_type to infer native spacing; SRTMGL1 selects 30 m.
+dem_type: "SRTMGL1"
+# Zero preserves the generated terrain without additional smoothing passes.
+smooth_num: 0
+# Each completed run is stored as a timestamped direct child of this directory.
+output_dir: "runs/synthetic_stability"
+# Fix the realization for reproducible parameter comparisons.
+random_seed: 5000
+
+# Optional 2 x 2 x 2 x 2 Cartesian experiment. Ordinary model lists elsewhere
+# (for example zarr_chunks and tile_size) are not treated as sweep values.
+ensemble:
+  enabled: true
+  name: synthetic_stability
+  jobs: 1
+  parameters:
+    soil_params.cohesion_eff: [10000, 20000]
+    soil_params.angle_int_frict: [25, 35]
+    soil_params.max_soil_depth: [0.75, 1.5]
+    pga.horizontal_max: [0.4, 0.8]
+
+# Analysis storage. CSV and NumPy fallback remain usable without optional
+# Parquet/Zarr dependencies; Zarr is preferred for lazy raster access.
+outputs:
+  write_parquet: true
+  write_zarr: true
+  write_npy_fallback: true
+  # One full-grid Zarr chunk. Reduce these dimensions for larger grids or
+  # partial-read workflows.
+  zarr_chunks: [600, 800]
+
+# Initiation/displacement sweeps do not require routing. Runout uses the
+# separate Synthetic_runout_config.yaml instead.
+flow_params:
+  # No flow routing is needed until runout or drainage-area soil depth is used.
+  enable: false
+  # These retained values document what will be used if routing is enabled.
+  flow_metric: "D8"
+  separate_hill_flow: true
+  hill_flow_metric: "Quinn"
+  depression_handler: "fill"
+  update_hill_depressions: true
+  accumulate_flow: true
+
+chunking:
+  # Full-grid stability evaluation. "auto" is available for much larger DEMs.
+  mode: "never"
+  # Used only by mode: auto; grids above this node count are tiled.
+  threshold_cells: 20000000
+  # Core tile dimensions and halo width, inactive while mode is "never".
+  tile_size: [600, 800]
+  overlap: 5
+
+# Material and spatial soil-depth assumptions. Units are Pa, degrees, and m
+# unless noted. Several parameters are inactive for the selected uniform depth
+# distribution but are retained so configuration changes can select them
+# without having to look up their parameter names.
+soil_params:
+  # Mohr-Coulomb effective cohesion (Pa) and friction angle (degrees).
+  cohesion_eff: 15000
+  angle_int_frict: 30
+  # Fraction of soil thickness treated as submerged, in [0, 1].
+  submerged_soil_proportion: 0.5
+  # Uniform depth for this configuration; upper bound for variable schemes (m).
+  max_soil_depth: 1.5
+  # Options include uniform, elevation, drainage_area, curvature, and
+  # mean_elev_curv. Uniform ignores relationship and most coefficients below.
+  distribution: "uniform"
+  relationship: "linear_std_local"
+  # Shape controls used by elevation/drainage/curvature alternatives.
+  decay_rate: 1.0
+  exponent: 2.0
+  drainage_transform: "threshold"
+  drainage_threshold: 1.0e6
+  drainage_power: 0.3
+  b: -1.0
+  P0: 0.05
+  h_star: 1.0
+  D: 0.01
+  h_min: 0.1
+  h_no_ss: 0.0
+  eps: 1.0e-10
+  scale: 0.01
+  window: 5
+
+# Earthquake forcing. Accelerations are fractions of gravitational acceleration
+# (g). Uniform forcing makes center/random_center inactive.
+pga:
+  horizontal_max: 0.6
+  vertical_max: 0.2
+  distribution: "uniform"
+  center: null
+  random_center: false
+  # null derives the PGA seed from top-level random_seed.
+  seed: null
+
+# Landslide grouping, selection, and displacement controls.
+simulation:
+  # Probabilistic selection chooses a subset of candidate unstable regions.
+  selection_method: "probabilistic"
+  # Conservative estimates the retained proportion; set custom_proportion to a
+  # value in (0, 1] to override it explicitly.
+  proportion_method: "conservative"
+  custom_proportion: null
+  # Merge undersized regions instead of silently discarding them.
+  handle_small: "merge"
+  # Angular width of aspect groups used before region splitting (degrees).
+  aspect_interval: 20
+  verbose: false
+  # Internal CPU workers. Keep at 1 when the ensemble itself runs concurrently.
+  n_jobs: 1
+  # Compute Newmark displacement using the duration below (seconds).
+  compute_displacement: true
+  time_shaking: 10
+  # Retain all positive displacement values; units are metres.
+  displacement_threshold: 0.0
+  enable_runout: false
+  update_soil: false
+
+# Optional observed-width-guided splitting. Keep disabled for clean synthetic
+# physics sensitivity tests. If enabled, Nepal length/width data calibrate the
+# shape splitting; comparison with those same variables is then a circular
+# calibration/consistency check, not independent validation.
+split_by_width:
+  enabled: false
+  # Derived cache is built from csv_paths when absent, then reused.
+  pickle_path: "input_data/nepal/measured_data.pkl"
+  # Minimum observed area used only while rebuilding that cache (m²).
+  min_area: 900
+  csv_paths:
+    inventory_csv: "input_data/nepal/measuredLandslides_all.csv"
+    zonal_stats_csv: "input_data/nepal/measuredLandslides_all_ZonalStats.csv"
+  width_threshold: 1.5
+  # Recursive split stopping and minimum-size controls.
+  max_iterations: 5
+  min_region_size: 10
+  convergence_threshold: 0.75

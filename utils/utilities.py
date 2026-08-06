@@ -289,13 +289,13 @@ def apply_soil_depth(
         Piecewise curvature (relationship='piecewise')
         ----------------------------------------------
         P0 : float, default=1.0
-            Reference curvature scaling.
+            Reference soil-production rate. Must be positive.
         h_star : float, default=1.0
-            Scaling constant for log law.
+            Soil-production decay depth. Must be positive.
         D : float, default=1.0
-            Diffusivity-like term.
+            Hillslope diffusivity. Must be non-negative.
         h_min : float, default=0.1
-            Minimum soil depth when κ ≤ 0.
+            Minimum soil depth where the balance gives no positive erosion.
         h_no_ss : float, default=0.0
             Soil depth for nodes with no steady-state (e.g., bare rock).
         eps : float, default=1e-10
@@ -398,7 +398,14 @@ def apply_soil_depth(
             )
 
         elif relationship == "piecewise":
-            # Piecewise log-law function
+            # At steady state, exponentially declining soil production balances
+            # curvature-driven erosion:
+            #
+            #   P0 exp(-h / h_star) = -D * kappa
+            #   h = -h_star log(-D * kappa / P0)
+            #
+            # A finite positive solution exists only where 0 < s < 1 for
+            # s = -D * kappa / P0.
             P0 = kwargs.get("P0", 1.0)
             h_star = kwargs.get("h_star", 1.0)
             D = kwargs.get("D", 1.0)
@@ -406,18 +413,23 @@ def apply_soil_depth(
             h_no_ss = kwargs.get("h_no_ss", 0.0)
             eps = kwargs.get("eps", 1e-10)
 
-            h_vals = np.zeros_like(core_kappa, dtype=float)
-            for i, kappa in enumerate(core_kappa):
-                if kappa <= 0:
-                    h_vals[i] = h_min
-                else:
-                    s = -D * kappa / P0
-                    if 0 < s < 1:
-                        h_vals[i] = -h_star * np.log(s + eps)
-                    elif s >= 1:
-                        h_vals[i] = h_no_ss
-                    else:
-                        h_vals[i] = h_min
+            if P0 <= 0:
+                raise ValueError("P0 must be positive for piecewise soil depth")
+            if h_star <= 0:
+                raise ValueError("h_star must be positive for piecewise soil depth")
+            if D < 0:
+                raise ValueError("D cannot be negative for piecewise soil depth")
+            if eps <= 0:
+                raise ValueError("eps must be positive for piecewise soil depth")
+
+            s = -D * core_kappa / P0
+            h_vals = np.full_like(core_kappa, h_min, dtype=float)
+            finite_depth = (s > 0) & (s < 1)
+            no_steady_state = s >= 1
+            h_vals[finite_depth] = -h_star * np.log(
+                np.maximum(s[finite_depth], eps)
+            )
+            h_vals[no_steady_state] = h_no_ss
             soil_depth[core_nodes] = np.clip(
                 h_vals, 0.0, max_soil_depth
             )
