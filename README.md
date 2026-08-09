@@ -448,6 +448,13 @@ do not measure spatial coincidence. Large inventories can produce tiny
 p-values for modest differences, so inspect the ECDFs and Wasserstein magnitude
 alongside them. The reported Kuiper p-value is an asymptotic approximation.
 
+### HPC execution
+
+Tracked Slurm launchers and production Nepal/Japan configurations live in
+[`hpc/`](hpc/README.md). The HPC workflow runs the same source tree as local
+jobs while keeping large inputs, run bundles, analysis products, and scheduler
+logs in a separate ignored workspace.
+
 For an interactive workflow, open
 [`ShallowLandslider_output_analysis.ipynb`](ShallowLandslider_output_analysis.ipynb).
 The notebook discovers run directories, builds run and region summaries,
@@ -641,6 +648,7 @@ ShallowLandslider/
 │  ├─ nepal/, nz/, png/, japan/         # Example measured-landslide CSVs
 ├─ tests/                               # Pytest suite
 ├─ analysis/                            # Lazy run loading and ensemble analysis
+├─ hpc/                                 # Tracked Slurm jobs and production configs
 ├─ generate_synthetic_topography.py     # Reproducible Landlab terrain generator
 ├─ run_landslide_ensemble.py            # Restartable Cartesian ensemble launcher
 ├─ run_landslide_model_cli.py           # YAML-driven command line runner

@@ -1,0 +1,131 @@
+dem_path: "hpc/workspace/input_data/dem/iwate_dem_utm_clip_50gbox.asc"
+# Used to assign metric grid spacing to geographic ASCII DEMs. Supported values
+# in get_topo include SRTMGL1, NASADEM, AW3D30, COP30, SRTMGL3, and COP90.
+dem_type: "SRTMGL1"
+smooth_num: 0
+
+output_dir: "hpc/workspace/runs/japan/single"
+
+# Optional Cartesian parameter ensemble. This block is ignored by the ordinary
+# model CLI and consumed by run_landslide_ensemble.py. Values are specified only
+# here; the rest of this file is the base configuration for every member.
+ensemble:
+  enabled: true
+  name: japan_ensemble
+  output_dir: hpc/workspace/runs/japan/ensemble
+  jobs: 1
+  parameters:
+    soil_params.distribution: [elevation]
+    soil_params.relationship: [linear]
+    soil_params.cohesion_eff: [10000, 15000, 20000]
+    soil_params.angle_int_frict: [25, 30, 35]
+    # Uncommenting this multiplies the ensemble by five (45 total members).
+    soil_params.submerged_soil_proportion: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+# v1.2 analysis outputs. CSV is always written. If Zarr or Parquet support is
+# unavailable, rasters fall back to memory-mappable .npy files and CSV remains.
+# The optional legacy run.pkl is disabled by default and is not needed by the
+# current analysis tools.
+outputs:
+  write_parquet: true
+  write_zarr: true
+  write_npy_fallback: true
+  zarr_chunks: [1024, 1024]
+
+random_seed: 5000
+
+flow_params:
+  # Flow routing is unnecessary for the active mean_elev_curv soil model.
+  # Enable it for drainage_area soil depth or runout.
+  enable: false
+  flow_metric: "D8"
+  separate_hill_flow: true         # required when runout is enabled
+  hill_flow_metric: "Quinn"        # multiflow routing required by runout
+  depression_handler: "fill"
+  update_hill_depressions: true
+  accumulate_flow: true
+
+chunking:
+  mode: "auto"                  # auto | always | never
+  threshold_cells: 20000000      # DEMs >20M cells → chunked mode
+  tile_size: [2500, 2500]        # Size of tile core region
+  overlap: 10                     # Necessary for slope/aspect stability
+
+soil_params:
+  cohesion_eff: 15000
+  angle_int_frict: 30
+  submerged_soil_proportion: 0.5
+  max_soil_depth: 1.5
+
+  # Available soil-depth distributions and relationships:
+  #   uniform         -> relationship is ignored
+  #   elevation       -> linear | exponential | power | sigmoid
+  #   curvature       -> linear | piecewise | linear_std_global |
+  #                      linear_std_local
+  #   drainage_area   -> relationship is ignored; use drainage_transform below
+  #   mean_elev_curv  -> mean of linear elevation depth and curvature depth;
+  #                      relationship selects one of the curvature relationships
+  distribution: "elevation"
+  relationship: "linear"
+
+  # Elevation distribution parameters. These are ignored by other modes.
+  decay_rate: 1.0                 # relationship: exponential
+  exponent: 2.0                   # relationship: power
+
+  # Drainage-area distribution parameters. These are ignored by other modes.
+  drainage_transform: "threshold" # log | sqrt | power | threshold | linear
+  drainage_threshold: 1.0e6       # drainage_transform: threshold
+  drainage_power: 0.3             # drainage_transform: power
+
+  # Curvature and mean_elev_curv parameters. Parameters not used by the chosen
+  # relationship are retained here so changing modes does not require looking
+  # up their names.
+  # a: 0.75                       # optional intercept; default max_soil_depth / 2
+  b: -1.0                         # relationship: linear
+  P0: 0.05                        # relationship: piecewise
+  h_star: 1.0                     # relationship: piecewise
+  D: 0.01                         # relationship: piecewise
+  h_min: 0.1                      # relationship: piecewise
+  h_no_ss: 0.0                    # relationship: piecewise
+  eps: 1.0e-10                    # relationship: piecewise
+  scale: 0.01                     # linear_std_global | linear_std_local
+  window: 5                       # relationship: linear_std_local
+
+pga:
+  horizontal_max: 0.5
+  vertical_max: 0.2
+  distribution: "uniform"       # uniform | circular | square | diamond | exponential
+  center: null                   # optional [row, column] in the global DEM
+  random_center: false           # overrides center when true
+  seed: null                     # null uses the top-level random_seed
+
+simulation:
+  selection_method: "probabilistic"
+  proportion_method: "conservative" # empirical|statistical|risk_profile|adaptive|conservative
+  # A non-null value overrides proportion_method and must be in (0, 1].
+  custom_proportion: null
+  handle_small: "merge"
+  aspect_interval: 20 # interval for topographic aspect zones
+  verbose: false
+
+  compute_displacement: false
+  time_shaking: 10 # seconds (used for Newmark displacement if enabled)
+  displacement_threshold: 0.0
+  # Runout requires full-grid mode, compute_displacement: true,
+  # enable_runout: true, update_soil: true, flow_params.enable: true,
+  # and flow_params.separate_hill_flow: true.
+  enable_runout: false
+  update_soil: false
+
+split_by_width:
+  enabled: true
+  pickle_path: "hpc/workspace/input_data/japan/measured_data.pkl"
+  # min_area applies only when rebuilding the KDE pickle from these CSVs.
+  min_area: 900
+  csv_paths:
+    inventory_csv: "hpc/workspace/input_data/japan/measuredLandslides_all.csv"
+    zonal_stats_csv: "hpc/workspace/input_data/japan/measuredLandslides_all_ZonalStats.csv"
+  width_threshold: 1.5
+  max_iterations: 5
+  min_region_size: 10
+  convergence_threshold: 0.75
