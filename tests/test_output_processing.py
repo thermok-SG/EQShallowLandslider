@@ -15,7 +15,9 @@ from analysis import (
     load_run,
     plot_run,
     plot_run_maps,
+    plot_parameter_sensitivity,
     summarize_run_distributions,
+    swept_parameters,
 )
 from utils.utilities import save_model_run
 
@@ -187,6 +189,54 @@ def test_analysis_loaders_and_plot(tmp_path):
     figure = plot_run(loaded, output_path=tmp_path / "plot.png")
     assert (tmp_path / "plot.png").exists()
     plt.close(figure)
+
+
+def test_parameter_sensitivity_holds_other_swept_parameters_fixed(tmp_path):
+    for index, (cohesion, friction) in enumerate(
+        ((10000, 25), (20000, 25), (10000, 35), (20000, 35))
+    ):
+        config = make_config()
+        config["soil_params"].update(
+            {"cohesion_eff": cohesion, "angle_int_frict": friction}
+        )
+        config["ensemble"] = {
+            "name": "controlled-test",
+            "member_id": f"member-{index:04d}",
+            "config_digest": f"digest-{index}",
+            "parameters": {
+                "soil_params.cohesion_eff": cohesion,
+                "soil_params.angle_int_frict": friction,
+            },
+        }
+        save_model_run(
+            False,
+            make_completed_run(),
+            config,
+            tmp_path / "members" / f"member-{index:04d}",
+            logging.getLogger("parameter-sensitivity-test"),
+        )
+
+    plot_dir = tmp_path / "analysis" / "cohesion"
+    assert swept_parameters(tmp_path) == [
+        "soil_params.angle_int_frict",
+        "soil_params.cohesion_eff",
+    ]
+    table = plot_parameter_sensitivity(
+        tmp_path, "cohesion_eff", plot_dir, selected_only=True
+    )
+
+    assert sorted(plot_dir.glob("*.png")) == [
+        plot_dir / "soil_params-cohesion_eff_001.png",
+        plot_dir / "soil_params-cohesion_eff_002.png",
+    ]
+    assert table["comparison_id"].nunique() == 2
+    assert set(table["parameter"]) == {"soil_params.cohesion_eff"}
+    assert set(table["parameter_value"]) == {10000, 20000}
+    assert set(table["fixed_parameters"]) == {
+        '{"soil_params.angle_int_frict":25}',
+        '{"soil_params.angle_int_frict":35}',
+    }
+    assert set(table["count"]) == {1}
 
 
 def test_observed_landslides_are_normalized_filtered_and_plotted(tmp_path):

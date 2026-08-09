@@ -8,7 +8,9 @@ from .run_outputs import (
     load_run,
     plot_run,
     plot_run_maps,
+    plot_parameter_sensitivity,
     summarize_run_distributions,
+    swept_parameters,
 )
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "load_run",
     "plot_run",
     "plot_run_maps",
+    "plot_parameter_sensitivity",
     "summarize_run_distributions",
+    "swept_parameters",
 ]

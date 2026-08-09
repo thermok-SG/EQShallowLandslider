@@ -15,6 +15,7 @@ variable's physical units.
 from __future__ import annotations
 
 import json
+import textwrap
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -115,6 +116,238 @@ def load_region_ensemble(output_root, selected_only=False):
             table = table[table["selected"]]
         tables.append(table)
     return pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+
+
+def _parameter_label(path):
+    """Return a compact plot label for a dotted configuration path."""
+    labels = {
+        "cohesion_eff": "Effective cohesion (Pa)",
+        "angle_int_frict": "Internal friction angle (degrees)",
+        "max_soil_depth": "Maximum soil depth (m)",
+        "horizontal_max": "Maximum horizontal PGA (g)",
+        "vertical_max": "Maximum vertical PGA (g)",
+    }
+    leaf = path.rsplit(".", 1)[-1]
+    return labels.get(leaf, path)
+
+
+def _safe_filename(value):
+    safe = "".join(
+        character if character.isalnum() or character in "-_" else "-"
+        for character in str(value)
+    ).strip("-")
+    return safe or "parameter"
+
+
+def _json_key(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _resolve_swept_parameter(runs, requested):
+    available = sorted(
+        {
+            path
+            for run in runs
+            for path in run["manifest"]
+            .get("config", {})
+            .get("ensemble", {})
+            .get("parameters", {})
+        }
+    )
+    if requested in available:
+        return requested
+    matches = [path for path in available if path.rsplit(".", 1)[-1] == requested]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        choices = ", ".join(available) if available else "none"
+        raise ValueError(
+            f"{requested!r} is not a swept ensemble parameter. Available: {choices}"
+        )
+    raise ValueError(
+        f"{requested!r} is ambiguous; use one of these dotted paths: "
+        + ", ".join(matches)
+    )
+
+
+def _latest_ensemble_runs(output_root):
+    """Load one completed run per ensemble digest, preferring the latest rerun."""
+    latest = {}
+    for run_dir in discover_runs(output_root):
+        run = load_run(run_dir, load_rasters=False)
+        ensemble = run["manifest"].get("config", {}).get("ensemble", {})
+        if not isinstance(ensemble.get("parameters"), dict):
+            continue
+        digest = ensemble.get("config_digest")
+        key = (ensemble.get("name", "ensemble"), digest or str(run_dir))
+        created = run["manifest"].get("created_utc", "")
+        if key not in latest or created > latest[key][0]:
+            latest[key] = (created, run)
+    return [item[1] for item in latest.values()]
+
+
+def swept_parameters(output_root):
+    """Return the sorted dotted parameter paths found in completed ensembles."""
+    return sorted(
+        {
+            path
+            for run in _latest_ensemble_runs(output_root)
+            for path in run["manifest"]["config"]["ensemble"]["parameters"]
+        }
+    )
+
+
+def plot_parameter_sensitivity(
+    output_root,
+    parameter,
+    output_dir,
+    selected_only=True,
+):
+    """Create controlled ensemble comparisons for one swept parameter.
+
+    Runs are grouped by ensemble name and by every other swept parameter, so
+    each figure varies only ``parameter``. Within a panel, ECDFs show the full
+    region distribution and legends retain the sample count, including zero;
+    distribution summaries are written to the returned table. One completed
+    run per configuration digest is used; for forced reruns, the latest
+    completed run is selected.
+
+    Parameters
+    ----------
+    output_root : path-like
+        Root containing completed ensemble run bundles.
+    parameter : str
+        Dotted swept path, or an unambiguous final component such as
+        ``cohesion_eff``.
+    output_dir : path-like
+        Directory in which comparison PNGs are written.
+    selected_only : bool, default True
+        Compare selected landslides rather than all candidate regions.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per plotted run and metric, including the varied value, fixed
+        controls, sample count, median, and figure path.
+    """
+    runs = _latest_ensemble_runs(output_root)
+    if not runs:
+        raise ValueError(f"No completed ensemble runs found beneath {output_root}")
+    parameter = _resolve_swept_parameter(runs, parameter)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    groups = {}
+    for run in runs:
+        ensemble = run["manifest"]["config"]["ensemble"]
+        parameters = ensemble["parameters"]
+        if parameter not in parameters:
+            continue
+        controls = {key: value for key, value in parameters.items() if key != parameter}
+        key = (ensemble.get("name", "ensemble"), _json_key(controls))
+        groups.setdefault(key, {"controls": controls, "runs": []})["runs"].append(
+            (parameters[parameter], run)
+        )
+
+    records = []
+    figure_number = 0
+    for (ensemble_name, _), group in sorted(groups.items(), key=lambda item: item[0]):
+        varied = group["runs"]
+        distinct_values = {_json_key(value) for value, _run in varied}
+        if len(distinct_values) < 2:
+            continue
+        try:
+            varied.sort(key=lambda item: (float(item[0]), str(item[0])))
+        except (TypeError, ValueError):
+            varied.sort(key=lambda item: str(item[0]))
+
+        figure_number += 1
+        fig, axes = plt.subplots(2, 3, figsize=(14, 8), layout="constrained")
+        colors = plt.get_cmap("viridis")(np.linspace(0.08, 0.92, len(varied)))
+        figure_path = output_dir / (
+            f"{_safe_filename(parameter)}_{figure_number:03d}.png"
+        )
+        for axis, (column, metric_label, log_x) in zip(axes.ravel(), _PLOT_COLUMNS):
+            for color, (value, run) in zip(colors, varied):
+                regions = run["regions"]
+                if selected_only and "selected" in regions:
+                    regions = regions[regions["selected"]]
+                values = _numeric_values(regions, column, positive=log_x)
+                value_label = (
+                    f"{value:g}" if isinstance(value, (int, float)) else str(value)
+                )
+                line_label = f"{value_label} (n={len(values):,})"
+                if len(values):
+                    ecdf_x, ecdf_y = _ecdf(values)
+                else:
+                    ecdf_x = ecdf_y = np.array([])
+                axis.plot(
+                    ecdf_x,
+                    ecdf_y,
+                    color=color,
+                    linewidth=1.8,
+                    label=line_label,
+                )
+                records.append(
+                    {
+                        "ensemble": ensemble_name,
+                        "comparison_id": figure_number,
+                        "parameter": parameter,
+                        "parameter_value": value,
+                        "fixed_parameters": _json_key(group["controls"]),
+                        "run_id": run["summary"]["run_id"],
+                        "metric": column,
+                        "count": len(values),
+                        "median": float(np.median(values)) if len(values) else np.nan,
+                        "mean": float(np.mean(values)) if len(values) else np.nan,
+                        "p05": (
+                            float(np.quantile(values, 0.05)) if len(values) else np.nan
+                        ),
+                        "p95": (
+                            float(np.quantile(values, 0.95)) if len(values) else np.nan
+                        ),
+                        "figure": str(figure_path),
+                    }
+                )
+            if log_x:
+                axis.set_xscale("log")
+            axis.set_xlabel(metric_label)
+            axis.set_ylabel("ECDF")
+            axis.set_ylim(0, 1)
+            axis.grid(alpha=0.2)
+
+        handles, labels = axes.ravel()[0].get_legend_handles_labels()
+        if not handles:
+            for axis in axes.ravel()[1:]:
+                handles, labels = axis.get_legend_handles_labels()
+                if handles:
+                    break
+        if handles:
+            fig.legend(
+                handles,
+                labels,
+                title=_parameter_label(parameter),
+                loc="center left",
+                bbox_to_anchor=(1.0, 0.5),
+            )
+        controls_text = (
+            ", ".join(f"{key}={value}" for key, value in group["controls"].items())
+            or "all other swept parameters fixed"
+        )
+        title = (
+            f"{ensemble_name}: effect of {_parameter_label(parameter)} "
+            f"on {'selected' if selected_only else 'candidate'} regions\n"
+            f"Fixed: {controls_text}"
+        )
+        fig.suptitle("\n".join(textwrap.wrap(title, width=110)))
+        fig.savefig(figure_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+    if not figure_number:
+        raise ValueError(
+            f"No controlled comparison for {parameter!r} has at least two values"
+        )
+    return pd.DataFrame.from_records(records)
 
 
 def _first_column(table, aliases):

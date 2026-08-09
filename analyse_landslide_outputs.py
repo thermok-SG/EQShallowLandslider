@@ -22,7 +22,9 @@ from analysis import (
     load_run,
     plot_run,
     plot_run_maps,
+    plot_parameter_sensitivity,
     summarize_run_distributions,
+    swept_parameters,
 )
 
 
@@ -43,8 +45,12 @@ def parse_args():
 For synthetic terrain, pass only --observed-inventory if Nepal geometry is a
 useful reference. Do not interpret Nepal elevation/slope as synthetic validation.""",
     )
-    parser.add_argument("--runs", required=True, help="Root directory containing run folders")
-    parser.add_argument("--output", default="analysis_output", help="Analysis output directory")
+    parser.add_argument(
+        "--runs", required=True, help="Root directory containing run folders"
+    )
+    parser.add_argument(
+        "--output", default="analysis_output", help="Analysis output directory"
+    )
     parser.add_argument("--include-candidates", action="store_true")
     parser.add_argument(
         "--observed-inventory",
@@ -59,6 +65,16 @@ useful reference. Do not interpret Nepal elevation/slope as synthetic validation
         type=float,
         help="Exclude measured landslides smaller than this area in m²",
     )
+    parser.add_argument(
+        "--vary",
+        action="append",
+        default=[],
+        metavar="PARAMETER",
+        help=(
+            "Limit controlled ensemble comparisons to this swept parameter "
+            "(repeatable). By default every swept parameter is analysed."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -69,6 +85,29 @@ def main():
     selected_only = not args.include_candidates
     ensemble = load_region_ensemble(args.runs, selected_only=selected_only)
     ensemble.to_csv(output_dir / "region_ensemble.csv", index=False)
+
+    automatic_parameters = not args.vary
+    parameters_to_compare = args.vary or swept_parameters(args.runs)
+    for parameter in parameters_to_compare:
+        comparison_dir = (
+            output_dir / "parameter_comparisons" / parameter.replace(".", "_")
+        )
+        try:
+            sensitivity = plot_parameter_sensitivity(
+                args.runs,
+                parameter,
+                comparison_dir,
+                selected_only=selected_only,
+            )
+        except ValueError as exc:
+            if not automatic_parameters or "No controlled comparison" not in str(exc):
+                raise
+            print(f"Skipping {parameter}: {exc}")
+            continue
+        sensitivity.to_csv(
+            output_dir / f"parameter_sensitivity_{parameter.replace('.', '_')}.csv",
+            index=False,
+        )
 
     observed = None
     if args.observed_inventory or args.observed_zonal_stats:
