@@ -9,21 +9,20 @@ HPC_ROOT = REPOSITORY_ROOT / "hpc"
 
 
 @pytest.mark.parametrize("region", ["nepal", "japan"])
-def test_hpc_config_keeps_data_in_ignored_workspace(region):
+def test_hpc_config_uses_paths_relative_to_workspace(region):
     with open(
         HPC_ROOT / "configs" / f"{region}_config.yaml", encoding="utf-8"
     ) as stream:
         config = yaml.safe_load(stream)
 
-    workspace_prefix = "hpc/workspace/"
-    data_paths = [
+    input_paths = [
         config["dem_path"],
-        config["output_dir"],
-        config["ensemble"]["output_dir"],
         config["split_by_width"]["pickle_path"],
         *config["split_by_width"]["csv_paths"].values(),
     ]
-    assert all(path.startswith(workspace_prefix) for path in data_paths)
+    output_paths = [config["output_dir"], config["ensemble"]["output_dir"]]
+    assert all(path.startswith("input_data/") for path in input_paths)
+    assert all(path.startswith("runs/") for path in output_paths)
 
 
 def test_hpc_shell_scripts_are_valid_and_portable():

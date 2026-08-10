@@ -47,15 +47,25 @@ The submission scripts expect the `landlab_dev` Conda environment and the
 Plymouth `cpu_shared` partition. Review the account, partition, memory, CPU, and
 walltime directives before submitting elsewhere.
 
-Run commands from the repository root. Validate both region configurations
-without allocating a model job:
+Submit jobs from the repository root. For local validation, retain the
+repository path before entering the data workspace so relative configuration
+paths resolve exactly as they do in Slurm:
 
 ```bash
-python run_landslide_model_cli.py --config hpc/configs/nepal_config.yaml --validate-only
-python run_landslide_ensemble.py --config hpc/configs/nepal_config.yaml --dry-run
+PROJECT_DIR="$PWD"
+cd hpc/workspace
 
-python run_landslide_model_cli.py --config hpc/configs/japan_config.yaml --validate-only
-python run_landslide_ensemble.py --config hpc/configs/japan_config.yaml --dry-run
+python "$PROJECT_DIR/run_landslide_model_cli.py" \
+  --config "$PROJECT_DIR/hpc/configs/nepal_config.yaml" --validate-only
+python "$PROJECT_DIR/run_landslide_ensemble.py" \
+  --config "$PROJECT_DIR/hpc/configs/nepal_config.yaml" --dry-run
+
+python "$PROJECT_DIR/run_landslide_model_cli.py" \
+  --config "$PROJECT_DIR/hpc/configs/japan_config.yaml" --validate-only
+python "$PROJECT_DIR/run_landslide_ensemble.py" \
+  --config "$PROJECT_DIR/hpc/configs/japan_config.yaml" --dry-run
+
+cd "$PROJECT_DIR"
 ```
 
 ## Submit model jobs

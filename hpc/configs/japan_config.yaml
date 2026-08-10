@@ -1,10 +1,10 @@
-dem_path: "hpc/workspace/input_data/dem/iwate_dem_utm_clip_50gbox.asc"
+dem_path: "input_data/dem/iwate_dem_utm_clip_50gbox.asc"
 # Used to assign metric grid spacing to geographic ASCII DEMs. Supported values
 # in get_topo include SRTMGL1, NASADEM, AW3D30, COP30, SRTMGL3, and COP90.
 dem_type: "SRTMGL1"
 smooth_num: 0
 
-output_dir: "hpc/workspace/runs/japan/single"
+output_dir: "runs/japan/single"
 
 # Optional Cartesian parameter ensemble. This block is ignored by the ordinary
 # model CLI and consumed by run_landslide_ensemble.py. Values are specified only
@@ -12,7 +12,7 @@ output_dir: "hpc/workspace/runs/japan/single"
 ensemble:
   enabled: true
   name: japan_ensemble
-  output_dir: hpc/workspace/runs/japan/ensemble
+  output_dir: runs/japan/ensemble
   jobs: 1
   parameters:
     soil_params.distribution: [elevation]
@@ -119,12 +119,12 @@ simulation:
 
 split_by_width:
   enabled: true
-  pickle_path: "hpc/workspace/input_data/japan/measured_data.pkl"
+  pickle_path: "input_data/japan/measured_data.pkl"
   # min_area applies only when rebuilding the KDE pickle from these CSVs.
   min_area: 900
   csv_paths:
-    inventory_csv: "hpc/workspace/input_data/japan/measuredLandslides_all.csv"
-    zonal_stats_csv: "hpc/workspace/input_data/japan/measuredLandslides_all_ZonalStats.csv"
+    inventory_csv: "input_data/japan/measuredLandslides_all.csv"
+    zonal_stats_csv: "input_data/japan/measuredLandslides_all_ZonalStats.csv"
   width_threshold: 1.5
   max_iterations: 5
   min_region_size: 10
