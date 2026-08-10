@@ -10,8 +10,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_DIR="${EQSL_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-}}"
+if [[ -z "${PROJECT_DIR}" || ! -f "${PROJECT_DIR}/run_landslide_model_cli.py" ]]; then
+  echo "Submit from the repository root or export EQSL_PROJECT_DIR=/absolute/repository/path." >&2
+  exit 1
+fi
+PROJECT_DIR="$(cd -- "${PROJECT_DIR}" && pwd)"
 WORKSPACE="${PROJECT_DIR}/hpc/workspace"
 CONFIG="${CONFIG:-${PROJECT_DIR}/hpc/configs/nepal_config.yaml}"
 

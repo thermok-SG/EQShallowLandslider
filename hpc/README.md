@@ -77,6 +77,15 @@ sbatch hpc/slurm/run_single.sbatch
 sbatch hpc/slurm/run_ensemble.sbatch
 ```
 
+Slurm executes a spooled copy of each batch script, so the launchers locate the
+repository through `SLURM_SUBMIT_DIR`. Submit from the repository root as shown
+above. When submitting from elsewhere, provide the checkout explicitly:
+
+```bash
+sbatch --export=ALL,EQSL_PROJECT_DIR=/absolute/path/to/EQShallowLandslider \
+  /absolute/path/to/EQShallowLandslider/hpc/slurm/run_ensemble.sbatch
+```
+
 Select Japan by supplying its tracked configuration:
 
 ```bash

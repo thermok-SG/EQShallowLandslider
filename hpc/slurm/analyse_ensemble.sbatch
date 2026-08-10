@@ -10,8 +10,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_DIR="${EQSL_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-}}"
+if [[ -z "${PROJECT_DIR}" || ! -f "${PROJECT_DIR}/analyse_landslide_outputs.py" ]]; then
+  echo "Submit from the repository root or export EQSL_PROJECT_DIR=/absolute/repository/path." >&2
+  exit 1
+fi
+PROJECT_DIR="$(cd -- "${PROJECT_DIR}" && pwd)"
 WORKSPACE="${PROJECT_DIR}/hpc/workspace"
 REGION="${REGION:-nepal}"
 RUNS_DIR="${WORKSPACE}/runs/${REGION}/ensemble"
@@ -41,7 +45,7 @@ if [[ "${COMPLETED_RUNS}" -eq 0 ]]; then
 fi
 echo "Analysing ${COMPLETED_RUNS} completed ${REGION} ensemble member(s)."
 
-python -u analyse_landslide_outputs.py \
+python -u "${PROJECT_DIR}/analyse_landslide_outputs.py" \
   --runs "${RUNS_DIR}" \
   --output "${OUTPUT_DIR}" \
   --observed-inventory "${OBSERVED_DIR}/measuredLandslides_all.csv" \

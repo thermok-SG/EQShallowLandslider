@@ -37,3 +37,6 @@ def test_hpc_shell_scripts_are_valid_and_portable():
         contents = script.read_text(encoding="utf-8")
         assert "EQShallowLandslider_HPC" not in contents
         assert "/users/" not in contents
+        if script.suffix == ".sbatch":
+            assert "SLURM_SUBMIT_DIR" in contents
+            assert "BASH_SOURCE" not in contents
