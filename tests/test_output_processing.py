@@ -239,6 +239,65 @@ def test_parameter_sensitivity_holds_other_swept_parameters_fixed(tmp_path):
     assert set(table["count"]) == {1}
 
 
+def test_parameter_sensitivity_overlays_observations_with_readable_titles(
+    tmp_path, monkeypatch
+):
+    for index, cohesion in enumerate((10000, 20000)):
+        config = make_config()
+        config["soil_params"]["cohesion_eff"] = cohesion
+        config["ensemble"] = {
+            "name": "readable_title_test",
+            "member_id": f"member-{index:04d}",
+            "config_digest": f"digest-{index}",
+            "parameters": {
+                "soil_params.cohesion_eff": cohesion,
+                "soil_params.angle_int_frict": 30,
+            },
+        }
+        save_model_run(
+            False,
+            make_completed_run(),
+            config,
+            tmp_path / "members" / f"member-{index:04d}",
+            logging.getLogger("observed-sensitivity-test"),
+        )
+
+    observed = pd.DataFrame(
+        {
+            "area": [1200.0, 2400.0],
+            "median_slope": [22.0, 28.0],
+        }
+    )
+    table = plot_parameter_sensitivity(
+        tmp_path,
+        "cohesion_eff",
+        tmp_path / "analysis",
+        observed=observed,
+    )
+
+    assert (tmp_path / "analysis" / "soil_params-cohesion_eff_001.png").exists()
+    # Exercise the public plot with a retained figure by intercepting close.
+    with monkeypatch.context() as patch:
+        patch.setattr(plt, "close", lambda _figure: None)
+        plot_parameter_sensitivity(
+            tmp_path,
+            "cohesion_eff",
+            tmp_path / "analysis-retained",
+            observed=observed,
+        )
+        plotted = plt.gcf()
+        assert "Sensitivity to Effective cohesion" in plotted._suptitle.get_text()
+        labels = [line.get_label() for line in plotted.axes[0].lines]
+        assert "Measured (n=2)" in labels
+        measured = next(
+            line
+            for line in plotted.axes[0].lines
+            if line.get_label() == "Measured (n=2)"
+        )
+        assert measured.get_linestyle() == "--"
+    plt.close(plotted)
+
+
 def test_observed_landslides_are_normalized_filtered_and_plotted(tmp_path):
     inventory_path = tmp_path / "inventory.csv"
     pd.DataFrame(

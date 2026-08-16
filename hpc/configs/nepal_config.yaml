@@ -17,8 +17,8 @@ ensemble:
   parameters:
     soil_params.distribution: [elevation]
     soil_params.relationship: [linear]
-    soil_params.cohesion_eff: [10000, 15000, 20000]
-    soil_params.angle_int_frict: [25, 30, 35]
+    soil_params.cohesion_eff: [15000]
+    soil_params.angle_int_frict: [30]
     # Uncommenting this multiplies the ensemble by five (45 total members).
     soil_params.submerged_soil_proportion: [0.1, 0.25, 0.5, 0.75, 1.0]
 

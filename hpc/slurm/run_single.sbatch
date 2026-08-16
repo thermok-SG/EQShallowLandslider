@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=landslide-single
+#SBATCH --job-name=single-ls
 #SBATCH --partition=cpu_shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

@@ -131,6 +131,41 @@ def _parameter_label(path):
     return labels.get(leaf, path)
 
 
+def _parameter_name(path):
+    """Return a short parameter name suitable for figure headings."""
+    labels = {
+        "cohesion_eff": "effective cohesion",
+        "angle_int_frict": "internal friction angle",
+        "submerged_soil_proportion": "submerged soil proportion",
+        "max_soil_depth": "maximum soil depth",
+        "horizontal_max": "maximum horizontal PGA",
+        "vertical_max": "maximum vertical PGA",
+    }
+    leaf = path.rsplit(".", 1)[-1]
+    return labels.get(leaf, leaf.replace("_", " "))
+
+
+def _sentence_case(value):
+    """Uppercase an initial character without lowercasing acronyms."""
+    return value[:1].upper() + value[1:]
+
+
+def _format_parameter_value(path, value):
+    """Format a swept or fixed value compactly, including known units."""
+    if isinstance(value, float):
+        value_text = f"{value:g}"
+    else:
+        value_text = str(value)
+    units = {
+        "cohesion_eff": " Pa",
+        "angle_int_frict": "°",
+        "max_soil_depth": " m",
+        "horizontal_max": " g",
+        "vertical_max": " g",
+    }
+    return value_text + units.get(path.rsplit(".", 1)[-1], "")
+
+
 def _safe_filename(value):
     safe = "".join(
         character if character.isalnum() or character in "-_" else "-"
@@ -202,15 +237,17 @@ def plot_parameter_sensitivity(
     parameter,
     output_dir,
     selected_only=True,
+    observed=None,
 ):
     """Create controlled ensemble comparisons for one swept parameter.
 
     Runs are grouped by ensemble name and by every other swept parameter, so
     each figure varies only ``parameter``. Within a panel, ECDFs show the full
     region distribution and legends retain the sample count, including zero;
-    distribution summaries are written to the returned table. One completed
-    run per configuration digest is used; for forced reruns, the latest
-    completed run is selected.
+    distribution summaries are written to the returned table. When measured
+    data are supplied, a dashed reference ECDF is added to each compatible
+    panel. One completed run per configuration digest is used; for forced
+    reruns, the latest completed run is selected.
 
     Parameters
     ----------
@@ -223,6 +260,8 @@ def plot_parameter_sensitivity(
         Directory in which comparison PNGs are written.
     selected_only : bool, default True
         Compare selected landslides rather than all candidate regions.
+    observed : pandas.DataFrame, optional
+        Measured landslides normalized to the model region-column convention.
 
     Returns
     -------
@@ -309,19 +348,37 @@ def plot_parameter_sensitivity(
                         "figure": str(figure_path),
                     }
                 )
+            observed_values = (
+                _numeric_values(observed, column, positive=log_x)
+                if observed is not None
+                else np.array([])
+            )
+            if len(observed_values):
+                observed_x, observed_y = _ecdf(observed_values)
+                axis.plot(
+                    observed_x,
+                    observed_y,
+                    color="black",
+                    linestyle="--",
+                    linewidth=2.2,
+                    label=f"Measured (n={len(observed_values):,})",
+                    zorder=10,
+                )
             if log_x:
                 axis.set_xscale("log")
             axis.set_xlabel(metric_label)
             axis.set_ylabel("ECDF")
             axis.set_ylim(0, 1)
             axis.grid(alpha=0.2)
+            axis.set_title(metric_label.split(" (")[0], fontsize=11)
 
-        handles, labels = axes.ravel()[0].get_legend_handles_labels()
-        if not handles:
-            for axis in axes.ravel()[1:]:
-                handles, labels = axis.get_legend_handles_labels()
-                if handles:
-                    break
+        legend_entries = {}
+        for axis in axes.ravel():
+            handles, labels = axis.get_legend_handles_labels()
+            for handle, label in zip(handles, labels):
+                legend_entries.setdefault(label, handle)
+        labels = list(legend_entries)
+        handles = [legend_entries[label] for label in labels]
         if handles:
             fig.legend(
                 handles,
@@ -331,15 +388,30 @@ def plot_parameter_sensitivity(
                 bbox_to_anchor=(1.0, 0.5),
             )
         controls_text = (
-            ", ".join(f"{key}={value}" for key, value in group["controls"].items())
-            or "all other swept parameters fixed"
+            " · ".join(
+                f"{_sentence_case(_parameter_name(key))} = "
+                f"{_format_parameter_value(key, value)}"
+                for key, value in group["controls"].items()
+            )
+            or "Other swept parameters fixed"
         )
-        title = (
-            f"{ensemble_name}: effect of {_parameter_label(parameter)} "
-            f"on {'selected' if selected_only else 'candidate'} regions\n"
-            f"Fixed: {controls_text}"
+        selection = "Selected" if selected_only else "Candidate"
+        ensemble_label = ensemble_name.replace("_", " ")
+        fixed_lines = "\n".join(
+            textwrap.wrap(
+                f"Fixed: {controls_text}",
+                width=92,
+                subsequent_indent="       ",
+            )
         )
-        fig.suptitle("\n".join(textwrap.wrap(title, width=110)))
+        fig.suptitle(
+            f"Sensitivity to {_sentence_case(_parameter_name(parameter))}\n"
+            f"{selection} landslides · {ensemble_label}\n"
+            f"{fixed_lines}",
+            fontsize=14,
+            fontweight="semibold",
+            linespacing=1.35,
+        )
         fig.savefig(figure_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
 

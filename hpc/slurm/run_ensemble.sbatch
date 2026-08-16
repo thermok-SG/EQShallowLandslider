@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=landslide-ensemble
+#SBATCH --job-name=ensem-ls
 #SBATCH --partition=cpu_shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

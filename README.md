@@ -393,7 +393,7 @@ directories beneath `--runs`. It creates these products in `--output`:
 | `<run-id>.png` | Histograms and ECDFs for region area, terrain statistics, length, and width |
 | `<run-id>_maps.png` | Multi-panel spatial inputs, stability results, selected footprints, and available runout fields |
 | `distribution_comparison.csv` | KS, Kuiper, and Wasserstein results; written only when measured data are supplied |
-| `parameter_comparisons/<parameter>/*.png` | Controlled ECDF comparisons for each fixed combination of the other swept parameters |
+| `parameter_comparisons/<parameter>/*.png` | Controlled ECDF comparisons for each fixed combination of the other swept parameters, with measured reference curves when supplied |
 | `parameter_sensitivity_<parameter>.csv` | Values, fixed controls, counts, and distribution summaries behind the controlled plots |
 
 Ensemble parameters are detected automatically. For the bundled stability
@@ -411,6 +411,9 @@ effect. The shorter `--vary cohesion_eff` is accepted when that leaf name
 identifies only one swept parameter, and `--vary` can be repeated for a subset.
 Each figure uses ordered ECDF curves rather than overlaid histograms, making
 shifts in the whole distribution visible without hiding curves behind bars.
+When measured inventory arguments are supplied, compatible panels also include
+a black dashed measured ECDF so every parameter response can be judged against
+the same reference distribution.
 The corresponding CSV records the fixed controls for auditability. Forced
 reruns with the same configuration digest are deduplicated in these sensitivity
 plots, with the latest completed run retained. Non-ensemble runs have no swept

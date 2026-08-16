@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=landslide-analysis-ensemble
+#SBATCH --job-name=analy-ens
 #SBATCH --partition=cpu_shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

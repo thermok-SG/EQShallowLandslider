@@ -86,6 +86,14 @@ def main():
     ensemble = load_region_ensemble(args.runs, selected_only=selected_only)
     ensemble.to_csv(output_dir / "region_ensemble.csv", index=False)
 
+    observed = None
+    if args.observed_inventory or args.observed_zonal_stats:
+        observed = load_observed_landslides(
+            inventory_path=args.observed_inventory,
+            zonal_stats_path=args.observed_zonal_stats,
+            min_area=args.min_observed_area,
+        )
+
     automatic_parameters = not args.vary
     parameters_to_compare = args.vary or swept_parameters(args.runs)
     for parameter in parameters_to_compare:
@@ -98,6 +106,7 @@ def main():
                 parameter,
                 comparison_dir,
                 selected_only=selected_only,
+                observed=observed,
             )
         except ValueError as exc:
             if not automatic_parameters or "No controlled comparison" not in str(exc):
@@ -107,14 +116,6 @@ def main():
         sensitivity.to_csv(
             output_dir / f"parameter_sensitivity_{parameter.replace('.', '_')}.csv",
             index=False,
-        )
-
-    observed = None
-    if args.observed_inventory or args.observed_zonal_stats:
-        observed = load_observed_landslides(
-            inventory_path=args.observed_inventory,
-            zonal_stats_path=args.observed_zonal_stats,
-            min_area=args.min_observed_area,
         )
 
     summaries = []
