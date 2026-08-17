@@ -83,6 +83,49 @@ def test_apply_configured_soil_depth_forwards_curvature_options(monkeypatch):
     assert captured["plot"] is False
 
 
+def test_apply_configured_soil_depth_uses_raster_without_clipping():
+    grid = RasterModelGrid((4, 5), xy_spacing=30)
+    values = np.linspace(0.0, 3.0, grid.number_of_nodes).reshape(grid.shape)
+
+    soil = cli.apply_configured_soil_depth(
+        grid,
+        {
+            "distribution": "raster",
+            "soil_depth_path": "not-read-by-this-helper.asc",
+            "max_soil_depth": 1.0,
+        },
+        values,
+    )
+
+    assert np.array_equal(soil.reshape(grid.shape), values)
+
+
+def test_load_soil_depth_raster_checks_shape_spacing_and_values(tmp_path):
+    model_grid = RasterModelGrid((4, 5), xy_spacing=30)
+    values = np.linspace(0.1, 2.0, model_grid.number_of_nodes).reshape(
+        model_grid.shape
+    )
+    path = tmp_path / "soil.asc"
+    header = (
+        "ncols 5\n"
+        "nrows 4\n"
+        "xllcorner 0\n"
+        "yllcorner 0\n"
+        "cellsize 30\n"
+        "NODATA_value -9999\n"
+    )
+    path.write_text(
+        header + "\n".join(" ".join(map(str, row)) for row in values),
+        encoding="utf-8",
+    )
+
+    loaded = cli.load_soil_depth_raster(path, model_grid)
+
+    # ESRI ASCII stores its first data row at the top of the raster, whereas
+    # Landlab node rows increase upward from the lower-left corner.
+    assert np.allclose(loaded, np.flipud(values))
+
+
 @pytest.mark.parametrize(
     ("soil_cfg", "expected"),
     [

@@ -77,8 +77,11 @@ soil_params:
   submerged_soil_proportion: 0.5
   # Uniform depth for this configuration; upper bound for variable schemes (m).
   max_soil_depth: 1.5
-  # Options include uniform, elevation, drainage_area, curvature, and
-  # mean_elev_curv. Uniform ignores relationship and most coefficients below.
+  # Options include uniform, elevation, drainage_area, curvature,
+  # mean_elev_curv, and raster. For a generated process-derived layer, use:
+  #   distribution: "raster"
+  #   soil_depth_path: "input_data/dem/<matching>_soil_depth.asc"
+  # The DEM and soil raster must come from the same generation run.
   distribution: "uniform"
   relationship: "linear_std_local"
   # Shape controls used by elevation/drainage/curvature alternatives.

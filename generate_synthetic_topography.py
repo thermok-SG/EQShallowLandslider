@@ -3,8 +3,9 @@
 
 The generator evolves bedrock and sediment on a coarse Landlab grid using D8
 priority-flood routing and ``SpaceLargeScaleEroder``, then cubic-resamples the
-result to the requested model resolution. It writes an ESRI ASCII elevation
-grid and a same-named JSON provenance/diagnostics file. The default command is::
+result to the requested model resolution. It writes matched ESRI ASCII
+topographic-elevation, soil-depth, and bedrock-elevation grids plus a JSON
+provenance/diagnostics file. The default command is::
 
     python generate_synthetic_topography.py
 
@@ -23,7 +24,12 @@ from pathlib import Path
 
 import numpy as np
 from landlab import RasterModelGrid
-from landlab.components import PriorityFloodFlowRouter, SpaceLargeScaleEroder
+from landlab.components import (
+    DepthDependentTaylorDiffuser,
+    ExponentialWeatherer,
+    PriorityFloodFlowRouter,
+    SpaceLargeScaleEroder,
+)
 from landlab.io import esri_ascii
 from scipy.ndimage import zoom
 
@@ -80,6 +86,12 @@ def generate_mountain_catchment(
     sediment_erodibility=2.5e-5,
     initial_soil_depth=0.5,
     refinement_factor=2,
+    regolith_model="space",
+    soil_production_maximum_rate=1.0e-4,
+    soil_production_decay_depth=0.5,
+    soil_transport_velocity=0.02,
+    soil_transport_decay_depth=0.5,
+    critical_slope=1.0,
 ):
     """Evolve and return a tutorial-based synthetic mountain range.
 
@@ -92,6 +104,11 @@ def generate_mountain_catchment(
     Evolution occurs on a coarser grid and is cubically resampled to the final
     grid. This preserves the requested regional extent and 30 m resolution while
     making a long geomorphic spin-up practical for ensemble preparation.
+
+    ``regolith_model="space"`` preserves SPACE's mobile-sediment layer.
+    ``regolith_model="weathering_taylor"`` additionally couples exponential
+    bedrock weathering to depth-dependent nonlinear Taylor soil creep, so the
+    returned surface, bedrock, and regolith fields co-evolve.
     """
     if nrows < 20 or ncols < 20:
         raise ValueError("nrows and ncols must each be at least 20")
@@ -111,6 +128,14 @@ def generate_mountain_catchment(
         )
     if initial_soil_depth < 0:
         raise ValueError("initial_soil_depth cannot be negative")
+    if regolith_model not in {"space", "weathering_taylor"}:
+        raise ValueError("regolith_model must be 'space' or 'weathering_taylor'")
+    if min(soil_production_maximum_rate, soil_production_decay_depth) <= 0:
+        raise ValueError("soil-production parameters must be positive")
+    if min(soil_transport_velocity, soil_transport_decay_depth, critical_slope) <= 0:
+        raise ValueError(
+            "soil-transport parameters and critical_slope must be positive"
+        )
 
     source_shape = (nrows // refinement_factor, ncols // refinement_factor)
     source_spacing = spacing * refinement_factor
@@ -156,6 +181,22 @@ def generate_mountain_catchment(
         sp_crit_sed=0.0,
         sp_crit_br=0.0,
     )
+    weatherer = None
+    hillslope = None
+    if regolith_model == "weathering_taylor":
+        weatherer = ExponentialWeatherer(
+            source_grid,
+            soil_production_maximum_rate=soil_production_maximum_rate,
+            soil_production_decay_depth=soil_production_decay_depth,
+        )
+        hillslope = DepthDependentTaylorDiffuser(
+            source_grid,
+            soil_transport_velocity=soil_transport_velocity,
+            soil_transport_decay_depth=soil_transport_decay_depth,
+            slope_crit=critical_slope,
+            dynamic_dt=True,
+            if_unstable="raise",
+        )
 
     for _ in range(iterations):
         bedrock[source_grid.core_nodes] += (
@@ -164,6 +205,11 @@ def generate_mountain_catchment(
         elevation[:] = bedrock + soil
         flow.run_one_step()
         space.run_one_step(timestep)
+        if weatherer is not None:
+            # SPACE handles fluvial sediment; weathering and nonlinear creep
+            # add an explicit hillslope regolith-production/transport process.
+            weatherer.run_one_step()
+            hillslope.run_one_step(timestep)
 
     fine_grid = _resample_to_fine_grid(
         source_grid, nrows, ncols, spacing, refinement_factor
@@ -200,12 +246,16 @@ def generate_mountain_catchment(
     valid_slopes = slopes[fine_grid.core_nodes]
     drainage_area = fine_grid.at_node["drainage_area"]
 
+    component_names = [
+        "PriorityFloodFlowRouter (D8)",
+        "SpaceLargeScaleEroder",
+    ]
+    if regolith_model == "weathering_taylor":
+        component_names.extend(["ExponentialWeatherer", "DepthDependentTaylorDiffuser"])
     stats = {
         "generator": "Landlab tutorial-based mountain-range evolution",
-        "components": [
-            "PriorityFloodFlowRouter (D8)",
-            "SpaceLargeScaleEroder",
-        ],
+        "components": component_names,
+        "regolith_model": regolith_model,
         "boundary_condition": "fixed-value open perimeter",
         "shape": [int(nrows), int(ncols)],
         "source_evolution_shape": [int(source_shape[0]), int(source_shape[1])],
@@ -243,11 +293,23 @@ def generate_mountain_catchment(
             "maximum": float(soil[fine_grid.core_nodes].max()),
         },
     }
+    if regolith_model == "weathering_taylor":
+        stats["regolith_parameters"] = {
+            "soil_production_maximum_rate_m_per_year": float(
+                soil_production_maximum_rate
+            ),
+            "soil_production_decay_depth_m": float(soil_production_decay_depth),
+            "soil_transport_velocity_m_per_year": float(soil_transport_velocity),
+            "soil_transport_decay_depth_m": float(soil_transport_decay_depth),
+            "critical_slope_m_per_m": float(critical_slope),
+        }
     return fine_grid, stats
 
 
-def write_esri_ascii(path, grid, nodata_value=-9999.0):
-    """Export the final Landlab elevation grid to ESRI ASCII."""
+def write_esri_ascii(
+    path, grid, field_name="topographic__elevation", nodata_value=-9999.0
+):
+    """Export a node field from the final grid to ESRI ASCII."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as stream:
@@ -255,7 +317,7 @@ def write_esri_ascii(path, grid, nodata_value=-9999.0):
             grid,
             stream=stream,
             at="node",
-            name="topographic__elevation",
+            name=field_name,
             nodata_value=nodata_value,
         )
 
@@ -311,6 +373,42 @@ def parse_args(argv=None):
         default=2,
         help="Ratio of final to evolution-grid resolution; dimensions must divide evenly.",
     )
+    parser.add_argument(
+        "--regolith-model",
+        choices=("space", "weathering_taylor"),
+        default="space",
+        help="SPACE-only sediment or SPACE plus weathering and nonlinear soil creep.",
+    )
+    parser.add_argument(
+        "--soil-production-maximum-rate",
+        type=float,
+        default=1.0e-4,
+        help="Bare-bedrock soil production rate (m/yr) for weathering_taylor.",
+    )
+    parser.add_argument(
+        "--soil-production-decay-depth",
+        type=float,
+        default=0.5,
+        help="E-folding soil-production depth (m) for weathering_taylor.",
+    )
+    parser.add_argument(
+        "--soil-transport-velocity",
+        type=float,
+        default=0.02,
+        help="Taylor soil-transport velocity (m/yr) for weathering_taylor.",
+    )
+    parser.add_argument(
+        "--soil-transport-decay-depth",
+        type=float,
+        default=0.5,
+        help="Taylor soil-transport depth scale (m) for weathering_taylor.",
+    )
+    parser.add_argument(
+        "--critical-slope",
+        type=float,
+        default=1.0,
+        help="Critical gradient (m/m) for nonlinear Taylor soil transport.",
+    )
     return parser.parse_args(argv)
 
 
@@ -328,12 +426,29 @@ def main(argv=None):
         sediment_erodibility=args.sediment_erodibility,
         initial_soil_depth=args.initial_soil_depth,
         refinement_factor=args.refinement_factor,
+        regolith_model=args.regolith_model,
+        soil_production_maximum_rate=args.soil_production_maximum_rate,
+        soil_production_decay_depth=args.soil_production_decay_depth,
+        soil_transport_velocity=args.soil_transport_velocity,
+        soil_transport_decay_depth=args.soil_transport_decay_depth,
+        critical_slope=args.critical_slope,
     )
     output_path = Path(args.output)
     write_esri_ascii(output_path, grid)
+    soil_path = output_path.with_name(f"{output_path.stem}_soil_depth.asc")
+    bedrock_path = output_path.with_name(f"{output_path.stem}_bedrock_elevation.asc")
+    write_esri_ascii(soil_path, grid, field_name="soil__depth")
+    write_esri_ascii(bedrock_path, grid, field_name="bedrock__elevation")
+    stats["outputs"] = {
+        "topographic_elevation": str(output_path),
+        "soil_depth": str(soil_path),
+        "bedrock_elevation": str(bedrock_path),
+    }
     metadata_path = output_path.with_suffix(".json")
     metadata_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {output_path} ({stats['shape'][0]} x {stats['shape'][1]} cells)")
+    print(f"Wrote {soil_path}")
+    print(f"Wrote {bedrock_path}")
     print(f"Wrote {metadata_path}")
     print(json.dumps(stats, indent=2))
 

@@ -58,6 +58,53 @@ def test_write_esri_ascii_header_and_values(tmp_path):
     assert values.shape == grid.shape
     assert np.count_nonzero(values == -9999) == 0
 
+    soil_output = tmp_path / "terrain_soil_depth.asc"
+    write_esri_ascii(soil_output, grid, field_name="soil__depth")
+    soil_values = np.loadtxt(soil_output, skiprows=6)
+    assert np.allclose(
+        np.flipud(soil_values).ravel(), grid.at_node["soil__depth"]
+    )
+
+
+def test_space_regolith_preserves_matched_soil_and_bedrock_fields():
+    grid, stats = generate_mountain_catchment(
+        40, 40, iterations=2, refinement_factor=2, regolith_model="space"
+    )
+
+    assert stats["regolith_model"] == "space"
+    assert np.all(grid.at_node["soil__depth"] >= 0)
+    assert np.allclose(
+        grid.at_node["topographic__elevation"],
+        grid.at_node["bedrock__elevation"] + grid.at_node["soil__depth"],
+    )
+
+
+def test_weathering_taylor_regolith_is_reproducible_and_process_derived():
+    options = dict(
+        nrows=40,
+        ncols=40,
+        iterations=2,
+        timestep=10,
+        refinement_factor=2,
+        seed=13,
+        regolith_model="weathering_taylor",
+    )
+    first, stats = generate_mountain_catchment(**options)
+    second, _ = generate_mountain_catchment(**options)
+
+    assert stats["regolith_model"] == "weathering_taylor"
+    assert "ExponentialWeatherer" in stats["components"]
+    assert "DepthDependentTaylorDiffuser" in stats["components"]
+    assert "regolith_parameters" in stats
+    assert np.array_equal(
+        first.at_node["soil__depth"], second.at_node["soil__depth"]
+    )
+    assert np.all(first.at_node["soil__depth"] >= 0)
+    assert np.allclose(
+        first.at_node["topographic__elevation"],
+        first.at_node["bedrock__elevation"] + first.at_node["soil__depth"],
+    )
+
 
 @pytest.mark.parametrize("shape", [(19, 100), (100, 19)])
 def test_synthetic_catchment_rejects_tiny_grids(shape):

@@ -66,6 +66,8 @@ soil_params:
   angle_int_frict: 30
   submerged_soil_proportion: 0.5
   max_soil_depth: 1.5
+  # Use distribution: "raster" plus soil_depth_path to preserve a generated
+  # process-derived soil layer. It must match dem_path in shape and spacing.
   distribution: "uniform"
   # Inactive for uniform; used by curvature/elevation relationships.
   relationship: "linear_std_local"

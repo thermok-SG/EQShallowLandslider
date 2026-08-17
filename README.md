@@ -498,21 +498,25 @@ reverse-chronological description of every commit in the repository.
 The repository includes a deterministic 600 × 800 node, 30 m synthetic
 mountain range at `input_data/dem/synthetic_landlab_600x800_30m.asc`. Its 24 × 18 km
 footprint and 480,000 nodes are larger than both bundled subregional DEMs. It
-uses a Landlab-tutorial-based landscape-evolution setup. A low-relief 300 × 400
+uses a Landlab-tutorial-based landscape-evolution setup. A low-relief source
 grid is evolved for 250 kyr: `PriorityFloodFlowRouter` provides D8 routing,
 `SpaceLargeScaleEroder` co-evolves bedrock and sediment, and an elongated axial
 uplift field produces a mountain belt with an emergent divide and multiple
-drainage basins. The result is cubically resampled from 60 m to the final 30 m
-600 × 800 grid. The adjacent JSON file records the seed, evolution parameters,
-relief, slopes, soil thickness, and drainage area.
+drainage basins. The bundled 150 × 200 realization was cubically resampled from
+120 m to the final 30 m 600 × 800 grid (`refinement_factor: 4` in its metadata);
+the current default evolves 300 × 400 nodes at 60 m and resamples to 30 m
+(`--refinement-factor 2`). The
+adjacent JSON file records the seed, evolution parameters, relief, slopes, soil
+thickness, and drainage area.
 
-The three generated terrain products have different purposes:
+Each generation run now writes a matched terrain triplet plus provenance:
 
 | File | Purpose |
 |---|---|
 | `synthetic_landlab_600x800_30m.asc` | Elevation input consumed by the model CLI |
+| `synthetic_landlab_600x800_30m_soil_depth.asc` | Process-derived soil/sediment thickness paired with the elevation |
+| `synthetic_landlab_600x800_30m_bedrock_elevation.asc` | Bedrock elevation satisfying surface = bedrock + soil |
 | `synthetic_landlab_600x800_30m.json` | Generator settings, provenance, dimensions, relief, slope, soil, and drainage diagnostics |
-| `synthetic_landlab_600x800_30m_preview.png` | Quick visual inspection; not read by the model |
 
 Regenerate it, inspect all generator options, or request a different size or
 realization with:
@@ -522,6 +526,44 @@ python generate_synthetic_topography.py --help
 python generate_synthetic_topography.py
 python generate_synthetic_topography.py --nrows 700 --ncols 900 --seed 42
 ```
+
+To create separate SPACE-only and nonlinear weathering–creep realizations with
+the same seed and geomorphic forcing:
+
+```bash
+python generate_synthetic_topography.py \
+  --regolith-model space \
+  --output input_data/dem/synthetic_space_600x800_30m.asc
+
+python generate_synthetic_topography.py \
+  --regolith-model weathering_taylor \
+  --output input_data/dem/synthetic_weathering_taylor_600x800_30m.asc
+```
+
+The nonlinear realization retains SPACE for fluvial erosion and sediment
+routing, and adds `ExponentialWeatherer` plus
+`DepthDependentTaylorDiffuser` for explicit hillslope soil production and
+nonlinear creep. Its weathering and transport parameters are recorded in the
+JSON file and exposed by `--help`.
+
+Use a process-derived soil layer in a landslide configuration by pairing the
+two paths from the same generation run:
+
+```yaml
+dem_path: input_data/dem/synthetic_space_600x800_30m.asc
+soil_params:
+  distribution: raster
+  soil_depth_path: input_data/dem/synthetic_space_600x800_30m_soil_depth.asc
+  cohesion_eff: 15000
+  angle_int_frict: 30
+  submerged_soil_proportion: 0.5
+```
+
+For the nonlinear alternative, change both paths to the
+`synthetic_weathering_taylor_600x800_30m` pair. The CLI checks raster shape,
+spacing, finiteness, and non-negative thickness before running. Uniform,
+elevation-, curvature-, drainage-area-, and composite hypotheses remain
+available unchanged.
 
 The final row and column counts must be divisible by `--refinement-factor`.
 Increasing iterations, grid dimensions, or reducing the refinement factor

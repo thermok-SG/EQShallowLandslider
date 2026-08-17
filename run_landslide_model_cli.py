@@ -15,6 +15,7 @@ import numpy as np
 import yaml
 from landlab import RasterModelGrid
 from landlab.components import PriorityFloodFlowRouter
+from landlab.io import esri_ascii
 from scipy.ndimage import distance_transform_edt
 from scipy.ndimage import label as cc_label
 
@@ -90,11 +91,23 @@ def fill_nodata_for_terrain(elevation, nodata_mask):
     return filled, nodata_mask
 
 
-def apply_configured_soil_depth(grid, soil_cfg):
+def apply_configured_soil_depth(grid, soil_cfg, raster_values=None):
     """Apply the configured soil model, including optional relationship settings."""
     params = dict(soil_cfg)
     params.setdefault("max_soil_depth", 1.5)
     params.setdefault("distribution", "uniform")
+    if params["distribution"] == "raster":
+        if raster_values is None:
+            raise ValueError("raster soil depth requires raster_values")
+        values = np.asarray(raster_values, dtype=float).ravel()
+        if values.size != grid.number_of_nodes:
+            raise ValueError("soil-depth raster and model grid must have the same shape")
+        if not np.isfinite(values).all() or np.any(values < 0):
+            raise ValueError("soil-depth raster must contain finite, non-negative values")
+        return grid.add_field(
+            "soil__depth", values, at="node", copy=True, clobber=True
+        )
+    params.pop("soil_depth_path", None)
     params.setdefault("relationship", "linear_std_local")
     params.setdefault("P0", 0.05)
     params.setdefault("h_star", 1.0)
@@ -103,6 +116,34 @@ def apply_configured_soil_depth(grid, soil_cfg):
     params.setdefault("h_no_ss", 0.0)
     params["plot"] = False
     return apply_soil_depth(grid, **params)
+
+
+def load_soil_depth_raster(path, model_grid, nodata_mask=None):
+    """Load and validate a process-derived soil-depth raster."""
+    with open(path) as stream:
+        soil_grid = esri_ascii.load(stream, name="soil__depth", at="node")
+    if soil_grid.shape != model_grid.shape:
+        raise ValueError(
+            f"Soil-depth raster shape {soil_grid.shape} does not match DEM shape "
+            f"{model_grid.shape}"
+        )
+    if not np.isclose(soil_grid.dx, model_grid.dx):
+        raise ValueError(
+            f"Soil-depth raster spacing {soil_grid.dx} does not match DEM spacing "
+            f"{model_grid.dx}"
+        )
+    values = np.asarray(soil_grid.at_node["soil__depth"], dtype=float).reshape(
+        model_grid.shape
+    )
+    mask = np.zeros(model_grid.shape, dtype=bool)
+    if nodata_mask is not None:
+        mask |= np.asarray(nodata_mask, dtype=bool).reshape(model_grid.shape)
+    valid = ~mask
+    if not np.isfinite(values[valid]).all() or np.any(values[valid] < 0):
+        raise ValueError("Soil-depth raster must be finite and non-negative on DEM cells")
+    values = values.copy()
+    values[mask] = 0.0
+    return values
 
 
 def required_curvature_overlap(soil_cfg):
@@ -200,9 +241,14 @@ def prepare_config(config, chunking_override=None):
     soil = config["soil_params"]
     distribution = soil.get("distribution", "uniform")
     if distribution not in {
-        "uniform", "elevation", "curvature", "drainage_area", "mean_elev_curv"
+        "uniform", "elevation", "curvature", "drainage_area", "mean_elev_curv",
+        "raster",
     }:
         raise ValueError(f"Unsupported soil_params.distribution: {distribution}")
+    if distribution == "raster" and not isinstance(soil.get("soil_depth_path"), str):
+        raise ValueError(
+            "soil_params.soil_depth_path is required when distribution is raster"
+        )
     if float(soil.get("max_soil_depth", 1.5)) <= 0:
         raise ValueError("soil_params.max_soil_depth must be positive")
     if float(soil.get("cohesion_eff", 15_000)) < 0:
@@ -510,6 +556,12 @@ def main():
         
     soil_cfg = config.get("soil_params", {})
     eq_cfg = config.get("pga", {})
+    soil_raster_2d = None
+    if soil_cfg.get("distribution") == "raster":
+        soil_raster_2d = load_soil_depth_raster(
+            soil_cfg["soil_depth_path"], mg_full, nodata_full_2d
+        )
+        logger.info("Loaded process-derived soil depth: %s", soil_cfg["soil_depth_path"])
 
     required_overlap = required_curvature_overlap(soil_cfg)
     if use_chunking and tile_overlap < required_overlap:
@@ -556,7 +608,7 @@ def main():
         # Soil
         if "soil__depth" not in mg_full.at_node:
             mg_full.add_zeros("soil__depth", at="node")
-        apply_configured_soil_depth(mg_full, soil_cfg)
+        apply_configured_soil_depth(mg_full, soil_cfg, soil_raster_2d)
         mg_full.add_zeros("bedrock__elevation", at="node", clobber=True)
         mg_full.at_node["bedrock__elevation"][:] = (
             mg_full.at_node["topographic__elevation"] - mg_full.at_node["soil__depth"]
@@ -667,7 +719,12 @@ def main():
         mg_tile.status_at_node[tile_mask.ravel()] = mg_tile.BC_NODE_IS_CLOSED
 
         # Soil
-        soil_tile = apply_configured_soil_depth(mg_tile, soil_cfg)
+        tile_soil = (
+            soil_raster_2d[re0:re1, ce0:ce1]
+            if soil_raster_2d is not None
+            else None
+        )
+        soil_tile = apply_configured_soil_depth(mg_tile, soil_cfg, tile_soil)
         soil_tile[tile_mask.ravel()] = 0.0
         mg_tile.add_zeros("bedrock__elevation", at="node", clobber=True)
         mg_tile.at_node["bedrock__elevation"][:] = (

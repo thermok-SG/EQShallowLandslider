@@ -64,6 +64,17 @@ def test_runout_flag_dependencies_are_validated():
         prepare_config(config)
 
 
+def test_raster_soil_requires_a_path():
+    config = minimal_config()
+    config["soil_params"]["distribution"] = "raster"
+
+    with pytest.raises(ValueError, match="soil_depth_path"):
+        prepare_config(config)
+
+    config["soil_params"]["soil_depth_path"] = "soil.asc"
+    assert prepare_config(config)["soil_params"]["distribution"] == "raster"
+
+
 @pytest.mark.parametrize(
     ("parameter", "value"),
     [("P0", 0.0), ("h_star", 0.0), ("D", -1.0), ("eps", 0.0)],
