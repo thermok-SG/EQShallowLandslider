@@ -132,3 +132,62 @@ rsync -av hpc-host:/scratch/$USER/EQShallowLandslider_data/analysis_output/ \
 
 Large raster bundles can remain on the cluster while summaries, region tables,
 and figures are copied back selectively.
+
+## Generate synthetic terrain ensembles
+
+The synthetic generator remains in the main source tree; the Slurm launcher
+executes it from there and writes all large products through `hpc/workspace`.
+The `_HPC` or scratch workspace therefore contains data and results, not a
+second copy of the application code.
+
+The default array contains three seeds paired across the SPACE-only and
+weathering–Taylor regolith models:
+
+| Task | Seed | Regolith model |
+|---:|---:|---|
+| 0 | 20260804 | `space` |
+| 1 | 20260804 | `weathering_taylor` |
+| 2 | 20260805 | `space` |
+| 3 | 20260805 | `weathering_taylor` |
+| 4 | 20260806 | `space` |
+| 5 | 20260806 | `weathering_taylor` |
+
+Submit it from the main repository root:
+
+```bash
+sbatch hpc/slurm/generate_synthetic_topography.sbatch
+```
+
+Outputs are written beneath
+`hpc/workspace/input_data/dem/synthetic_ensemble/`. Each realization contains
+a topographic-elevation raster, matching soil-depth and bedrock-elevation
+rasters, and JSON provenance.
+
+Override the seeds and array range together when expanding the experiment.
+There must be two tasks per seed; the optional percent suffix limits concurrent
+jobs:
+
+```bash
+SYNTHETIC_SEEDS="41 42 43 44 45" \
+sbatch --array=0-9%3 hpc/slurm/generate_synthetic_topography.sbatch
+```
+
+Principal generator settings can also be exported at submission, including
+`REFINEMENT_FACTOR`, `ITERATIONS`, `SOIL_PRODUCTION_MAXIMUM_RATE`,
+`SOIL_PRODUCTION_DECAY_DEPTH`, `SOIL_TRANSPORT_VELOCITY`,
+`SOIL_TRANSPORT_DECAY_DEPTH`, and `CRITICAL_SLOPE`.
+
+Use the elevation and soil file from the same array task in a landslide
+configuration. Paths remain relative to the data workspace because the Slurm
+model launchers run from `hpc/workspace`:
+
+```yaml
+dem_path: "input_data/dem/synthetic_ensemble/synthetic_space_seed20260804_600x800_30m.asc"
+
+soil_params:
+  distribution: "raster"
+  soil_depth_path: "input_data/dem/synthetic_ensemble/synthetic_space_seed20260804_600x800_30m_soil_depth.asc"
+  cohesion_eff: 15000
+  angle_int_frict: 30
+  submerged_soil_proportion: 0.5
+```

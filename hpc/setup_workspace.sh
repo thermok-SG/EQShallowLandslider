@@ -18,6 +18,7 @@ fi
 
 mkdir -p \
   "${DATA_ROOT}/input_data/dem" \
+  "${DATA_ROOT}/input_data/dem/synthetic_ensemble" \
   "${DATA_ROOT}/input_data/nepal" \
   "${DATA_ROOT}/input_data/japan" \
   "${DATA_ROOT}/runs" \
