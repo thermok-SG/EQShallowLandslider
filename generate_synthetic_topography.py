@@ -306,9 +306,7 @@ def generate_mountain_catchment(
     return fine_grid, stats
 
 
-def write_esri_ascii(
-    path, grid, field_name="topographic__elevation", nodata_value=-9999.0
-):
+def write_esri_ascii(path, grid, field_name="topographic__elevation"):
     """Export a node field from the final grid to ESRI ASCII."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -318,7 +316,6 @@ def write_esri_ascii(
             stream=stream,
             at="node",
             name=field_name,
-            nodata_value=nodata_value,
         )
 
 
