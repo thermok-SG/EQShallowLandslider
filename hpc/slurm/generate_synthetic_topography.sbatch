@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-5
+#SBATCH --array=0-1
 #SBATCH --output=slurm-%x-%A_%a.out
 
 set -euo pipefail
@@ -22,7 +22,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-input_data/dem/synthetic_ensemble}"
 
 # Each seed is paired across the two regolith models. When this list changes,
 # set the Slurm array upper bound to (2 * number_of_seeds) - 1.
-read -r -a SEEDS <<< "${SYNTHETIC_SEEDS:-20260804 20260805 20260806}"
+read -r -a SEEDS <<< "${SYNTHETIC_SEEDS:-20260804}"
 REGOLITH_MODELS=(space weathering_taylor)
 
 TASK_ID="${SLURM_ARRAY_TASK_ID:?Run this file with sbatch as an array job}"
@@ -67,7 +67,7 @@ python -u "${PROJECT_DIR}/generate_synthetic_topography.py" \
   --spacing "${SPACING_VALUE}" \
   --iterations "${ITERATIONS:-1000}" \
   --timestep "${TIMESTEP:-250}" \
-  --refinement-factor "${REFINEMENT_FACTOR:-2}" \
+  --refinement-factor "${REFINEMENT_FACTOR:-4}" \
   --uplift-rate "${UPLIFT_RATE:-0.001}" \
   --rock-erodibility "${ROCK_ERODIBILITY:-2.5e-5}" \
   --sediment-erodibility "${SEDIMENT_ERODIBILITY:-2.5e-5}" \
@@ -80,4 +80,3 @@ python -u "${PROJECT_DIR}/generate_synthetic_topography.py" \
   --seed "${SEED}" \
   --regolith-model "${REGOLITH_MODEL}" \
   --output "${OUTPUT_DIR}/${OUTPUT_BASENAME}"
-

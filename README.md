@@ -516,6 +516,7 @@ Each generation run now writes a matched terrain triplet plus provenance:
 | `synthetic_landlab_600x800_30m.asc` | Elevation input consumed by the model CLI |
 | `synthetic_landlab_600x800_30m_soil_depth.asc` | Process-derived soil/sediment thickness paired with the elevation |
 | `synthetic_landlab_600x800_30m_bedrock_elevation.asc` | Bedrock elevation satisfying surface = bedrock + soil |
+| `synthetic_landlab_600x800_30m_preview.png` | Hillshaded elevation preview generated without a display |
 | `synthetic_landlab_600x800_30m.json` | Generator settings, provenance, dimensions, relief, slope, soil, and drainage diagnostics |
 
 Regenerate it, inspect all generator options, or request a different size or

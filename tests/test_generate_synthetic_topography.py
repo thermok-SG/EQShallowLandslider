@@ -3,6 +3,7 @@ import pytest
 
 from generate_synthetic_topography import (
     generate_mountain_catchment,
+    write_dem_preview,
     write_esri_ascii,
 )
 
@@ -70,13 +71,24 @@ def test_space_regolith_preserves_matched_soil_and_bedrock_fields():
     grid, stats = generate_mountain_catchment(
         40, 40, iterations=2, refinement_factor=2, regolith_model="space"
     )
-
     assert stats["regolith_model"] == "space"
     assert np.all(grid.at_node["soil__depth"] >= 0)
     assert np.allclose(
         grid.at_node["topographic__elevation"],
         grid.at_node["bedrock__elevation"] + grid.at_node["soil__depth"],
     )
+
+
+def test_write_dem_preview_creates_png_without_a_display(tmp_path):
+    grid, _ = generate_mountain_catchment(
+        40, 40, iterations=1, refinement_factor=2
+    )
+    output = tmp_path / "terrain_preview.png"
+
+    write_dem_preview(output, grid, title="Test terrain", dpi=72)
+
+    assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert output.stat().st_size > 1_000
 
 
 def test_weathering_taylor_regolith_is_reproducible_and_process_derived():

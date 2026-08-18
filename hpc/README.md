@@ -140,17 +140,14 @@ executes it from there and writes all large products through `hpc/workspace`.
 The `_HPC` or scratch workspace therefore contains data and results, not a
 second copy of the application code.
 
-The default array contains three seeds paired across the SPACE-only and
-weathering–Taylor regolith models:
+The default array uses the bundled landscape seed and pairs it across the
+SPACE-only and weathering–Taylor regolith models. Refinement factor 4 matches
+the bundled landscape's 120 m evolution grid and 30 m output grid:
 
 | Task | Seed | Regolith model |
 |---:|---:|---|
 | 0 | 20260804 | `space` |
 | 1 | 20260804 | `weathering_taylor` |
-| 2 | 20260805 | `space` |
-| 3 | 20260805 | `weathering_taylor` |
-| 4 | 20260806 | `space` |
-| 5 | 20260806 | `weathering_taylor` |
 
 Submit it from the main repository root:
 
@@ -161,7 +158,7 @@ sbatch hpc/slurm/generate_synthetic_topography.sbatch
 Outputs are written beneath
 `hpc/workspace/input_data/dem/synthetic_ensemble/`. Each realization contains
 a topographic-elevation raster, matching soil-depth and bedrock-elevation
-rasters, and JSON provenance.
+rasters, a hillshaded elevation PNG, and JSON provenance.
 
 Override the seeds and array range together when expanding the experiment.
 There must be two tasks per seed; the optional percent suffix limits concurrent

@@ -4,8 +4,8 @@
 The generator evolves bedrock and sediment on a coarse Landlab grid using D8
 priority-flood routing and ``SpaceLargeScaleEroder``, then cubic-resamples the
 result to the requested model resolution. It writes matched ESRI ASCII
-topographic-elevation, soil-depth, and bedrock-elevation grids plus a JSON
-provenance/diagnostics file. The default command is::
+topographic-elevation, soil-depth, and bedrock-elevation grids, a hillshaded
+PNG preview, and a JSON provenance/diagnostics file. The default command is::
 
     python generate_synthetic_topography.py
 
@@ -322,6 +322,59 @@ def write_esri_ascii(
         )
 
 
+def write_dem_preview(path, grid, title="Synthetic topography", dpi=180):
+    """Write a headless hillshaded elevation preview as a PNG image."""
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import LightSource, Normalize
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    elevation = grid.at_node["topographic__elevation"].reshape(grid.shape)
+    extent_km = (
+        0.0,
+        (grid.number_of_node_columns - 1) * grid.dx / 1000.0,
+        0.0,
+        (grid.number_of_node_rows - 1) * grid.dy / 1000.0,
+    )
+    terrain_cmap = plt.get_cmap("terrain")
+    shaded_elevation = LightSource(azdeg=315, altdeg=35).shade(
+        elevation,
+        cmap=terrain_cmap,
+        vert_exag=1.0,
+        dx=grid.dx,
+        dy=grid.dy,
+        blend_mode="soft",
+    )
+
+    figure, axis = plt.subplots(figsize=(10, 7.5), constrained_layout=True)
+    axis.imshow(
+        shaded_elevation,
+        origin="lower",
+        extent=extent_km,
+        interpolation="nearest",
+    )
+    axis.set(
+        title=title,
+        xlabel="Easting (km)",
+        ylabel="Northing (km)",
+        aspect="equal",
+    )
+    elevation_scale = ScalarMappable(
+        norm=Normalize(vmin=float(elevation.min()), vmax=float(elevation.max())),
+        cmap=terrain_cmap,
+    )
+    elevation_scale.set_array(elevation)
+    figure.colorbar(
+        elevation_scale, ax=axis, shrink=0.82, label="Elevation (m)"
+    )
+    figure.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -437,18 +490,26 @@ def main(argv=None):
     write_esri_ascii(output_path, grid)
     soil_path = output_path.with_name(f"{output_path.stem}_soil_depth.asc")
     bedrock_path = output_path.with_name(f"{output_path.stem}_bedrock_elevation.asc")
+    preview_path = output_path.with_name(f"{output_path.stem}_preview.png")
     write_esri_ascii(soil_path, grid, field_name="soil__depth")
     write_esri_ascii(bedrock_path, grid, field_name="bedrock__elevation")
+    write_dem_preview(
+        preview_path,
+        grid,
+        title=f"Synthetic topography — {args.regolith_model.replace('_', ' ')}",
+    )
     stats["outputs"] = {
         "topographic_elevation": str(output_path),
         "soil_depth": str(soil_path),
         "bedrock_elevation": str(bedrock_path),
+        "preview_png": str(preview_path),
     }
     metadata_path = output_path.with_suffix(".json")
     metadata_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {output_path} ({stats['shape'][0]} x {stats['shape'][1]} cells)")
     print(f"Wrote {soil_path}")
     print(f"Wrote {bedrock_path}")
+    print(f"Wrote {preview_path}")
     print(f"Wrote {metadata_path}")
     print(json.dumps(stats, indent=2))
 
