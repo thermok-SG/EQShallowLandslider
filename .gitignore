@@ -14,6 +14,7 @@ analysis_output/
 !input_data/dem/*.asc
 *.tif
 *.code-workspace
+presentation_figures.py
 
 # HPC data workspace and Slurm logs are machine-local, not source files.
 /hpc/workspace

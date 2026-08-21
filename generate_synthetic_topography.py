@@ -320,7 +320,7 @@ def write_esri_ascii(path, grid, field_name="topographic__elevation"):
 
 
 def write_dem_preview(path, grid, title="Synthetic topography", dpi=180):
-    """Write a headless hillshaded elevation preview as a PNG image."""
+    """Write a headless four-panel terrain diagnostic as a PNG image."""
     import matplotlib
 
     matplotlib.use("Agg", force=True)
@@ -331,6 +331,18 @@ def write_dem_preview(path, grid, title="Synthetic topography", dpi=180):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     elevation = grid.at_node["topographic__elevation"].reshape(grid.shape)
+    soil_depth = grid.at_node["soil__depth"].reshape(grid.shape)
+    slope = np.degrees(
+        grid.calc_slope_at_node(
+            grid.at_node["topographic__elevation"], method="Horn"
+        )
+    ).reshape(grid.shape)
+    if "drainage_area" not in grid.at_node:
+        raise ValueError("DEM preview requires the drainage_area field")
+    drainage_area = grid.at_node["drainage_area"].reshape(grid.shape)
+    log_drainage_area = np.log10(
+        np.maximum(drainage_area, grid.dx * grid.dy)
+    )
     extent_km = (
         0.0,
         (grid.number_of_node_columns - 1) * grid.dx / 1000.0,
@@ -347,27 +359,94 @@ def write_dem_preview(path, grid, title="Synthetic topography", dpi=180):
         blend_mode="soft",
     )
 
-    figure, axis = plt.subplots(figsize=(10, 7.5), constrained_layout=True)
-    axis.imshow(
+    core = grid.core_nodes
+    soil_limit = float(np.percentile(grid.at_node["soil__depth"][core], 99))
+    slope_limit = float(np.percentile(slope.ravel()[core], 99))
+    if soil_limit <= 0.0:
+        soil_limit = max(float(soil_depth.max()), 1.0)
+    if slope_limit <= 0.0:
+        slope_limit = max(float(slope.max()), 1.0)
+
+    figure, axes = plt.subplots(
+        2, 2, figsize=(14, 10), constrained_layout=True, sharex=True, sharey=True
+    )
+    elevation_axis, soil_axis, slope_axis, drainage_axis = axes.ravel()
+
+    elevation_axis.imshow(
         shaded_elevation,
         origin="lower",
         extent=extent_km,
         interpolation="nearest",
     )
-    axis.set(
-        title=title,
-        xlabel="Easting (km)",
-        ylabel="Northing (km)",
-        aspect="equal",
-    )
+    elevation_axis.set_title("Elevation and hillshade")
     elevation_scale = ScalarMappable(
         norm=Normalize(vmin=float(elevation.min()), vmax=float(elevation.max())),
         cmap=terrain_cmap,
     )
     elevation_scale.set_array(elevation)
     figure.colorbar(
-        elevation_scale, ax=axis, shrink=0.82, label="Elevation (m)"
+        elevation_scale,
+        ax=elevation_axis,
+        shrink=0.82,
+        label="Elevation (m)",
     )
+
+    soil_image = soil_axis.imshow(
+        soil_depth,
+        origin="lower",
+        extent=extent_km,
+        cmap="YlGnBu",
+        vmin=0.0,
+        vmax=soil_limit,
+        interpolation="nearest",
+    )
+    soil_axis.set_title(f"Soil depth (maximum {soil_depth.max():.2f} m)")
+    figure.colorbar(
+        soil_image,
+        ax=soil_axis,
+        shrink=0.82,
+        label="Soil depth (m; colours capped at p99)",
+    )
+
+    slope_image = slope_axis.imshow(
+        slope,
+        origin="lower",
+        extent=extent_km,
+        cmap="magma",
+        vmin=0.0,
+        vmax=slope_limit,
+        interpolation="nearest",
+    )
+    slope_axis.set_title(f"Slope (maximum {slope.max():.1f}°)")
+    figure.colorbar(
+        slope_image,
+        ax=slope_axis,
+        shrink=0.82,
+        label="Slope (degrees; colours capped at p99)",
+    )
+
+    drainage_image = drainage_axis.imshow(
+        log_drainage_area,
+        origin="lower",
+        extent=extent_km,
+        cmap="Blues",
+        interpolation="nearest",
+    )
+    drainage_axis.set_title("Drainage area")
+    figure.colorbar(
+        drainage_image,
+        ax=drainage_axis,
+        shrink=0.82,
+        label="log10 drainage area (m²)",
+    )
+
+    for axis in axes[:, 0]:
+        axis.set_ylabel("Northing (km)")
+    for axis in axes[-1, :]:
+        axis.set_xlabel("Easting (km)")
+    for axis in axes.ravel():
+        axis.set_aspect("equal")
+    figure.suptitle(title, fontsize=16)
     figure.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
 

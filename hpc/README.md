@@ -158,7 +158,7 @@ sbatch hpc/slurm/generate_synthetic_topography.sbatch
 Outputs are written beneath
 `hpc/workspace/input_data/dem/synthetic_ensemble/`. Each realization contains
 a topographic-elevation raster, matching soil-depth and bedrock-elevation
-rasters, a hillshaded elevation PNG, and JSON provenance.
+rasters, a four-panel elevation/soil/slope/drainage PNG, and JSON provenance.
 
 Override the seeds and array range together when expanding the experiment.
 There must be two tasks per seed; the optional percent suffix limits concurrent
