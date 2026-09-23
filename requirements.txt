@@ -3,7 +3,6 @@ landlab >= 2.7
 numpy >= 2.0
 pandas
 scipy
-scikit-image
 richdem
 
 # Analysis-ready v1.2 outputs

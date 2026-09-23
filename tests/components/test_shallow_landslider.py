@@ -6,6 +6,7 @@ from landlab import RasterModelGrid
 from landlab.components import PriorityFloodFlowRouter
 from landlab.field.errors import FieldError
 from components.shallow_landslider import ShallowLandslider, ShallowLandslideRunout
+from components.shallow_landslider.shallow_landslide_component import _regionprops
 
 
 def make_grid(ny=5, nx=5, spacing=10.0, add_soil=False):
@@ -79,6 +80,34 @@ def test_pga_fields_created_correctly():
     assert np.all(np.isnan(v[mg.boundary_nodes]))
 
 
+def test_initialization_only_creates_public_output_field():
+    mg = make_grid(add_soil=True)
+    mg.add_zeros("bedrock__elevation", at="node")
+    mg.add_zeros("earthquake__horizontal_pga", at="node")
+    mg.add_zeros("earthquake__vertical_pga", at="node")
+    fields_before = set(mg.at_node)
+
+    ShallowLandslider(mg)
+
+    assert set(mg.at_node) - fields_before == {"landslide__selected_labels"}
+
+
+def test_regionprops_matches_expected_geometry():
+    labels = np.zeros((5, 6), dtype=int)
+    labels[1:3, 2:5] = 2
+
+    (region,) = _regionprops(labels)
+
+    assert region.label == 2
+    assert region.bbox == (1, 2, 3, 5)
+    assert region.area == 6.0
+    assert np.allclose(region.centroid, (1.5, 3.0))
+    assert np.isclose(region.axis_major_length, 4.0 * np.sqrt(2.0 / 3.0))
+    assert np.isclose(region.axis_minor_length, 2.0)
+    assert np.isclose(region.orientation, np.pi / 2.0)
+    assert np.isclose(region.eccentricity, np.sqrt(5.0 / 8.0))
+
+
 def test_run_one_step_pipeline():
     mg = make_grid(add_soil=True)
 
@@ -97,20 +126,11 @@ def test_run_one_step_pipeline():
 
     comp.run_one_step()
 
-    expected_fields = [
-        "landslide__factor_of_safety",
-        "landslide__critical_acceleration",
-        "landslide__driving_minus_critical_acceleration",
-        "landslide__unstable_mask",
-        "landslide__region_labels",
-        "landslide__aspect_subgroup_labels",
-        "landslide__selected_labels",
-    ]
-    for f in expected_fields:
-        assert f in mg.at_node
-
+    assert {name for name in mg.at_node if name.startswith("landslide__")} == {
+        "landslide__selected_labels"
+    }
     sel = mg.at_node["landslide__selected_labels"]
-    asp = mg.at_node["landslide__aspect_subgroup_labels"]
+    asp = comp.results["aspect_labels"]
     assert set(np.unique(sel)) <= set(np.unique(asp))
 
 
@@ -128,7 +148,7 @@ def test_run_one_step_without_measured_width_data():
 
     assert comp.results["split_labels"] is None
     assert "landslide__dimension_split_labels" not in mg.at_node
-    assert "landslide__aspect_subgroup_labels" in mg.at_node
+    assert comp.results["aspect_labels"] is not None
     assert "landslide__selected_labels" in mg.at_node
 
 
@@ -152,7 +172,7 @@ def test_runout_updates_soil_depth_when_enabled():
 
     comp.run_one_step()
 
-    assert "landslide__newmark_displacement" in mg.at_node
+    assert comp.results["newmark"] is not None
     assert np.any(mg.at_node["landslide__selected_labels"] > 0)
     assert np.any(np.abs(mg.at_node["soil__depth"] - soil_before) > 0.0)
     assert hasattr(comp._runout, "_last_erosion")
@@ -282,8 +302,8 @@ def test_aspect_labels_refine_region_labels():
     comp = ShallowLandslider(mg, cohesion_eff=15, angle_int_frict=30)
     comp.run_one_step()
 
-    reg = mg.at_node["landslide__region_labels"]
-    asp = mg.at_node["landslide__aspect_subgroup_labels"]
+    reg = comp.results["filled_labels"]
+    asp = comp.results["aspect_labels"]
 
     # Aspect subgrouping should not introduce labels with no parent region.
     assert set(np.unique(asp)) - {0} <= set(np.unique(reg)) - {0}
@@ -296,8 +316,8 @@ def test_dimension_split_labels_consistency():
     )
     comp.run_one_step()
 
-    asp = mg.at_node["landslide__aspect_subgroup_labels"]
-    dim = mg.at_node["landslide__dimension_split_labels"]
+    asp = comp.results["aspect_labels"]
+    dim = comp.results["split_labels"]
 
     # Split labels should refine but never contradict aspect groups
     assert set(np.unique(dim)) - {0} <= set(np.unique(asp)) - {0}

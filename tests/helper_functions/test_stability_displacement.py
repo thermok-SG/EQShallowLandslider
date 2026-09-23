@@ -174,7 +174,7 @@ def test_newmark_displacement_threshold_behavior():
     )
 
     comp.run_one_step()
-    disp = mg.at_node["landslide__newmark_displacement"]
+    disp = comp.results["newmark"]
 
     # All high displacement nodes must exceed threshold
     for idx in comp._high_disp_nodes:

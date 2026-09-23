@@ -26,7 +26,7 @@ This tool is intended for **geomorphologists, hazard modellers, and Earth scient
 ### **Requirements**
 - Python ≥ 3.9
 - [Landlab](https://landlab.readthedocs.io/)
-- NumPy, Pandas, SciPy, scikit-image
+- NumPy, Pandas, SciPy
 
 Create the provided environment:
 
@@ -683,16 +683,16 @@ You can control simulation parameters via:
 ---
 
 ## **Outputs**
-After `run_one_step()`, the component populates:
-- `landslide__factor_of_safety`
-- `landslide__critical_acceleration`
-- `landslide__driving_minus_critical_acceleration`
-- `landslide__unstable_mask`
-- `landslide__region_labels`
-- `landslide__aspect_subgroup_labels`
-- `landslide__dimension_split_labels` when KDE-informed splitting is enabled
+After `run_one_step()`, the component adds only its public output field:
 - `landslide__selected_labels`
-- `landslide__newmark_displacement` when displacement is enabled
+
+Intermediate and diagnostic arrays are exposed through `ls.results` instead
+of being copied into grid fields. These include factor of safety, critical and
+driving acceleration, the unstable mask, each label stage, and optional
+Newmark displacement. This keeps large model grids lean while retaining all
+diagnostics for saving and analysis.
+
+When runout is enabled, its own state-changing output fields are also present:
 - `landslide__erosion` when runout is enabled
 - `landslide__deposition` when runout is enabled
 - `landslide__soil_depth_change` when runout is enabled

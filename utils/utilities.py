@@ -1317,7 +1317,7 @@ def _git_provenance():
 
 
 def _software_versions():
-    packages = ("landlab", "numpy", "pandas", "scipy", "scikit-image", "richdem")
+    packages = ("landlab", "numpy", "pandas", "scipy", "richdem")
     versions = {}
     for package in packages:
         try:

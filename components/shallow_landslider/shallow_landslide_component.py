@@ -22,7 +22,6 @@ from scipy.ndimage import (
     binary_dilation as _binary_dilation,
     generate_binary_structure as _generate_binary_structure,
 )
-from skimage.measure import regionprops as _regionprops
 from scipy.special import expit as _expit
 # from joblib import Parallel, delayed
 
@@ -35,6 +34,102 @@ import time as _time
 from contextlib import contextmanager as _contextmanager
 
 logger = logging.getLogger("landslider")
+
+
+class _RegionProperties:
+    """Small subset of ``skimage.measure.regionprops`` used internally.
+
+    Keeping these measurements local avoids requiring scikit-image merely for
+    connected-region geometry. The formulas match the 2-D, unit-spacing
+    behavior needed by the splitting and reporting routines below.
+    """
+
+    def __init__(self, labels: np.ndarray, label: int, region_slice: tuple[slice, ...]):
+        self.label = label
+        self._labels = labels
+        self._slice = region_slice
+        self._coords = None
+        self._inertia_tensor = None
+        self._inertia_tensor_eigvals = None
+
+    @property
+    def bbox(self) -> tuple[int, int, int, int]:
+        return (
+            self._slice[0].start,
+            self._slice[1].start,
+            self._slice[0].stop,
+            self._slice[1].stop,
+        )
+
+    @property
+    def coords(self) -> np.ndarray:
+        if self._coords is None:
+            local_coords = np.argwhere(self._labels[self._slice] == self.label)
+            self._coords = local_coords + np.array(
+                [self._slice[0].start, self._slice[1].start]
+            )
+        return self._coords
+
+    @property
+    def area(self) -> float:
+        return float(len(self.coords))
+
+    @property
+    def centroid(self) -> tuple[float, float]:
+        return tuple(self.coords.mean(axis=0))
+
+    @property
+    def inertia_tensor(self) -> np.ndarray:
+        if self._inertia_tensor is None:
+            centered = self.coords.astype(float) - self.coords.mean(axis=0)
+            variance_row, variance_col = np.mean(centered**2, axis=0)
+            covariance = np.mean(centered[:, 0] * centered[:, 1])
+            self._inertia_tensor = np.array(
+                [[variance_col, -covariance], [-covariance, variance_row]]
+            )
+        return self._inertia_tensor
+
+    @property
+    def inertia_tensor_eigvals(self) -> np.ndarray:
+        if self._inertia_tensor_eigvals is None:
+            eigvals = np.linalg.eigvalsh(self.inertia_tensor)
+            self._inertia_tensor_eigvals = np.clip(eigvals[::-1], 0.0, None)
+        return self._inertia_tensor_eigvals
+
+    @property
+    def axis_major_length(self) -> float:
+        return float(4.0 * np.sqrt(self.inertia_tensor_eigvals[0]))
+
+    @property
+    def axis_minor_length(self) -> float:
+        return float(4.0 * np.sqrt(self.inertia_tensor_eigvals[-1]))
+
+    @property
+    def orientation(self) -> float:
+        a, b, _, c = self.inertia_tensor.flat
+        if a == c:
+            return np.pi / 4.0 if b < 0 else -np.pi / 4.0
+        return float(0.5 * np.arctan2(-2.0 * b, c - a))
+
+    @property
+    def eccentricity(self) -> float:
+        major, minor = self.inertia_tensor_eigvals
+        if major == 0.0:
+            return 0.0
+        return float(np.sqrt(1.0 - minor / major))
+
+
+def _regionprops(labels: np.ndarray) -> list[_RegionProperties]:
+    """Return the properties used by this component for each nonzero label."""
+    labels = np.asarray(labels)
+    if labels.ndim != 2:
+        raise ValueError("Region properties require a 2-D label array")
+
+    regions = []
+    for label, region_slice in enumerate(_nd.find_objects(labels), start=1):
+        if region_slice is not None:
+            regions.append(_RegionProperties(labels, label, region_slice))
+    return regions
 
 @_contextmanager
 def _log_stage(name: str):
@@ -115,63 +210,8 @@ class ShallowLandslider(Component):
             "optional": True,
             "doc": "Vertical PGA (multiples of g).",
         },
-        # Outputs
-        "landslide__factor_of_safety": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": float,
-            "units": "-",
-            "optional": False,
-            "doc": "Static factor of safety (FoS).",
-        },
-        "landslide__critical_acceleration": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": float,
-            "units": "m s^-2",
-            "optional": False,
-            "doc": "Critical transient acceleration (a_c).",
-        },
-        "landslide__driving_minus_critical_acceleration": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": float,
-            "units": "m s^-2",
-            "optional": False,
-            "doc": "a_driving - a_critical (positive indicates potential sliding).",
-        },
-        "landslide__unstable_mask": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": bool,
-            "units": "-",
-            "optional": False,
-            "doc": "Boolean mask of nodes where a_driving > a_critical.",
-        },
-        "landslide__region_labels": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": int,
-            "units": "-",
-            "optional": False,
-            "doc": "Connected-component labels of unstable regions (0 for background).",
-        },
-        "landslide__aspect_subgroup_labels": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": int,
-            "units": "-",
-            "optional": False,
-            "doc": "Labels after splitting unstable regions by aspect zones.",
-        },
-        "landslide__dimension_split_labels": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": int,
-            "units": "-",
-            "optional": True,
-            "doc": "Labels after KDE-informed width-based splitting.",
-        },
+        # The selected candidates are the only persistent component output.
+        # Intermediate arrays remain available through ``results``.
         "landslide__selected_labels": {
             "intent": "out",
             "mapping": "node",
@@ -179,14 +219,6 @@ class ShallowLandslider(Component):
             "units": "-",
             "optional": False,
             "doc": "Labels of selected candidate landslides (0 for unselected).",
-        },
-        "landslide__newmark_displacement": {
-            "intent": "out",
-            "mapping": "node",
-            "dtype": float,
-            "units": "m",
-            "optional": True,
-            "doc": "Newmark displacement (optional).",
         },
     }
 
@@ -427,7 +459,7 @@ class ShallowLandslider(Component):
                         f"Runout simulation requested, but flow routing fields are missing: {missing}. You must run the flow routing before enabling runout"
                     )
 
-                disp = self.grid.at_node["landslide__newmark_displacement"]
+                disp = self._newmark
 
                 failed_nodes = np.where(
                     np.isfinite(disp) & (disp > self.displacement_threshold)
@@ -490,12 +522,8 @@ class ShallowLandslider(Component):
         """
         Compute per-node factor of safety and transient/drive accelerations.
 
-        Writes
-        ------
-        - `landslide__factor_of_safety`
-        - `landslide__critical_acceleration`
-        - `landslide__driving_minus_critical_acceleration`
-        - `landslide__unstable_mask`
+        Diagnostics are cached on the component and exposed through
+        :attr:`results`; they are not added to the grid as fields.
         """
 
         with _log_stage("_compute_stability"):
@@ -512,8 +540,6 @@ class ShallowLandslider(Component):
                 self.angle_int_frict,
                 submerged_soil_proportion=self.submerged_soil_proportion,
             )
-            self.grid.at_node["landslide__factor_of_safety"] = self._fos
-
             fos_valid = self._fos[np.isfinite(self._fos)]
             
             if fos_valid.size > 0:
@@ -538,13 +564,9 @@ class ShallowLandslider(Component):
                 a_v=self._pga_v * self.g,
             )
             self._a_transient, self._a_driving, self._a_diff = a_c, a_s, a_diff
-            self.grid.at_node["landslide__critical_acceleration"] = a_c
-            self.grid.at_node["landslide__driving_minus_critical_acceleration"] = a_diff
-
             unstable = a_s > a_c
             unstable[self.grid.boundary_nodes] = False
             self._unstable_mask = unstable
-            self.grid.at_node["landslide__unstable_mask"] = np.asarray(unstable, dtype=bool)
 
             n_unstable = int(np.sum(unstable))
             logger.info(
@@ -556,15 +578,12 @@ class ShallowLandslider(Component):
         """
         Label contiguous unstable regions (connected components).
 
-        Writes
-        ------
-        - `landslide__region_labels`
+        Raw labels are cached in :attr:`results` rather than added to the grid.
         """
         with _log_stage("_identify_regions"):
             sliding_bool = self._unstable_mask.reshape(self.grid.shape)
             labels, n_regions = self._calculate_regions(sliding_bool, connect_val=8)
             self._labels = labels.reshape(self.grid.number_of_nodes)
-            self.grid.at_node["landslide__region_labels"] = self._labels
 
             sizes = np.bincount(self._labels)[1:]  # exclude background label 0
             if len(sizes) > 0:
@@ -649,10 +668,8 @@ class ShallowLandslider(Component):
         """
         Split region labels by aspect zones and optionally by KDE-informed width.
 
-        Writes
-        ------
-        - `landslide__aspect_subgroup_labels`
-        - `landslide__dimension_split_labels` (if splitting is configured)
+        Intermediate labels are cached in :attr:`results`; only final selected
+        labels are published as a Landlab grid field.
         """
         with _log_stage("_filter_by_aspect_and_split"):
             region_labels = (
@@ -675,7 +692,6 @@ class ShallowLandslider(Component):
                 verbose=self.verbose,
             )
             self._aspect_labels = aspect_subgroups.reshape(self.grid.number_of_nodes)
-            self.grid.at_node["landslide__aspect_subgroup_labels"] = self._aspect_labels
 
             n_after_aspect = int(np.max(self._aspect_labels))
             logger.info(
@@ -703,7 +719,6 @@ class ShallowLandslider(Component):
                     verbose=self.verbose,
                 )
                 self._split_labels = split_labels.reshape(self.grid.number_of_nodes)
-                self.grid.at_node["landslide__dimension_split_labels"] = self._split_labels
                 n_after_kde = int(np.max(self._split_labels))
                 logger.info(
                     f"  After KDE split: {n_after_kde:,} subgroups "
@@ -857,10 +872,8 @@ class ShallowLandslider(Component):
         time_shaking : float
             Shaking duration (s) used to integrate displacement.
 
-        Writes
-        ------
-        - `landslide__newmark_displacement`
-        - Stores list of node indices exceeding `displacement_threshold`
+        The displacement array and nodes exceeding ``displacement_threshold``
+        are available through :attr:`results`.
         """
         with _log_stage("_compute_displacement"):
             logger.info(f"  time_shaking={time_shaking}s | threshold={self.displacement_threshold}m")
@@ -875,7 +888,6 @@ class ShallowLandslider(Component):
                 time_shaking_2d=time_map,
             )
             self._newmark = newmark
-            self.grid.at_node["landslide__newmark_displacement"] = newmark
 
             mask = np.zeros(self.grid.number_of_nodes, dtype=bool)
             mask[newmark > self.displacement_threshold] = True
@@ -1414,14 +1426,14 @@ class ShallowLandslider(Component):
             props["bbox_width"][i] = (max_col - min_col) * self.grid.dx
             props["bbox_area"][i] = props["bbox_height"][i] * props["bbox_width"][i]
 
-            # Region geometry (reuse skimage-provided axes/orientation)
+            # Region geometry from the component's lightweight region helper.
             # Scale axes by dx to approximate physical lengths
             # (keeps behavior consistent with earlier approach using pixel geometry)
             props["major_axis_length"][i] = (
-                getattr(r, "major_axis_length", 0.0) * self.grid.dx
+                r.axis_major_length * self.grid.dx
             )
             props["minor_axis_length"][i] = (
-                getattr(r, "minor_axis_length", 0.0) * self.grid.dx
+                r.axis_minor_length * self.grid.dx
             )
             if props["minor_axis_length"][i] == 0:
                 props["minor_axis_length"][i] += 1.0  # epsilon to avoid /0 later

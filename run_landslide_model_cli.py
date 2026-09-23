@@ -769,15 +769,11 @@ def main():
         )
         ls_tile._compute_stability()  # <<< stability only
 
-        fos_tile = mg_tile.at_node["landslide__factor_of_safety"].reshape(tile_z.shape)
+        fos_tile = ls_tile._fos.reshape(tile_z.shape)
         critical_tile = ls_tile._a_transient.reshape(tile_z.shape)
         driving_tile = ls_tile._a_driving.reshape(tile_z.shape)
-        diff_tile = mg_tile.at_node[
-            "landslide__driving_minus_critical_acceleration"
-        ].reshape(tile_z.shape)
-        unstable_tile = mg_tile.at_node["landslide__unstable_mask"].reshape(
-            tile_z.shape
-        )
+        diff_tile = ls_tile._a_diff.reshape(tile_z.shape)
+        unstable_tile = ls_tile._unstable_mask.reshape(tile_z.shape)
         fos_tile[tile_mask] = np.nan
         critical_tile[tile_mask] = np.nan
         driving_tile[tile_mask] = np.nan
@@ -819,15 +815,6 @@ def main():
     mg_global.add_field("topographic__elevation", z_full_2d.ravel(), at="node")
     mg_global.add_field("nodata__mask", nodata_full_2d.ravel(), at="node")
     mg_global.status_at_node[nodata_full_2d.ravel()] = mg_global.BC_NODE_IS_CLOSED
-    mg_global.add_field("landslide__factor_of_safety", global_fos.ravel(), at="node")
-    mg_global.add_field(
-        "landslide__critical_acceleration", global_critical.ravel(), at="node"
-    )
-    mg_global.add_field(
-        "landslide__driving_minus_critical_acceleration", global_diff.ravel(), at="node"
-    )
-    mg_global.add_field("landslide__unstable_mask", global_unstable.ravel(), at="node")
-
     # Reuse the soil depths that produced the tile stability results. Recomputing
     # curvature here would allocate full-DEM RichDEM arrays and defeat chunking.
     mg_global.add_field(
@@ -894,9 +881,7 @@ def main():
     ls_global._a_transient = global_critical.ravel()
     ls_global._a_driving = global_driving.ravel()
     ls_global._a_diff = global_diff.ravel()
-    ls_global.grid.at_node["landslide__unstable_mask"] = global_unstable.ravel()
     ls_global._labels = global_labels.ravel()
-    ls_global.grid.at_node["landslide__region_labels"] = global_labels.ravel()
 
     # Fill holes only after global labels have been assembled. Performing this
     # operation within individual tiles would make cavities crossing tile
