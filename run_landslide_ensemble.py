@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Expand and run a reproducible Cartesian parameter ensemble.
+"""Expand and run a reproducible parameter ensemble.
 
 An ordinary model YAML can contain an optional top-level ``ensemble`` block
-that maps existing dotted configuration paths to lists of values. Every
-Cartesian combination is validated, written as a standalone YAML, and run
+that maps existing dotted configuration paths to lists of values. It may also
+define named ``parameter_sets`` for targeted, non-Cartesian scenarios. Every
+combination is validated, written as a standalone YAML, and run
 through ``run_landslide_model_cli.py``. A digest stored in each run manifest
 makes the launcher restartable: completed configurations are skipped unless
 ``--force`` is supplied.
@@ -159,6 +160,7 @@ def _split_combined_config(config, config_path):
         "output_dir",
         "log_dir",
         "parameters",
+        "parameter_sets",
     }
     unknown = set(spec) - allowed
     if unknown:
@@ -166,8 +168,52 @@ def _split_combined_config(config, config_path):
     return copy.deepcopy(spec), base
 
 
+def _normalise_parameter_sets(raw_sets, grid_paths):
+    """Validate named targeted scenarios and return ``(name, values)`` pairs."""
+    if raw_sets is None:
+        return [(None, {})]
+    if not isinstance(raw_sets, list) or not raw_sets:
+        raise ValueError("parameter_sets must be a non-empty list")
+
+    normalised = []
+    names = set()
+    seed_paths = {"random_seed", "pga.seed"}
+    for index, raw_set in enumerate(raw_sets):
+        if not isinstance(raw_set, dict):
+            raise ValueError(f"parameter_sets[{index}] must be a mapping")
+        scenario = raw_set.get("scenario")
+        if not isinstance(scenario, str) or not scenario.strip():
+            raise ValueError(
+                f"parameter_sets[{index}].scenario must be a non-empty string"
+            )
+        scenario = _safe_name(scenario)
+        if scenario in names:
+            raise ValueError(f"Duplicate parameter-set scenario: {scenario!r}")
+        names.add(scenario)
+
+        values = {key: value for key, value in raw_set.items() if key != "scenario"}
+        if not values:
+            raise ValueError(f"Parameter set {scenario!r} contains no parameters")
+        if not all(isinstance(path, str) for path in values):
+            raise ValueError("Every parameter-set path must be a string")
+        swept_seeds = seed_paths.intersection(values)
+        if swept_seeds:
+            raise ValueError(
+                "Random seeds are fixed for an ensemble; remove these paths from "
+                f"parameter_sets: {sorted(swept_seeds)}"
+            )
+        overlap = set(values).intersection(grid_paths)
+        if overlap:
+            raise ValueError(
+                f"Parameter set {scenario!r} overlaps the Cartesian grid: "
+                f"{sorted(overlap)}"
+            )
+        normalised.append((scenario, values))
+    return normalised
+
+
 def build_members(spec, spec_path):
-    """Expand a Cartesian parameter grid into validated member configurations."""
+    """Expand Cartesian values across optional named targeted parameter sets."""
     spec_path = Path(spec_path).resolve()
     spec, base = _split_combined_config(spec, spec_path)
     name = _safe_name(spec.get("name", spec_path.stem))
@@ -191,6 +237,9 @@ def build_members(spec, spec_path):
             raise ValueError("Every parameter path must be a string")
         if not isinstance(values, list) or not values:
             raise ValueError(f"Parameter {path!r} must contain a non-empty list")
+    parameter_sets = _normalise_parameter_sets(
+        spec.get("parameter_sets"), set(grid)
+    )
 
     output_dir = Path(spec.get("output_dir", base.get("output_dir", "./output")))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -200,17 +249,25 @@ def build_members(spec, spec_path):
         custom_log_dir.mkdir(parents=True, exist_ok=True)
 
     paths = list(grid)
-    combinations = itertools.product(*(grid[path] for path in paths))
     members = []
-    for index, values in enumerate(combinations):
-        parameters = dict(zip(paths, values))
+    experiments = (
+        (scenario, set_values, grid_values)
+        for scenario, set_values in parameter_sets
+        for grid_values in itertools.product(*(grid[path] for path in paths))
+    )
+    for index, (scenario, set_values, grid_values) in enumerate(experiments):
+        model_parameters = dict(set_values)
+        model_parameters.update(zip(paths, grid_values))
+        parameters = dict(model_parameters)
+        if scenario is not None:
+            parameters = {"scenario": scenario, **parameters}
         config = copy.deepcopy(base)
         config["random_seed"] = seed
         # Validate against the experiment root first. The member-specific path
         # is operational bookkeeping and is deliberately excluded from the
         # digest so moving an experiment does not change its scientific identity.
         config["output_dir"] = str(output_dir)
-        for path, value in parameters.items():
+        for path, value in model_parameters.items():
             _set_existing_path(config, path, value)
 
         config = prepare_config(config)
@@ -253,6 +310,7 @@ def build_members(spec, spec_path):
         "source_config": str(spec_path),
         "random_seed": seed,
         "parameters": grid,
+        "parameter_sets": spec.get("parameter_sets"),
         "member_count": len(members),
         "members": [
             {

@@ -86,6 +86,35 @@ def test_curvature_soil_respects_configured_maximum():
     assert np.allclose(soil[mg.core_nodes], 0.8)
 
 
+def test_drainage_area_relationship_can_decrease_toward_channels():
+    increasing_grid = make_grid()
+    decreasing_grid = make_grid()
+    drainage = np.arange(1, increasing_grid.number_of_nodes + 1, dtype=float)
+    increasing_grid.add_field("drainage_area", drainage, at="node")
+    decreasing_grid.add_field("drainage_area", drainage, at="node")
+
+    increasing = util.apply_soil_depth(
+        increasing_grid,
+        distribution="drainage_area",
+        drainage_transform="log",
+        drainage_relationship="increasing",
+        max_soil_depth=1.5,
+    )
+    decreasing = util.apply_soil_depth(
+        decreasing_grid,
+        distribution="drainage_area",
+        drainage_transform="log",
+        drainage_relationship="decreasing",
+        max_soil_depth=1.5,
+    )
+
+    core = increasing_grid.core_nodes
+    assert np.allclose(increasing[core] + decreasing[core], 1.5)
+    assert decreasing[core[np.argmin(drainage[core])]] > decreasing[
+        core[np.argmax(drainage[core])]
+    ]
+
+
 def test_piecewise_curvature_reaches_each_physical_regime():
     mg = RasterModelGrid((3, 5), xy_spacing=10.0)
     mg.add_zeros("topographic__elevation", at="node")

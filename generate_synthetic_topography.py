@@ -40,14 +40,53 @@ class _RawDefaultsHelpFormatter(
     """Preserve examples while displaying argument defaults."""
 
 
-def _mountain_belt_uplift(grid):
-    """Return normalized uplift highest along an elongated axial divide."""
+def _mountain_belt_uplift(
+    grid,
+    pattern="axial_sine",
+    background_fraction=0.0,
+    center_x_fraction=0.30,
+    center_y_fraction=0.50,
+    sigma_x_fraction=0.16,
+    sigma_y_fraction=0.55,
+):
+    """Return a normalized, spatially variable mountain-belt uplift field.
+
+    ``axial_sine`` preserves the original symmetric tutorial landscape.
+    ``southern_alps`` represents the first-order asymmetric rock-uplift field
+    of New Zealand's central Southern Alps: a narrow maximum offset toward the
+    western range front and a broader along-strike envelope. The returned
+    values are fractions of the configured maximum uplift rate.
+    """
+    if not 0.0 <= background_fraction <= 1.0:
+        raise ValueError("background_fraction must be between 0 and 1")
+    for name, value in (
+        ("center_x_fraction", center_x_fraction),
+        ("center_y_fraction", center_y_fraction),
+    ):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be between 0 and 1")
+    if sigma_x_fraction <= 0.0 or sigma_y_fraction <= 0.0:
+        raise ValueError("uplift sigma fractions must be positive")
+
     x_fraction = grid.node_x / grid.node_x.max()
     y_fraction = grid.node_y / grid.node_y.max()
-    uplift = np.sin(np.pi * x_fraction) * (
-        0.85 + 0.15 * np.sin(np.pi * y_fraction)
-    )
-    return uplift / uplift.max()
+    if pattern == "axial_sine":
+        shape = np.sin(np.pi * x_fraction) * (
+            0.85 + 0.15 * np.sin(np.pi * y_fraction)
+        )
+    elif pattern == "southern_alps":
+        cross_range = np.exp(
+            -0.5 * ((x_fraction - center_x_fraction) / sigma_x_fraction) ** 2
+        )
+        along_range = np.exp(
+            -0.5 * ((y_fraction - center_y_fraction) / sigma_y_fraction) ** 2
+        )
+        shape = cross_range * along_range
+    else:
+        raise ValueError("uplift_pattern must be 'axial_sine' or 'southern_alps'")
+
+    shape /= shape.max()
+    return background_fraction + (1.0 - background_fraction) * shape
 
 
 def _resample_to_fine_grid(source_grid, nrows, ncols, spacing, factor):
@@ -82,6 +121,12 @@ def generate_mountain_catchment(
     iterations=1000,
     timestep=250.0,
     uplift_rate=0.001,
+    uplift_background_rate=0.0,
+    uplift_pattern="axial_sine",
+    uplift_center_x_fraction=0.30,
+    uplift_center_y_fraction=0.50,
+    uplift_sigma_x_fraction=0.16,
+    uplift_sigma_y_fraction=0.55,
     rock_erodibility=2.5e-5,
     sediment_erodibility=2.5e-5,
     initial_soil_depth=0.5,
@@ -126,6 +171,10 @@ def generate_mountain_catchment(
         raise ValueError(
             "uplift_rate cannot be negative; erodibilities must be positive"
         )
+    if not 0.0 <= uplift_background_rate <= uplift_rate:
+        raise ValueError(
+            "uplift_background_rate must be between zero and uplift_rate"
+        )
     if initial_soil_depth < 0:
         raise ValueError("initial_soil_depth cannot be negative")
     if regolith_model not in {"space", "weathering_taylor"}:
@@ -157,7 +206,18 @@ def generate_mountain_catchment(
     elevation = source_grid.add_field(
         "topographic__elevation", bedrock + soil, at="node", copy=True
     )
-    uplift_pattern = _mountain_belt_uplift(source_grid)
+    uplift_shape = _mountain_belt_uplift(
+        source_grid,
+        pattern=uplift_pattern,
+        background_fraction=(
+            uplift_background_rate / uplift_rate if uplift_rate > 0.0 else 0.0
+        ),
+        center_x_fraction=uplift_center_x_fraction,
+        center_y_fraction=uplift_center_y_fraction,
+        sigma_x_fraction=uplift_sigma_x_fraction,
+        sigma_y_fraction=uplift_sigma_y_fraction,
+    )
+    source_uplift_rate = uplift_shape * uplift_rate
 
     flow = PriorityFloodFlowRouter(
         source_grid,
@@ -200,7 +260,7 @@ def generate_mountain_catchment(
 
     for _ in range(iterations):
         bedrock[source_grid.core_nodes] += (
-            uplift_pattern[source_grid.core_nodes] * uplift_rate * timestep
+            source_uplift_rate[source_grid.core_nodes] * timestep
         )
         elevation[:] = bedrock + soil
         flow.run_one_step()
@@ -214,6 +274,23 @@ def generate_mountain_catchment(
     fine_grid = _resample_to_fine_grid(
         source_grid, nrows, ncols, spacing, refinement_factor
     )
+    fine_uplift_shape = _mountain_belt_uplift(
+        fine_grid,
+        pattern=uplift_pattern,
+        background_fraction=(
+            uplift_background_rate / uplift_rate if uplift_rate > 0.0 else 0.0
+        ),
+        center_x_fraction=uplift_center_x_fraction,
+        center_y_fraction=uplift_center_y_fraction,
+        sigma_x_fraction=uplift_sigma_x_fraction,
+        sigma_y_fraction=uplift_sigma_y_fraction,
+    )
+    fine_grid.add_field(
+        "tectonic__uplift_rate",
+        fine_uplift_shape * uplift_rate,
+        at="node",
+        copy=True,
+    )
     elevation = fine_grid.at_node["topographic__elevation"]
     bedrock = fine_grid.at_node["bedrock__elevation"]
     soil = fine_grid.at_node["soil__depth"]
@@ -221,16 +298,21 @@ def generate_mountain_catchment(
     # Keep the lowest open-boundary elevation at the requested datum.
     elevation += outlet_elevation - float(elevation.min())
     bedrock[:] = elevation - soil
+    relief = float(np.ptp(elevation))
+    soil_min = float(soil.min())
+    soil_max = float(soil.max())
     if (
         not np.isfinite(elevation).all()
         or not np.isfinite(soil).all()
-        or float(np.ptp(elevation)) > 10_000.0
-        or float(soil.max()) > 100.0
-        or float(soil.min()) < -1.0e-8
+        or relief > 10_000.0
+        or soil_max > 100.0
+        or soil_min < -1.0e-8
     ):
         raise RuntimeError(
             "SPACE produced a nonphysical surface; reduce --timestep or adjust "
-            "the evolution parameters"
+            "the evolution parameters "
+            f"(relief={relief:.3g} m, soil_min={soil_min:.3g} m, "
+            f"soil_max={soil_max:.3g} m)"
         )
 
     # One fine-grid routing pass provides diagnostics at the actual model scale.
@@ -272,10 +354,17 @@ def generate_mountain_catchment(
             "timestep_years": float(timestep),
             "duration_years": float(iterations * timestep),
             "uplift_rate_m_per_year": float(uplift_rate),
+            "uplift_background_rate_m_per_year": float(uplift_background_rate),
             "rock_erodibility": float(rock_erodibility),
             "sediment_erodibility": float(sediment_erodibility),
             "initial_soil_depth_m": float(initial_soil_depth),
-            "uplift_pattern": "elongated axial sine belt",
+            "uplift_pattern": uplift_pattern,
+            "uplift_pattern_parameters": {
+                "center_x_fraction": float(uplift_center_x_fraction),
+                "center_y_fraction": float(uplift_center_y_fraction),
+                "sigma_x_fraction": float(uplift_sigma_x_fraction),
+                "sigma_y_fraction": float(uplift_sigma_y_fraction),
+            },
         },
         "elevation_min_m": float(elevation.min()),
         "elevation_max_m": float(elevation.max()),
@@ -479,6 +568,42 @@ def parse_args(argv=None):
         "--uplift-rate", type=float, default=0.001, help="Maximum uplift rate (m/yr)."
     )
     parser.add_argument(
+        "--uplift-background-rate",
+        type=float,
+        default=0.0,
+        help="Minimum/background uplift rate (m/yr).",
+    )
+    parser.add_argument(
+        "--uplift-pattern",
+        choices=("axial_sine", "southern_alps"),
+        default="axial_sine",
+        help="Spatial uplift-field geometry.",
+    )
+    parser.add_argument(
+        "--uplift-center-x-fraction",
+        type=float,
+        default=0.30,
+        help="Cross-range location of the Southern Alps uplift maximum.",
+    )
+    parser.add_argument(
+        "--uplift-center-y-fraction",
+        type=float,
+        default=0.50,
+        help="Along-range location of the Southern Alps uplift maximum.",
+    )
+    parser.add_argument(
+        "--uplift-sigma-x-fraction",
+        type=float,
+        default=0.16,
+        help="Cross-range Gaussian width as a fraction of domain width.",
+    )
+    parser.add_argument(
+        "--uplift-sigma-y-fraction",
+        type=float,
+        default=0.55,
+        help="Along-range Gaussian width as a fraction of domain height.",
+    )
+    parser.add_argument(
         "--rock-erodibility",
         type=float,
         default=2.5e-5,
@@ -551,6 +676,12 @@ def main(argv=None):
         iterations=args.iterations,
         timestep=args.timestep,
         uplift_rate=args.uplift_rate,
+        uplift_background_rate=args.uplift_background_rate,
+        uplift_pattern=args.uplift_pattern,
+        uplift_center_x_fraction=args.uplift_center_x_fraction,
+        uplift_center_y_fraction=args.uplift_center_y_fraction,
+        uplift_sigma_x_fraction=args.uplift_sigma_x_fraction,
+        uplift_sigma_y_fraction=args.uplift_sigma_y_fraction,
         rock_erodibility=args.rock_erodibility,
         sediment_erodibility=args.sediment_erodibility,
         initial_soil_depth=args.initial_soil_depth,
@@ -566,9 +697,11 @@ def main(argv=None):
     write_esri_ascii(output_path, grid)
     soil_path = output_path.with_name(f"{output_path.stem}_soil_depth.asc")
     bedrock_path = output_path.with_name(f"{output_path.stem}_bedrock_elevation.asc")
+    uplift_path = output_path.with_name(f"{output_path.stem}_uplift_rate.asc")
     preview_path = output_path.with_name(f"{output_path.stem}_preview.png")
     write_esri_ascii(soil_path, grid, field_name="soil__depth")
     write_esri_ascii(bedrock_path, grid, field_name="bedrock__elevation")
+    write_esri_ascii(uplift_path, grid, field_name="tectonic__uplift_rate")
     write_dem_preview(
         preview_path,
         grid,
@@ -578,6 +711,7 @@ def main(argv=None):
         "topographic_elevation": str(output_path),
         "soil_depth": str(soil_path),
         "bedrock_elevation": str(bedrock_path),
+        "uplift_rate": str(uplift_path),
         "preview_png": str(preview_path),
     }
     metadata_path = output_path.with_suffix(".json")
@@ -585,6 +719,7 @@ def main(argv=None):
     print(f"Wrote {output_path} ({stats['shape'][0]} x {stats['shape'][1]} cells)")
     print(f"Wrote {soil_path}")
     print(f"Wrote {bedrock_path}")
+    print(f"Wrote {uplift_path}")
     print(f"Wrote {preview_path}")
     print(f"Wrote {metadata_path}")
     print(json.dumps(stats, indent=2))

@@ -276,6 +276,10 @@ def apply_soil_depth(
         drainage_threshold : float, optional
             Threshold drainage area for 'threshold' transform.
             If None, uses 75th percentile or 100 cells as default.
+        drainage_relationship : {'increasing', 'decreasing'}, default='increasing'
+            Direction of the relationship after transforming drainage area.
+            ``decreasing`` gives deeper soil on low-drainage-area hillslopes and
+            thinner soil toward channelized, high-drainage-area nodes.
 
         Curvature-based (distribution='curvature')
         ------------------------------------------
@@ -583,12 +587,24 @@ def apply_soil_depth(
         else:
             raise ValueError(f"Unknown drainage_transform: {drainage_transform}")
 
+        drainage_relationship = kwargs.get(
+            "drainage_relationship", "increasing"
+        )
+        if drainage_relationship == "decreasing":
+            normalized_drainage = 1.0 - normalized_drainage
+        elif drainage_relationship != "increasing":
+            raise ValueError(
+                "drainage_relationship must be 'increasing' or 'decreasing'"
+            )
+
         # Apply soil depth
         soil_depth[core_nodes] = normalized_drainage * max_soil_depth
 
         if verbose:
             print(
-                f"Drainage area-based soil depth applied using '{drainage_transform}' transformation."
+                "Drainage area-based soil depth applied using "
+                f"'{drainage_transform}' transformation with an "
+                f"'{drainage_relationship}' relationship."
             )
             print(
                 f"Soil depth range: {np.min(soil_depth[core_nodes]):.3f} to {np.max(soil_depth[core_nodes]):.3f} m"

@@ -75,6 +75,14 @@ def test_raster_soil_requires_a_path():
     assert prepare_config(config)["soil_params"]["distribution"] == "raster"
 
 
+def test_invalid_drainage_relationship_is_rejected():
+    config = minimal_config()
+    config["soil_params"]["drainage_relationship"] = "sideways"
+
+    with pytest.raises(ValueError, match="drainage_relationship"):
+        prepare_config(config)
+
+
 @pytest.mark.parametrize(
     ("parameter", "value"),
     [("P0", 0.0), ("h_star", 0.0), ("D", -1.0), ("eps", 0.0)],
@@ -134,3 +142,26 @@ def test_configured_pga_honours_center_seed_and_nodata():
     assert np.isclose(vertical[center_node], 0.2)
     assert np.isnan(horizontal[7])
     assert np.isnan(vertical[7])
+
+
+def test_vertical_pga_can_be_derived_from_horizontal_pga_ratio():
+    config = minimal_config()
+    config["pga"].update(
+        {
+            "horizontal_max": 0.7,
+            "vertical_max": 99.0,
+            "vertical_to_horizontal_ratio": 0.4,
+        }
+    )
+
+    prepared = prepare_config(config)
+
+    assert np.isclose(prepared["pga"]["vertical_max"], 0.28)
+
+
+@pytest.mark.parametrize("ratio", [-0.1, float("nan")])
+def test_invalid_vertical_to_horizontal_ratio_is_rejected(ratio):
+    config = minimal_config()
+    config["pga"]["vertical_to_horizontal_ratio"] = ratio
+    with pytest.raises(ValueError, match="vertical_to_horizontal_ratio"):
+        prepare_config(config)

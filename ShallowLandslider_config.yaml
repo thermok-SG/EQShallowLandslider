@@ -22,6 +22,14 @@ ensemble:
     soil_params.angle_int_frict: [25, 30, 35]
     # Uncommenting this multiplies the ensemble by five (45 total members).
     # soil_params.submerged_soil_proportion: [0.1, 0.25, 0.5, 0.75, 1.0]
+  # Optional targeted scenarios are crossed with the Cartesian parameters above.
+  # parameter_sets:
+  #   - scenario: baseline
+  #     soil_params.cohesion_eff: 15000
+  #     soil_params.angle_int_frict: 30
+  #   - scenario: susceptible_corner
+  #     soil_params.cohesion_eff: 10000
+  #     soil_params.angle_int_frict: 25
 
 # v1.2 analysis outputs. CSV is always written. If Zarr or Parquet support is
 # unavailable, rasters fall back to memory-mappable .npy files and CSV remains.
@@ -75,6 +83,7 @@ soil_params:
 
   # Drainage-area distribution parameters. These are ignored by other modes.
   drainage_transform: "threshold" # log | sqrt | power | threshold | linear
+  drainage_relationship: "increasing" # increasing | decreasing
   drainage_threshold: 1.0e6       # drainage_transform: threshold
   drainage_power: 0.3             # drainage_transform: power
 
@@ -95,6 +104,8 @@ soil_params:
 pga:
   horizontal_max: 0.5
   vertical_max: 0.2
+  # Optional: derive vertical_max from horizontal_max after ensemble sweeps.
+  vertical_to_horizontal_ratio: null
   distribution: "uniform"       # uniform | circular | square | diamond | exponential
   center: null                   # optional [row, column] in the global DEM
   random_center: false           # overrides center when true

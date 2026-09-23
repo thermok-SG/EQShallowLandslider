@@ -283,6 +283,10 @@ def prepare_config(config, chunking_override=None):
         "log", "sqrt", "power", "threshold", "linear"
     }:
         raise ValueError("Unsupported soil_params.drainage_transform")
+    if soil.get("drainage_relationship", "increasing") not in {
+        "increasing", "decreasing"
+    }:
+        raise ValueError("Unsupported soil_params.drainage_relationship")
     required_curvature_overlap(soil)
 
     pga = config["pga"]
@@ -291,6 +295,19 @@ def prepare_config(config, chunking_override=None):
     }:
         raise ValueError(
             "pga.distribution must be uniform, circular, square, diamond, or exponential"
+        )
+    vertical_ratio = pga.get("vertical_to_horizontal_ratio")
+    if vertical_ratio is not None:
+        vertical_ratio = float(vertical_ratio)
+        if not np.isfinite(vertical_ratio) or vertical_ratio < 0.0:
+            raise ValueError(
+                "pga.vertical_to_horizontal_ratio must be null or non-negative"
+            )
+        # Derive the vertical component after ensemble parameters have been
+        # applied so a horizontal-PGA sweep follows one physically paired V/H
+        # scaling path instead of forming an independent H x V Cartesian grid.
+        pga["vertical_max"] = vertical_ratio * float(
+            pga.get("horizontal_max", 0.5)
         )
     for key in ("horizontal_max", "vertical_max"):
         if float(pga.get(key, 0.5 if key == "horizontal_max" else 0.2)) < 0:

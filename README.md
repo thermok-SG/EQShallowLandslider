@@ -357,6 +357,28 @@ intentionally rejected so parameter comparisons use the same stochastic
 realization. A fixed explicit `pga.seed` in the model configuration is
 preserved; a null `pga.seed` uses the top-level fixed seed as usual.
 
+Use `ensemble.parameter_sets` for named, targeted scenarios that should be
+crossed with the Cartesian grid without forming every combination of their
+parameters:
+
+```yaml
+ensemble:
+  enabled: true
+  parameters:
+    pga.horizontal_max: [0.1, 0.5]
+  parameter_sets:
+    - scenario: baseline
+      soil_params.cohesion_eff: 15000
+      soil_params.angle_int_frict: 30
+    - scenario: susceptible_corner
+      soil_params.cohesion_eff: 10000
+      soil_params.angle_int_frict: 25
+```
+
+Setting `pga.vertical_to_horizontal_ratio` derives `vertical_max` after each
+horizontal-PGA sweep value is applied, avoiding an unintended independent
+horizontal-by-vertical Cartesian grid.
+
 The output root contains an `ensemble_manifest.json` index and one directory per
 member beneath `members/`. Each member directory keeps its generated
 `config.yaml`, `run.log`, and timestamped model-run directories together. A
@@ -516,6 +538,7 @@ Each generation run now writes a matched terrain triplet plus provenance:
 | `synthetic_landlab_600x800_30m.asc` | Elevation input consumed by the model CLI |
 | `synthetic_landlab_600x800_30m_soil_depth.asc` | Process-derived soil/sediment thickness paired with the elevation |
 | `synthetic_landlab_600x800_30m_bedrock_elevation.asc` | Bedrock elevation satisfying surface = bedrock + soil |
+| `synthetic_landlab_600x800_30m_uplift_rate.asc` | Spatial tectonic uplift-rate field used by the generator |
 | `synthetic_landlab_600x800_30m_preview.png` | Headless four-panel preview of elevation, soil depth, slope, and drainage area |
 | `synthetic_landlab_600x800_30m.json` | Generator settings, provenance, dimensions, relief, slope, soil, and drainage diagnostics |
 
@@ -526,6 +549,8 @@ realization with:
 python generate_synthetic_topography.py --help
 python generate_synthetic_topography.py
 python generate_synthetic_topography.py --nrows 700 --ncols 900 --seed 42
+python generate_synthetic_topography.py --uplift-pattern southern_alps \
+  --uplift-background-rate 0.0001
 ```
 
 To create separate SPACE-only and nonlinear weathering–creep realizations with

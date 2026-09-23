@@ -158,7 +158,8 @@ sbatch hpc/slurm/generate_synthetic_topography.sbatch
 Outputs are written beneath
 `hpc/workspace/input_data/dem/synthetic_ensemble/`. Each realization contains
 a topographic-elevation raster, matching soil-depth and bedrock-elevation
-rasters, a four-panel elevation/soil/slope/drainage PNG, and JSON provenance.
+rasters, an uplift-rate raster, a four-panel elevation/soil/slope/drainage PNG,
+and JSON provenance.
 
 Override the seeds and array range together when expanding the experiment.
 There must be two tasks per seed; the optional percent suffix limits concurrent
@@ -170,7 +171,10 @@ sbatch --array=0-9%3 hpc/slurm/generate_synthetic_topography.sbatch
 ```
 
 Principal generator settings can also be exported at submission, including
-`REFINEMENT_FACTOR`, `ITERATIONS`, `SOIL_PRODUCTION_MAXIMUM_RATE`,
+`REFINEMENT_FACTOR`, `ITERATIONS`, `UPLIFT_RATE`, `UPLIFT_BACKGROUND_RATE`,
+`UPLIFT_PATTERN`, `UPLIFT_CENTER_X_FRACTION`, `UPLIFT_CENTER_Y_FRACTION`,
+`UPLIFT_SIGMA_X_FRACTION`, `UPLIFT_SIGMA_Y_FRACTION`,
+`SOIL_PRODUCTION_MAXIMUM_RATE`,
 `SOIL_PRODUCTION_DECAY_DEPTH`, `SOIL_TRANSPORT_VELOCITY`,
 `SOIL_TRANSPORT_DECAY_DEPTH`, and `CRITICAL_SLOPE`.
 

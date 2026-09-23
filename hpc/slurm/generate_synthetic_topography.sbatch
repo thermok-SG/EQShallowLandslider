@@ -69,6 +69,12 @@ python -u "${PROJECT_DIR}/generate_synthetic_topography.py" \
   --timestep "${TIMESTEP:-250}" \
   --refinement-factor "${REFINEMENT_FACTOR:-4}" \
   --uplift-rate "${UPLIFT_RATE:-0.001}" \
+  --uplift-background-rate "${UPLIFT_BACKGROUND_RATE:-0.0}" \
+  --uplift-pattern "${UPLIFT_PATTERN:-axial_sine}" \
+  --uplift-center-x-fraction "${UPLIFT_CENTER_X_FRACTION:-0.30}" \
+  --uplift-center-y-fraction "${UPLIFT_CENTER_Y_FRACTION:-0.50}" \
+  --uplift-sigma-x-fraction "${UPLIFT_SIGMA_X_FRACTION:-0.16}" \
+  --uplift-sigma-y-fraction "${UPLIFT_SIGMA_Y_FRACTION:-0.55}" \
   --rock-erodibility "${ROCK_ERODIBILITY:-2.5e-5}" \
   --sediment-erodibility "${SEDIMENT_ERODIBILITY:-2.5e-5}" \
   --initial-soil-depth "${INITIAL_SOIL_DEPTH:-0.5}" \

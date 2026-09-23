@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
@@ -141,6 +142,86 @@ def test_model_lists_are_not_mistaken_for_sweep_parameters(tmp_path):
     assert all(
         member.config["chunking"]["tile_size"] == [100, 200] for member in members
     )
+
+
+def test_horizontal_pga_sweep_preserves_configured_vertical_ratio(tmp_path):
+    spec_path, config = write_config(
+        tmp_path, {"pga.horizontal_max": [0.1, 0.5, 1.0]}
+    )
+    config["pga"].update(
+        {
+            "horizontal_max": 0.5,
+            "vertical_max": 0.2,
+            "vertical_to_horizontal_ratio": 0.4,
+        }
+    )
+
+    members = ensemble.build_members(config, spec_path)
+
+    assert np.allclose(
+        [member.config["pga"]["vertical_max"] for member in members],
+        [0.04, 0.2, 0.4],
+    )
+
+
+def test_named_parameter_sets_cross_cartesian_grid(tmp_path):
+    spec_path, config = write_config(tmp_path, {"pga.horizontal_max": [0.1, 0.5]})
+    config["pga"].update(
+        {"horizontal_max": 0.5, "vertical_to_horizontal_ratio": 0.4}
+    )
+    config["ensemble"]["parameter_sets"] = [
+        {
+            "scenario": "baseline",
+            "soil_params.cohesion_eff": 15000,
+            "soil_params.angle_int_frict": 30,
+        },
+        {
+            "scenario": "susceptible-corner",
+            "soil_params.cohesion_eff": 10000,
+            "soil_params.angle_int_frict": 25,
+        },
+    ]
+
+    members = ensemble.build_members(config, spec_path)
+
+    assert len(members) == 4
+    assert [member.parameters["scenario"] for member in members] == [
+        "baseline",
+        "baseline",
+        "susceptible-corner",
+        "susceptible-corner",
+    ]
+    assert np.allclose(
+        [member.config["pga"]["vertical_max"] for member in members],
+        [0.04, 0.2, 0.04, 0.2],
+    )
+    manifest = json.loads(
+        (tmp_path / "runs" / "ensemble_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["member_count"] == 4
+    assert manifest["parameter_sets"][1]["scenario"] == "susceptible-corner"
+
+
+def test_parameter_sets_reject_overlap_duplicate_names_and_seed(tmp_path):
+    spec_path, config = write_config(tmp_path, {"pga.horizontal_max": [0.1]})
+    config["ensemble"]["parameter_sets"] = [
+        {"scenario": "overlap", "pga.horizontal_max": 0.5}
+    ]
+    with pytest.raises(ValueError, match="overlaps"):
+        ensemble.build_members(config, spec_path)
+
+    config["ensemble"]["parameter_sets"] = [
+        {"scenario": "same", "soil_params.cohesion_eff": 10000},
+        {"scenario": "same", "soil_params.cohesion_eff": 20000},
+    ]
+    with pytest.raises(ValueError, match="Duplicate"):
+        ensemble.build_members(config, spec_path)
+
+    config["ensemble"]["parameter_sets"] = [
+        {"scenario": "seeded", "random_seed": 99}
+    ]
+    with pytest.raises(ValueError, match="fixed"):
+        ensemble.build_members(config, spec_path)
 
 
 def test_combined_config_requires_enabled_ensemble_mapping(tmp_path):

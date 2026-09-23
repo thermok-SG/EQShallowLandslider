@@ -118,6 +118,38 @@ def test_weathering_taylor_regolith_is_reproducible_and_process_derived():
     )
 
 
+def test_southern_alps_uplift_is_asymmetric_and_shared_between_models():
+    options = dict(
+        nrows=40,
+        ncols=60,
+        iterations=1,
+        timestep=10,
+        refinement_factor=2,
+        seed=19,
+        uplift_rate=0.008,
+        uplift_background_rate=0.00075,
+        uplift_pattern="southern_alps",
+    )
+    space, stats = generate_mountain_catchment(**options, regolith_model="space")
+    taylor, _ = generate_mountain_catchment(
+        **options, regolith_model="weathering_taylor"
+    )
+
+    space_uplift = space.at_node["tectonic__uplift_rate"]
+    taylor_uplift = taylor.at_node["tectonic__uplift_rate"]
+    maximum_node = int(np.argmax(space_uplift))
+    maximum_x_fraction = space.node_x[maximum_node] / space.node_x.max()
+
+    assert np.array_equal(space_uplift, taylor_uplift)
+    assert np.isclose(space_uplift.max(), 0.008)
+    assert space_uplift.min() >= 0.00075
+    assert maximum_x_fraction < 0.5
+    assert stats["evolution"]["uplift_pattern"] == "southern_alps"
+    assert np.isclose(
+        stats["evolution"]["uplift_background_rate_m_per_year"], 0.00075
+    )
+
+
 @pytest.mark.parametrize("shape", [(19, 100), (100, 19)])
 def test_synthetic_catchment_rejects_tiny_grids(shape):
     with pytest.raises(ValueError, match="at least 20"):
