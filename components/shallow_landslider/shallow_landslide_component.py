@@ -604,10 +604,11 @@ class ShallowLandslider(Component):
         input to aspect and KDE splitting.
 
         Each raw connected component is processed independently with the same
-        eight-cell neighbourhood used for region labeling. A cavity is filled
-        only when it contains background cells exclusively. Cavities containing
-        nodata cells or another unstable component are retained, preventing the
-        label-overwrite behavior possible in the legacy implementation.
+        eight-cell neighbourhood used for region labeling. Only background
+        cells are filled. Nodata, closed nodes, and labels belonging to another
+        component remain unchanged, including when they lie inside a cavity.
+        This reproduces the legacy net footprint without its temporary label
+        overwrites.
         """
         with _log_stage("_fill_region_holes"):
             labels = self._labels.reshape(self.grid.shape)
@@ -615,9 +616,12 @@ class ShallowLandslider(Component):
             hole_fill_mask = np.zeros(labels.shape, dtype=bool)
             structure = _generate_binary_structure(2, 2)
 
-            nodata = np.zeros(labels.shape, dtype=bool)
+            excluded = np.asarray(
+                self.grid.status_at_node == self.grid.BC_NODE_IS_CLOSED,
+                dtype=bool,
+            ).reshape(self.grid.shape)
             if "nodata__mask" in self.grid.at_node:
-                nodata = np.asarray(
+                excluded |= np.asarray(
                     self.grid.at_node["nodata__mask"], dtype=bool
                 ).reshape(self.grid.shape)
 
@@ -636,18 +640,11 @@ class ShallowLandslider(Component):
                 if not np.any(candidate_cavities):
                     continue
 
-                cavity_labels, cavity_count = _label(
-                    candidate_cavities, structure=structure
+                accepted = (
+                    candidate_cavities
+                    & (local_labels == 0)
+                    & ~excluded[region_slice]
                 )
-                accepted = np.zeros(candidate_cavities.shape, dtype=bool)
-                local_nodata = nodata[region_slice]
-                for cavity_id in range(1, cavity_count + 1):
-                    cavity = cavity_labels == cavity_id
-                    if np.any(local_nodata[cavity]):
-                        continue
-                    if np.any(local_labels[cavity] != 0):
-                        continue
-                    accepted[cavity] = True
 
                 if np.any(accepted):
                     filled_labels[region_slice][accepted] = region_id

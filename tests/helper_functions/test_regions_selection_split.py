@@ -60,8 +60,8 @@ def test_fill_region_holes_retains_open_cavities():
     assert not np.any(comp._hole_fill_mask)
 
 
-@pytest.mark.parametrize("excluded", ["nodata", "other_region"])
-def test_fill_region_holes_does_not_absorb_excluded_cavities(excluded):
+@pytest.mark.parametrize("excluded", ["nodata", "closed_node", "other_region"])
+def test_fill_region_holes_preserves_excluded_cells(excluded):
     mg = make_grid(shape=(7, 7))
     comp = ShallowLandslider(mg, cohesion_eff=10, angle_int_frict=30)
     labels = np.zeros(mg.shape, dtype=int)
@@ -70,14 +70,20 @@ def test_fill_region_holes_does_not_absorb_excluded_cavities(excluded):
     if excluded == "nodata":
         nodata = mg.add_zeros("nodata__mask", at="node", dtype=bool)
         nodata.reshape(mg.shape)[3, 3] = True
+    elif excluded == "closed_node":
+        mg.status_at_node[3 * mg.shape[1] + 3] = mg.BC_NODE_IS_CLOSED
     else:
         labels[3, 3] = 2
     comp._labels = labels.ravel()
 
     comp._fill_region_holes()
 
-    assert np.array_equal(comp._filled_labels.reshape(mg.shape), labels)
-    assert not np.any(comp._hole_fill_mask)
+    filled = comp._filled_labels.reshape(mg.shape)
+    assert filled[3, 3] == labels[3, 3]
+    surrounding = np.ones((3, 3), dtype=bool)
+    surrounding[1, 1] = False
+    assert np.all(filled[2:5, 2:5][surrounding] == 1)
+    assert np.count_nonzero(comp._hole_fill_mask) == 8
 
 
 def test_zone_split_by_aspect():

@@ -705,8 +705,8 @@ the morphologically completed footprint. `ls.results["labels"]` contains raw
 connected components of `unstable_mask`; `filled_labels` contains those same
 labels after enclosed background holes are filled; and `hole_fill_mask` marks
 only the cells introduced by filling. Aspect and KDE splitting operate on
-`filled_labels`. Cavities containing nodata or a separate unstable component
-are deliberately retained.
+`filled_labels`. Within an enclosed cavity, only background cells are filled;
+nodata, closed nodes, and separate unstable-component labels are preserved.
 
 ---
 
