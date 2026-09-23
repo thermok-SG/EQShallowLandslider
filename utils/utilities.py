@@ -1428,6 +1428,8 @@ def _collect_raster_arrays(ls):
         "driving_minus_critical_acceleration": results.get("a_diff"),
         "unstable_mask": results.get("unstable_mask"),
         "region_labels": results.get("labels"),
+        "filled_region_labels": results.get("filled_labels"),
+        "hole_fill_mask": results.get("hole_fill_mask"),
         "aspect_labels": results.get("aspect_labels"),
         "split_labels": results.get("split_labels"),
         "selected_labels": results.get("selected_labels"),

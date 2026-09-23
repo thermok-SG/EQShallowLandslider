@@ -898,6 +898,11 @@ def main():
     ls_global._labels = global_labels.ravel()
     ls_global.grid.at_node["landslide__region_labels"] = global_labels.ravel()
 
+    # Fill holes only after global labels have been assembled. Performing this
+    # operation within individual tiles would make cavities crossing tile
+    # boundaries depend on the chosen chunk layout.
+    ls_global._fill_region_holes()
+
     # Continue from aspect-splitting onward
     ls_global._filter_by_aspect_and_split()
     ls_global._compute_group_properties()

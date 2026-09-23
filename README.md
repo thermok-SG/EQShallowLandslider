@@ -700,6 +700,14 @@ After `run_one_step()`, the component populates:
 - `ls.results["group_properties"]` (DataFrame with region metrics)
 - `ls.results["runout"]` (multiflow sources, paths, proportions, and mass-change diagnostics)
 
+The candidate-region pipeline preserves both the physical stability result and
+the morphologically completed footprint. `ls.results["labels"]` contains raw
+connected components of `unstable_mask`; `filled_labels` contains those same
+labels after enclosed background holes are filled; and `hole_fill_mask` marks
+only the cells introduced by filling. Aspect and KDE splitting operate on
+`filled_labels`. Cavities containing nodata or a separate unstable component
+are deliberately retained.
+
 ---
 
 ## **Repository Structure**

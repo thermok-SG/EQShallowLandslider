@@ -30,6 +30,56 @@ def test_calculate_regions_connectivity(monkeypatch):
     assert n8 == 1
 
 
+def test_fill_region_holes_preserves_raw_labels():
+    mg = make_grid(shape=(7, 7))
+    comp = ShallowLandslider(mg, cohesion_eff=10, angle_int_frict=30)
+    labels = np.zeros(mg.shape, dtype=int)
+    labels[1:6, 1:6] = 1
+    labels[2:5, 2:5] = 0
+    comp._labels = labels.ravel()
+
+    comp._fill_region_holes()
+
+    assert np.array_equal(comp._labels.reshape(mg.shape), labels)
+    assert np.all(comp._filled_labels.reshape(mg.shape)[1:6, 1:6] == 1)
+    assert np.count_nonzero(comp._hole_fill_mask) == 9
+
+
+def test_fill_region_holes_retains_open_cavities():
+    mg = make_grid(shape=(7, 7))
+    comp = ShallowLandslider(mg, cohesion_eff=10, angle_int_frict=30)
+    labels = np.zeros(mg.shape, dtype=int)
+    labels[1:6, 1:6] = 1
+    labels[2:5, 2:5] = 0
+    labels[1, 3] = 0
+    comp._labels = labels.ravel()
+
+    comp._fill_region_holes()
+
+    assert np.array_equal(comp._filled_labels.reshape(mg.shape), labels)
+    assert not np.any(comp._hole_fill_mask)
+
+
+@pytest.mark.parametrize("excluded", ["nodata", "other_region"])
+def test_fill_region_holes_does_not_absorb_excluded_cavities(excluded):
+    mg = make_grid(shape=(7, 7))
+    comp = ShallowLandslider(mg, cohesion_eff=10, angle_int_frict=30)
+    labels = np.zeros(mg.shape, dtype=int)
+    labels[1:6, 1:6] = 1
+    labels[2:5, 2:5] = 0
+    if excluded == "nodata":
+        nodata = mg.add_zeros("nodata__mask", at="node", dtype=bool)
+        nodata.reshape(mg.shape)[3, 3] = True
+    else:
+        labels[3, 3] = 2
+    comp._labels = labels.ravel()
+
+    comp._fill_region_holes()
+
+    assert np.array_equal(comp._filled_labels.reshape(mg.shape), labels)
+    assert not np.any(comp._hole_fill_mask)
+
+
 def test_zone_split_by_aspect():
     mg = make_grid()
     comp = ShallowLandslider(mg, cohesion_eff=10, angle_int_frict=30)

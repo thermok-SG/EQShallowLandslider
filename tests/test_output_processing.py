@@ -51,6 +51,8 @@ def make_completed_run():
         "a_diff": np.linspace(-0.5, 0.5, 16),
         "unstable_mask": labels > 0,
         "labels": labels,
+        "filled_labels": labels,
+        "hole_fill_mask": np.zeros(16, dtype=bool),
         "aspect_labels": labels,
         "split_labels": labels,
         "selected_labels": selected,
@@ -104,6 +106,8 @@ def test_save_model_run_writes_v12_analysis_bundle(tmp_path):
     assert manifest["runtime"]["execution_mode"] == "chunked"
     assert manifest["grid"]["shape"] == [4, 4]
     assert (run_dir / "rasters" / "selected_labels.npy").exists()
+    assert (run_dir / "rasters" / "filled_region_labels.npy").exists()
+    assert (run_dir / "rasters" / "hole_fill_mask.npy").exists()
 
     with open(run_dir / "summary.json", encoding="utf-8") as stream:
         summary = json.load(stream)

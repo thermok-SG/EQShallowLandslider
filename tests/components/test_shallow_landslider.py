@@ -269,6 +269,8 @@ def test_results_property_contains_expected_keys():
         "a_diff",
         "unstable_mask",
         "labels",
+        "filled_labels",
+        "hole_fill_mask",
         "aspect_labels",
         "selected_labels",
         "group_properties",
