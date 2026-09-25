@@ -21,6 +21,7 @@ mkdir -p \
   "${DATA_ROOT}/input_data/dem/synthetic_ensemble" \
   "${DATA_ROOT}/input_data/nepal" \
   "${DATA_ROOT}/input_data/japan" \
+  "${DATA_ROOT}/input_data/nz" \
   "${DATA_ROOT}/runs" \
   "${DATA_ROOT}/analysis_output"
 

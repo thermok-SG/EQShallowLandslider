@@ -212,6 +212,8 @@ def prepare_config(config, chunking_override=None):
 
     if not config.get("dem_path"):
         raise ValueError("dem_path is required")
+    if config.get("grid_spacing") is not None and float(config["grid_spacing"]) <= 0:
+        raise ValueError("grid_spacing must be positive")
     if not isinstance(config.get("smooth_num", 0), int) or config.get("smooth_num", 0) < 0:
         raise ValueError("smooth_num must be a non-negative integer")
     if not isinstance(config.get("random_seed", 5000), int):
@@ -501,6 +503,7 @@ def main():
         load_dem=dem_path,
         buffer=0,
         smooth_num=smooth_num,
+        grid_spacing=config.get("grid_spacing"),
     )
 
     z_full_2d = z_full.reshape(mg_full.shape)

@@ -8,7 +8,7 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 HPC_ROOT = REPOSITORY_ROOT / "hpc"
 
 
-@pytest.mark.parametrize("region", ["nepal", "japan"])
+@pytest.mark.parametrize("region", ["nepal", "japan", "kaikoura"])
 def test_hpc_config_uses_paths_relative_to_workspace(region):
     with open(
         HPC_ROOT / "configs" / f"{region}_config.yaml", encoding="utf-8"

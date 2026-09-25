@@ -24,7 +24,8 @@ EQShallowLandslider_data/
 ├── input_data/
 │   ├── dem/
 │   ├── nepal/
-│   └── japan/
+│   ├── japan/
+│   └── nz/
 ├── runs/
 └── analysis_output/
 ```
@@ -33,10 +34,11 @@ Place the production DEMs in `input_data/dem/` as:
 
 - `gorkhadem_05g.asc`
 - `iwate_dem_utm_clip_50gbox.asc`
+- `Kaikoura_04g_clipped_DEM.asc`
 
-The Nepal and Japan measured inventory files belong in their corresponding
-`input_data/<region>/` directories. They are used for width splitting and
-model-observation analysis.
+The Nepal, Japan, and New Zealand measured inventory files belong in their
+corresponding `input_data/<region>/` directories (`nz` for Kaikoura). They are
+used for width splitting and model-observation analysis.
 
 The workspace link, runs, analysis products, DEMs, derived pickles, and Slurm
 logs are intentionally excluded from Git.
@@ -65,6 +67,11 @@ python "$PROJECT_DIR/run_landslide_model_cli.py" \
 python "$PROJECT_DIR/run_landslide_ensemble.py" \
   --config "$PROJECT_DIR/hpc/configs/japan_config.yaml" --dry-run
 
+python "$PROJECT_DIR/run_landslide_model_cli.py" \
+  --config "$PROJECT_DIR/hpc/configs/kaikoura_config.yaml" --validate-only
+python "$PROJECT_DIR/run_landslide_ensemble.py" \
+  --config "$PROJECT_DIR/hpc/configs/kaikoura_config.yaml" --dry-run
+
 cd "$PROJECT_DIR"
 ```
 
@@ -91,6 +98,14 @@ Select Japan by supplying its tracked configuration:
 ```bash
 sbatch --export=ALL,CONFIG="$PWD/hpc/configs/japan_config.yaml" hpc/slurm/run_single.sbatch
 sbatch --export=ALL,CONFIG="$PWD/hpc/configs/japan_config.yaml" hpc/slurm/run_ensemble.sbatch
+```
+
+For Kaikoura, submit the single run first and inspect it before launching the
+45-member ensemble:
+
+```bash
+sbatch --export=ALL,CONFIG="$PWD/hpc/configs/kaikoura_config.yaml" hpc/slurm/run_single.sbatch
+sbatch --export=ALL,CONFIG="$PWD/hpc/configs/kaikoura_config.yaml" hpc/slurm/run_ensemble.sbatch
 ```
 
 The ensemble launcher runs one member at a time. Increase `--jobs`, requested

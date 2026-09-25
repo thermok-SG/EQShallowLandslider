@@ -29,6 +29,50 @@ from bmi_topography import Topography
 from version import __version__
 
 
+def _load_esri_ascii_with_gdal_spacing(path, name):
+    """Load ESRI ASCII, accepting GDAL's nearly-square ``dx``/``dy`` header."""
+    with open(path) as fp:
+        contents = fp.read()
+
+    header_lines = []
+    offset = 0
+    for _ in range(8):
+        line_end = contents.find("\n", offset)
+        if line_end < 0:
+            break
+        header_lines.append(contents[offset : line_end + 1])
+        offset = line_end + 1
+
+    spacing = {}
+    for index, line in enumerate(header_lines):
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        key = parts[0].lower()
+        if key in {"dx", "dy"}:
+            spacing[key] = (index, float(parts[1]))
+
+    if set(spacing) == {"dx", "dy"}:
+        dx = spacing["dx"][1]
+        dy = spacing["dy"][1]
+        if not np.isclose(dx, dy, rtol=1.0e-3, atol=0.0):
+            raise ValueError(
+                "Landlab requires square raster cells, but DEM header has "
+                f"dx={dx} and dy={dy}"
+            )
+        cellsize = (dx + dy) / 2.0
+        end_index = max(spacing["dx"][0], spacing["dy"][0]) + 1
+        original_header_length = sum(len(line) for line in header_lines[:end_index])
+        header_lines[spacing["dx"][0]] = f"cellsize    {cellsize}\n"
+        header_lines[spacing["dy"][0]] = ""
+        contents = (
+            "".join(header_lines[:end_index])
+            + contents[original_header_length:]
+        )
+
+    return esri_ascii.loads(contents, name=name, at="node")
+
+
 # %% Getting topography from OpenTopography
 
 
@@ -77,6 +121,7 @@ def get_topo(
     load_dem: str = None,
     verbose: bool = False,
     api_key: str = None,
+    grid_spacing: float = None,
 ):
     """
     Future-proof DEM loader that handles nodata correctly using CLOSED nodes.
@@ -90,10 +135,9 @@ def get_topo(
             if not Path(load_dem).exists():
                 raise FileNotFoundError(f"DEM file not found: {load_dem}")
 
-            with open(load_dem) as fp:
-                grid_geog = esri_ascii.load(
-                    fp, name="topographic__elevation", at="node"
-                )
+            grid_geog = _load_esri_ascii_with_gdal_spacing(
+                load_dem, name="topographic__elevation"
+            )
 
             z_geog = grid_geog.at_node["topographic__elevation"].astype("float32")
 
@@ -136,14 +180,16 @@ def get_topo(
         # -------------------------------------------------------------
         # Create Landlab RasterModelGrid with correct spacing
         # -------------------------------------------------------------
-        spacing = {
-            "SRTMGL3": 90,
-            "COP90": 90,
-            "SRTMGL1": 30,
-            "AW3D30": 30,
-            "NASADEM": 30,
-            "COP30": 30,
-        }.get(dem_type, 30)
+        spacing = grid_spacing
+        if spacing is None:
+            spacing = {
+                "SRTMGL3": 90,
+                "COP90": 90,
+                "SRTMGL1": 30,
+                "AW3D30": 30,
+                "NASADEM": 30,
+                "COP30": 30,
+            }.get(dem_type, 30)
 
         grid = RasterModelGrid(
             (grid_geog.number_of_node_rows, grid_geog.number_of_node_columns),
@@ -154,7 +200,7 @@ def get_topo(
         # -------------------------------------------------------------
         # NODATA HANDLING (recommended approach)
         # -------------------------------------------------------------
-        nodata_values = (-9999, 1e30, 3.4028235e38)  # typical ASCII nodata markers
+        nodata_values = (-32768, -9999, 1e30, 3.4028235e38)
 
         z_finite, nodata_mask = apply_nodata_and_close_nodes(
             grid, z_geog, nodata_values=nodata_values

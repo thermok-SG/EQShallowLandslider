@@ -16,6 +16,34 @@ def make_grid(ny=5, nx=5, spacing=10.0):
     return mg
 
 
+def test_get_topo_accepts_nearly_square_dx_dy_header(tmp_path):
+    dem = tmp_path / "gdal.asc"
+    dem.write_text(
+        "ncols 3\n"
+        "nrows 2\n"
+        "xllcorner 0\n"
+        "yllcorner 0\n"
+        "dx 26.7932\n"
+        "dy 26.7922\n"
+        "NODATA_value -32768\n"
+        "1 2 -32768\n"
+        "3 4 5\n",
+        encoding="utf-8",
+    )
+
+    grid, elevation, nodata = util.get_topo(
+        buffer=0,
+        load_dem=str(dem),
+        dem_type="SRTMGL1",
+        grid_spacing=26.7927,
+    )
+
+    assert grid.shape == (2, 3)
+    assert grid.dx == pytest.approx(26.7927)
+    assert nodata.sum() == 1
+    assert np.isfinite(elevation).all()
+
+
 def test_apply_soil_depth_uniform():
     mg = make_grid()
     soil = util.apply_soil_depth(

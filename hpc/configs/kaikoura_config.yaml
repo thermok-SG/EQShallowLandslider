@@ -1,0 +1,102 @@
+dem_path: "input_data/dem/Kaikoura_04g_clipped_DEM.asc"
+# The source is projected in WGS 84 / UTM zone 60S. Its GDAL ASCII header has
+# dx/dy values that differ by 0.001 m, so use their mean as a square Landlab
+# grid spacing.
+dem_type: "SRTMGL1"
+grid_spacing: 26.79268266745
+smooth_num: 0
+
+output_dir: "runs/kaikoura/single"
+
+# Run the base configuration above with run_single.sbatch first. Once that
+# completes successfully, this block is ready for a 45-member ensemble.
+ensemble:
+  enabled: true
+  name: kaikoura_ensemble
+  output_dir: runs/kaikoura/ensemble
+  jobs: 1
+  parameters:
+    soil_params.distribution: [elevation]
+    soil_params.relationship: [linear]
+    soil_params.cohesion_eff: [10000, 15000, 20000]
+    soil_params.angle_int_frict: [25, 30, 35]
+    soil_params.submerged_soil_proportion: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+outputs:
+  write_parquet: true
+  write_zarr: true
+  write_npy_fallback: true
+  zarr_chunks: [1024, 1024]
+
+random_seed: 5000
+
+flow_params:
+  enable: false
+  flow_metric: "D8"
+  separate_hill_flow: true
+  hill_flow_metric: "Quinn"
+  depression_handler: "fill"
+  update_hill_depressions: true
+  accumulate_flow: true
+
+chunking:
+  # This 26.1-million-cell DEM exceeds the threshold and will run in tiles.
+  mode: "auto"
+  threshold_cells: 20000000
+  tile_size: [2500, 2500]
+  overlap: 10
+
+soil_params:
+  cohesion_eff: 15000
+  angle_int_frict: 30
+  submerged_soil_proportion: 0.5
+  max_soil_depth: 1.5
+  distribution: "elevation"
+  relationship: "linear"
+  decay_rate: 1.0
+  exponent: 2.0
+  drainage_transform: "threshold"
+  drainage_threshold: 1.0e6
+  drainage_power: 0.3
+  b: -1.0
+  P0: 0.05
+  h_star: 1.0
+  D: 0.01
+  h_min: 0.1
+  h_no_ss: 0.0
+  eps: 1.0e-10
+  scale: 0.01
+  window: 5
+
+pga:
+  horizontal_max: 0.5
+  vertical_max: 0.2
+  distribution: "uniform"
+  center: null
+  random_center: false
+  seed: null
+
+simulation:
+  selection_method: "probabilistic"
+  proportion_method: "conservative"
+  custom_proportion: null
+  handle_small: "merge"
+  aspect_interval: 20
+  verbose: false
+  compute_displacement: false
+  time_shaking: 10
+  displacement_threshold: 0.0
+  enable_runout: false
+  update_soil: false
+
+split_by_width:
+  enabled: true
+  pickle_path: "input_data/nz/measured_data.pkl"
+  min_area: 900
+  csv_paths:
+    inventory_csv: "input_data/nz/measuredLandslides_all.csv"
+    zonal_stats_csv: "input_data/nz/measuredLandslides_all_zonalStats.csv"
+  width_threshold: 1.5
+  max_iterations: 5
+  min_region_size: 10
+  convergence_threshold: 0.75
