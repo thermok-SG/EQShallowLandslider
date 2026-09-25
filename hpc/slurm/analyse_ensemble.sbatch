@@ -20,7 +20,12 @@ WORKSPACE="${PROJECT_DIR}/hpc/workspace"
 REGION="${REGION:-nepal}"
 RUNS_DIR="${WORKSPACE}/runs/${REGION}/ensemble"
 OUTPUT_DIR="${WORKSPACE}/analysis_output/${REGION}_ensemble"
-OBSERVED_DIR="${WORKSPACE}/input_data/${REGION}"
+OBSERVED_REGION="${OBSERVED_REGION:-${REGION}}"
+OBSERVED_DIR="${WORKSPACE}/input_data/${OBSERVED_REGION}"
+ZONAL_STATS="${OBSERVED_DIR}/measuredLandslides_all_ZonalStats.csv"
+if [[ ! -f "${ZONAL_STATS}" ]]; then
+  ZONAL_STATS="${OBSERVED_DIR}/measuredLandslides_all_zonalStats.csv"
+fi
 
 module load conda
 conda activate landlab_dev
@@ -49,5 +54,5 @@ python -u "${PROJECT_DIR}/analyse_landslide_outputs.py" \
   --runs "${RUNS_DIR}" \
   --output "${OUTPUT_DIR}" \
   --observed-inventory "${OBSERVED_DIR}/measuredLandslides_all.csv" \
-  --observed-zonal-stats "${OBSERVED_DIR}/measuredLandslides_all_ZonalStats.csv" \
+  --observed-zonal-stats "${ZONAL_STATS}" \
   --min-observed-area 900
