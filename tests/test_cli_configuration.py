@@ -6,6 +6,7 @@ from landlab import RasterModelGrid
 
 from run_landslide_model_cli import (
     configured_pga,
+    load_pga_raster,
     load_config,
     prepare_config,
     validate_execution_mode,
@@ -73,6 +74,63 @@ def test_raster_soil_requires_a_path():
 
     config["soil_params"]["soil_depth_path"] = "soil.asc"
     assert prepare_config(config)["soil_params"]["distribution"] == "raster"
+
+
+def test_raster_pga_requires_a_horizontal_path():
+    config = minimal_config()
+    config["pga"]["distribution"] = "raster"
+
+    with pytest.raises(ValueError, match="horizontal_path"):
+        prepare_config(config)
+
+    config["pga"]["horizontal_path"] = "pga.npy"
+    assert prepare_config(config)["pga"]["distribution"] == "raster"
+
+
+def test_pga_vertical_raster_path_must_be_a_string():
+    config = minimal_config()
+    config["pga"]["vertical_path"] = 42
+
+    with pytest.raises(ValueError, match="vertical_path"):
+        prepare_config(config)
+
+
+def test_configured_pga_loads_numpy_raster_and_derives_vertical(tmp_path):
+    grid = RasterModelGrid((3, 4), xy_spacing=30)
+    grid.add_zeros("topographic__elevation", at="node")
+    nodata = grid.add_zeros("nodata__mask", at="node", dtype=bool)
+    nodata[2] = True
+    values = np.linspace(0.1, 0.6, grid.number_of_nodes, dtype="float32").reshape(
+        grid.shape
+    )
+    path = tmp_path / "pga.npy"
+    np.save(path, values)
+
+    horizontal, vertical = configured_pga(
+        grid,
+        {
+            "distribution": "raster",
+            "horizontal_path": str(path),
+            "vertical_to_horizontal_ratio": 0.4,
+        },
+        default_seed=1,
+    )
+
+    assert np.allclose(horizontal[~nodata], values.ravel()[~nodata])
+    assert np.allclose(vertical[~nodata], 0.4 * horizontal[~nodata])
+    assert np.isnan(horizontal[2])
+    assert np.isnan(vertical[2])
+    assert horizontal.dtype == np.float32
+    assert vertical.dtype == np.float32
+
+
+def test_numpy_pga_raster_shape_must_match_grid(tmp_path):
+    grid = RasterModelGrid((3, 4), xy_spacing=30)
+    path = tmp_path / "pga.npy"
+    np.save(path, np.ones((2, 4), dtype="float32"))
+
+    with pytest.raises(ValueError, match="does not match DEM shape"):
+        load_pga_raster(path, grid)
 
 
 def test_invalid_drainage_relationship_is_rejected():

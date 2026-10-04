@@ -146,6 +146,51 @@ def load_soil_depth_raster(path, model_grid, nodata_mask=None):
     return values
 
 
+def load_pga_raster(path, model_grid, nodata_mask=None):
+    """Load a horizontal or vertical PGA raster in units of g.
+
+    NumPy ``.npy`` files are preferred for large, already-aligned production
+    rasters: they retain the source float32 precision while avoiding the size
+    and parsing overhead of a long-decimal ESRI ASCII grid. ESRI ASCII remains
+    supported for validation and smaller inputs.
+    """
+    path = os.fspath(path)
+    if path.lower().endswith(".npy"):
+        values = np.load(path, mmap_mode="r", allow_pickle=False)
+        if values.shape != model_grid.shape:
+            raise ValueError(
+                f"PGA raster shape {values.shape} does not match DEM shape "
+                f"{model_grid.shape}"
+            )
+        values = np.asarray(values, dtype=np.float32)
+    else:
+        with open(path) as stream:
+            pga_grid = esri_ascii.load(stream, name="earthquake__pga", at="node")
+        if pga_grid.shape != model_grid.shape:
+            raise ValueError(
+                f"PGA raster shape {pga_grid.shape} does not match DEM shape "
+                f"{model_grid.shape}"
+            )
+        if not np.isclose(pga_grid.dx, model_grid.dx):
+            raise ValueError(
+                f"PGA raster spacing {pga_grid.dx} does not match DEM spacing "
+                f"{model_grid.dx}"
+            )
+        values = np.asarray(
+            pga_grid.at_node["earthquake__pga"], dtype=np.float32
+        ).reshape(model_grid.shape)
+
+    mask = np.zeros(model_grid.shape, dtype=bool)
+    if nodata_mask is not None:
+        mask |= np.asarray(nodata_mask, dtype=bool).reshape(model_grid.shape)
+    valid = ~mask
+    if not np.isfinite(values[valid]).all() or np.any(values[valid] < 0):
+        raise ValueError("PGA raster must be finite and non-negative on DEM cells")
+    values = values.copy()
+    values[mask] = np.nan
+    return values
+
+
 def required_curvature_overlap(soil_cfg):
     """Return the tile halo needed by a curvature-based soil model."""
     if soil_cfg.get("distribution", "uniform") not in {
@@ -293,11 +338,22 @@ def prepare_config(config, chunking_override=None):
 
     pga = config["pga"]
     if pga.get("distribution", "uniform") not in {
-        "uniform", "circular", "square", "diamond", "exponential"
+        "uniform", "circular", "square", "diamond", "exponential", "raster"
     }:
         raise ValueError(
-            "pga.distribution must be uniform, circular, square, diamond, or exponential"
+            "pga.distribution must be uniform, circular, square, diamond, "
+            "exponential, or raster"
         )
+    if pga.get("distribution") == "raster" and not isinstance(
+        pga.get("horizontal_path"), str
+    ):
+        raise ValueError(
+            "pga.horizontal_path is required when pga.distribution is raster"
+        )
+    if pga.get("vertical_path") is not None and not isinstance(
+        pga["vertical_path"], str
+    ):
+        raise ValueError("pga.vertical_path must be null or a path string")
     vertical_ratio = pga.get("vertical_to_horizontal_ratio")
     if vertical_ratio is not None:
         vertical_ratio = float(vertical_ratio)
@@ -418,6 +474,23 @@ def validate_execution_mode(config, use_chunking):
 
 def configured_pga(grid, pga_cfg, default_seed):
     """Generate a configured PGA field once on the model's global grid."""
+    nodata = (
+        grid.at_node["nodata__mask"] if "nodata__mask" in grid.at_node else None
+    )
+    if pga_cfg.get("distribution", "uniform") == "raster":
+        pga_h = load_pga_raster(pga_cfg["horizontal_path"], grid, nodata).ravel()
+        vertical_path = pga_cfg.get("vertical_path")
+        if vertical_path:
+            pga_v = load_pga_raster(vertical_path, grid, nodata).ravel()
+        else:
+            ratio = pga_cfg.get("vertical_to_horizontal_ratio")
+            if ratio is None:
+                horizontal_max = float(pga_cfg.get("horizontal_max", 0.5))
+                vertical_max = float(pga_cfg.get("vertical_max", 0.2))
+                ratio = vertical_max / horizontal_max if horizontal_max else 0.0
+            pga_v = pga_h * float(ratio)
+        return pga_h, pga_v
+
     center = pga_cfg.get("center")
     pga_seed = pga_cfg.get("seed")
     if pga_seed is None:
@@ -431,9 +504,6 @@ def configured_pga(grid, pga_cfg, default_seed):
         random_center=pga_cfg.get("random_center", False),
         seed=pga_seed,
         plot_grids=False,
-    )
-    nodata = (
-        grid.at_node["nodata__mask"] if "nodata__mask" in grid.at_node else None
     )
     if nodata is not None:
         pga_h[np.asarray(nodata, dtype=bool)] = np.nan

@@ -1,0 +1,86 @@
+dem_path: "input_data/dem/Kaikoura_04g_clipped_DEM.asc"
+dem_type: "SRTMGL1"
+grid_spacing: 26.79268266745
+smooth_num: 0
+
+output_dir: "runs/kaikoura/shakemap_best_fit"
+
+outputs:
+  write_parquet: true
+  write_zarr: true
+  write_npy_fallback: true
+  zarr_chunks: [1024, 1024]
+
+random_seed: 5000
+
+flow_params:
+  enable: false
+  flow_metric: "D8"
+  separate_hill_flow: true
+  hill_flow_metric: "Quinn"
+  depression_handler: "fill"
+  update_hill_depressions: true
+  accumulate_flow: true
+
+chunking:
+  mode: "auto"
+  threshold_cells: 20000000
+  tile_size: [2500, 2500]
+  overlap: 10
+
+# Best balance in the downloaded 45-member Kaikoura ensemble: 13,773 modelled
+# landslides versus 12,959 observed, with the lowest combined count/distribution
+# discrepancy among the calibrated members.
+soil_params:
+  cohesion_eff: 10000
+  angle_int_frict: 30
+  submerged_soil_proportion: 0.1
+  max_soil_depth: 1.5
+  distribution: "elevation"
+  relationship: "linear"
+  decay_rate: 1.0
+  exponent: 2.0
+  drainage_transform: "threshold"
+  drainage_threshold: 1.0e6
+  drainage_power: 0.3
+  b: -1.0
+  P0: 0.05
+  h_star: 1.0
+  D: 0.01
+  h_min: 0.1
+  h_no_ss: 0.0
+  eps: 1.0e-10
+  scale: 0.01
+  window: 5
+
+pga:
+  distribution: "raster"
+  horizontal_path: "input_data/nz/Kaikoura_PGA_float32.npy"
+  # ShakeMap supplies horizontal PGA only. Retain the ensemble's V/H ratio
+  # (0.2 / 0.5) for the vertical component used by the stability calculation.
+  vertical_to_horizontal_ratio: 0.4
+
+simulation:
+  selection_method: "probabilistic"
+  proportion_method: "conservative"
+  custom_proportion: null
+  handle_small: "merge"
+  aspect_interval: 20
+  verbose: false
+  compute_displacement: false
+  time_shaking: 10
+  displacement_threshold: 0.0
+  enable_runout: false
+  update_soil: false
+
+split_by_width:
+  enabled: true
+  pickle_path: "input_data/nz/measured_data.pkl"
+  min_area: 900
+  csv_paths:
+    inventory_csv: "input_data/nz/measuredLandslides_all.csv"
+    zonal_stats_csv: "input_data/nz/measuredLandslides_all_zonalStats.csv"
+  width_threshold: 1.5
+  max_iterations: 5
+  min_region_size: 10
+  convergence_threshold: 0.75
