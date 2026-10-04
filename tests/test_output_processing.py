@@ -1,5 +1,8 @@
 import json
 import logging
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -367,3 +370,40 @@ def test_optional_storage_formats_have_safe_fallbacks(tmp_path):
     assert (run_dir / "rasters.zarr").exists() or (
         run_dir / "rasters" / "metadata.json"
     ).exists()
+
+
+def test_analysis_cli_processes_runs_in_parallel(tmp_path):
+    runs_dir = tmp_path / "runs"
+    for member in ("first", "second"):
+        save_model_run(
+            False,
+            make_completed_run(),
+            make_config(),
+            runs_dir / member,
+            logging.getLogger("parallel-analysis-test"),
+        )
+
+    output_dir = tmp_path / "analysis"
+    script = Path(__file__).parents[1] / "analyse_landslide_outputs.py"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--runs",
+            str(runs_dir),
+            "--output",
+            str(output_dir),
+            "--jobs",
+            "2",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Analysing 2 runs with 2 workers" in completed.stdout
+    assert len(list(output_dir.glob("*_maps.png"))) == 2
+    assert (
+        len(pd.read_csv(output_dir / "distribution_summary.csv")["run_id"].unique())
+        == 2
+    )

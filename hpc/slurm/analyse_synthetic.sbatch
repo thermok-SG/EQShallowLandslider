@@ -3,7 +3,7 @@
 #SBATCH --partition=cpu_shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00
 #SBATCH --output=slurm-%x-%j.out
@@ -44,4 +44,5 @@ fi
 cd "${PROJECT_DIR}"
 python -u "${PROJECT_DIR}/analyse_landslide_outputs.py" \
   --runs "${RUNS_DIR}" \
-  --output "${OUTPUT_DIR}"
+  --output "${OUTPUT_DIR}" \
+  --jobs "${ANALYSIS_JOBS:-${SLURM_CPUS_PER_TASK}}"

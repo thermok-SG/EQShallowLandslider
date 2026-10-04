@@ -425,8 +425,16 @@ cohesion, friction angle, soil depth, and PGA:
 ```bash
 python analyse_landslide_outputs.py \
   --runs runs/synthetic_stability \
-  --output analysis_output/synthetic_stability
+  --output analysis_output/synthetic_stability \
+  --jobs 4
 ```
+
+`--jobs` parallelizes the independent per-run distribution plots, spatial
+maps, summaries, and observed-distribution comparisons. Each worker loads one
+complete raster bundle and constructs large Matplotlib figures, so choose the
+worker count from both available CPUs and memory. Parameter-sensitivity plots
+reuse one in-memory load of the region tables instead of rereading the full
+ensemble for every swept parameter. The default remains one worker.
 
 Use `--vary soil_params.cohesion_eff` only when you want to limit output to one
 effect. The shorter `--vary cohesion_eff` is accepted when that leaf name

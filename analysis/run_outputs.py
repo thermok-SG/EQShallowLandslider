@@ -107,11 +107,16 @@ def load_run(run_dir, load_rasters=False, mmap_mode="r"):
     }
 
 
-def load_region_ensemble(output_root, selected_only=False):
-    """Combine region tables from every discovered v1.2 run."""
+def load_region_ensemble(output_root, selected_only=False, runs=None):
+    """Combine region tables from discovered or already loaded v1.2 runs."""
     tables = []
-    for run_dir in discover_runs(output_root):
-        table = load_run(run_dir, load_rasters=False)["regions"]
+    if runs is None:
+        runs = (
+            load_run(run_dir, load_rasters=False)
+            for run_dir in discover_runs(output_root)
+        )
+    for run in runs:
+        table = run["regions"]
         if selected_only and "selected" in table:
             table = table[table["selected"]]
         tables.append(table)
@@ -205,28 +210,32 @@ def _resolve_swept_parameter(runs, requested):
     )
 
 
-def _latest_ensemble_runs(output_root):
+def _latest_ensemble_runs(output_root, runs=None):
     """Load one completed run per ensemble digest, preferring the latest rerun."""
     latest = {}
-    for run_dir in discover_runs(output_root):
-        run = load_run(run_dir, load_rasters=False)
+    if runs is None:
+        runs = (
+            load_run(run_dir, load_rasters=False)
+            for run_dir in discover_runs(output_root)
+        )
+    for run in runs:
         ensemble = run["manifest"].get("config", {}).get("ensemble", {})
         if not isinstance(ensemble.get("parameters"), dict):
             continue
         digest = ensemble.get("config_digest")
-        key = (ensemble.get("name", "ensemble"), digest or str(run_dir))
+        key = (ensemble.get("name", "ensemble"), digest or str(run["path"]))
         created = run["manifest"].get("created_utc", "")
         if key not in latest or created > latest[key][0]:
             latest[key] = (created, run)
     return [item[1] for item in latest.values()]
 
 
-def swept_parameters(output_root):
+def swept_parameters(output_root, runs=None):
     """Return the sorted dotted parameter paths found in completed ensembles."""
     return sorted(
         {
             path
-            for run in _latest_ensemble_runs(output_root)
+            for run in _latest_ensemble_runs(output_root, runs=runs)
             for path in run["manifest"]["config"]["ensemble"]["parameters"]
         }
     )
@@ -238,6 +247,7 @@ def plot_parameter_sensitivity(
     output_dir,
     selected_only=True,
     observed=None,
+    runs=None,
 ):
     """Create controlled ensemble comparisons for one swept parameter.
 
@@ -262,6 +272,9 @@ def plot_parameter_sensitivity(
         Compare selected landslides rather than all candidate regions.
     observed : pandas.DataFrame, optional
         Measured landslides normalized to the model region-column convention.
+    runs : iterable of dict, optional
+        Already loaded runs to reuse instead of rediscovering and rereading
+        their region tables.
 
     Returns
     -------
@@ -269,7 +282,7 @@ def plot_parameter_sensitivity(
         One row per plotted run and metric, including the varied value, fixed
         controls, sample count, median, and figure path.
     """
-    runs = _latest_ensemble_runs(output_root)
+    runs = _latest_ensemble_runs(output_root, runs=runs)
     if not runs:
         raise ValueError(f"No completed ensemble runs found beneath {output_root}")
     parameter = _resolve_swept_parameter(runs, parameter)

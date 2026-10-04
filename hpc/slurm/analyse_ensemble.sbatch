@@ -3,7 +3,7 @@
 #SBATCH --partition=cpu_shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00
 #SBATCH --output=slurm-%x-%j.out
@@ -55,4 +55,5 @@ python -u "${PROJECT_DIR}/analyse_landslide_outputs.py" \
   --output "${OUTPUT_DIR}" \
   --observed-inventory "${OBSERVED_DIR}/measuredLandslides_all.csv" \
   --observed-zonal-stats "${ZONAL_STATS}" \
-  --min-observed-area 900
+  --min-observed-area 900 \
+  --jobs "${ANALYSIS_JOBS:-${SLURM_CPUS_PER_TASK}}"
