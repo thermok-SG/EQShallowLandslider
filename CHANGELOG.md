@@ -9,6 +9,22 @@ every edited line.
 
 ## Unreleased working tree - multiflow runout and notebook integration
 
+- Added measured-PGA raster input for single-event simulations. Horizontal and
+  optional vertical PGA grids can be loaded from aligned ESRI ASCII or compact
+  float32 NumPy files; when only horizontal PGA is available, the vertical
+  component is derived from a configurable V/H ratio. Raster shape, spacing
+  where available, finite values, non-negative values, and DEM nodata masking
+  are validated. Existing synthetic PGA distributions remain unchanged.
+- Added a Kaikoura ShakeMap single-run configuration using the best-balanced
+  downloaded ensemble member (10 kPa cohesion, 30-degree friction angle, and
+  0.10 submerged-soil proportion), plus HPC transfer/submission guidance. The
+  large event raster remains an external workspace input rather than Git data.
+- Parallelised independent per-run output analysis with a configurable worker
+  count, while reusing loaded region tables for ensemble sensitivity plots to
+  reduce repeated I/O. The HPC ensemble and synthetic analysis launchers now
+  request and use four workers by default.
+- Narrowed the follow-up Kaikoura ensemble configuration to the 15 kPa
+  cohesion slice while retaining its friction-angle and saturation sweeps.
 - Added a resumable YAML ensemble launcher that expands dotted parameter grids,
   holds the stochastic seed constant, validates and records every generated
   member, supports process-level parallelism, and writes separate member logs.

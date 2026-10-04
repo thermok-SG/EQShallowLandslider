@@ -108,6 +108,23 @@ sbatch --export=ALL,CONFIG="$PWD/hpc/configs/kaikoura_config.yaml" hpc/slurm/run
 sbatch --export=ALL,CONFIG="$PWD/hpc/configs/kaikoura_config.yaml" hpc/slurm/run_ensemble.sbatch
 ```
 
+The measured Kaikoura ShakeMap configuration uses the calibrated ensemble
+parameters and a float32 NumPy PGA raster to avoid repeatedly parsing the much
+larger long-decimal ASCII export:
+
+```bash
+sbatch --export=ALL,CONFIG="$PWD/hpc/configs/kaikoura_shakemap_best_fit.yaml" hpc/slurm/run_single.sbatch
+```
+
+The raster-PGA interface is region-independent. A future Gorkha configuration
+can set `pga.distribution: raster`, point `pga.horizontal_path` at an aligned
+ASCII or `.npy` grid, and either provide `pga.vertical_path` or set
+`pga.vertical_to_horizontal_ratio`. NumPy grids do not contain georeferencing,
+so verify and resample the source against the DEM before conversion; the model
+then enforces an identical array shape and masks PGA wherever the DEM is
+nodata. Keep these event rasters in `hpc/workspace/input_data/<region>/` and
+transfer them separately from Git.
+
 The ensemble launcher runs one member at a time. Increase `--jobs`, requested
 CPUs, and memory together only after measuring one complete member.
 
@@ -129,6 +146,10 @@ sbatch --export=ALL,REGION=japan hpc/slurm/analyse_ensemble.sbatch
 
 Ensemble analysis automatically creates controlled sensitivity plots for every
 swept parameter in addition to the per-run distribution and spatial plots.
+The ensemble and synthetic analysis launchers request four CPUs and use four
+per-run analysis workers by default. Override this with, for example,
+`--export=ALL,ANALYSIS_JOBS=2` when raster size or node memory calls for fewer
+concurrent workers.
 
 ## Transfer data separately from code
 
