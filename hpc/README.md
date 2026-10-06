@@ -150,6 +150,15 @@ sbatch --export=ALL,REGION=japan hpc/slurm/analyse_single.sbatch
 sbatch --export=ALL,REGION=japan hpc/slurm/analyse_ensemble.sbatch
 ```
 
+Select a named single-run experiment with `RUN_NAME`. The launcher reads from
+`runs/<region>/<run-name>` and writes to
+`analysis_output/<region>_<run-name>`:
+
+```bash
+sbatch --export=ALL,REGION=kaikoura,OBSERVED_REGION=nz,\
+RUN_NAME=shakemap_elevation_linear_corrected hpc/slurm/analyse_single.sbatch
+```
+
 Ensemble analysis automatically creates controlled sensitivity plots for every
 swept parameter in addition to the per-run distribution and spatial plots.
 The ensemble and synthetic analysis launchers request four CPUs and use four

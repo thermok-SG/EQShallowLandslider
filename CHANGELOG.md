@@ -9,6 +9,9 @@ every edited line.
 
 ## Unreleased working tree - multiflow runout and notebook integration
 
+- Added `RUN_NAME` support to the HPC single-run analysis launcher so named
+  experiments outside the default `single` directory can be analysed without
+  moving their outputs.
 - Added an optional pre-run spatial alignment check for measured PGA rasters.
   It compares a configured raster background/NoData footprint with the DEM
   NoData footprint after row-order conversion, logs overlap metrics, and
