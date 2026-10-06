@@ -8,6 +8,7 @@ This script is not required to use the component itself.
 import argparse
 import copy
 import gc
+import logging
 import os
 import time
 
@@ -146,8 +147,60 @@ def load_soil_depth_raster(path, model_grid, nodata_mask=None):
     return values
 
 
+def _verify_pga_alignment(values, nodata_mask, options, row_order):
+    """Verify spatial alignment from corresponding raster/DEM background masks."""
+    if not options or not options.get("enabled", False):
+        return None
+    if nodata_mask is None:
+        raise ValueError("PGA alignment check requires a DEM nodata mask")
+
+    dem_mask = np.asarray(nodata_mask, dtype=bool).reshape(values.shape)
+    raster_mask = ~np.isfinite(values)
+    reference_value = options.get("reference_value")
+    if reference_value is not None:
+        raster_mask |= np.isclose(
+            values,
+            float(reference_value),
+            rtol=0.0,
+            atol=float(options.get("atol", 0.0)),
+        )
+
+    dem_count = int(np.count_nonzero(dem_mask))
+    raster_count = int(np.count_nonzero(raster_mask))
+    if dem_count == 0 or raster_count == 0:
+        raise ValueError(
+            "PGA alignment check requires non-empty DEM and raster background masks"
+        )
+
+    intersection = int(np.count_nonzero(dem_mask & raster_mask))
+    union = int(np.count_nonzero(dem_mask | raster_mask))
+    iou = intersection / union
+    raster_overlap = intersection / raster_count
+    dem_overlap = intersection / dem_count
+    minimum_iou = float(options.get("minimum_iou", 0.9))
+    message = (
+        f"PGA/DEM alignment: IoU={iou:.4f}, "
+        f"raster-background overlap={raster_overlap:.4f}, "
+        f"DEM-nodata overlap={dem_overlap:.4f}, row_order={row_order}"
+    )
+    if iou < minimum_iou:
+        raise ValueError(
+            f"{message}; below required minimum_iou={minimum_iou:.4f}"
+        )
+    logging.getLogger("landslider").info(message)
+    return {
+        "iou": iou,
+        "raster_background_overlap": raster_overlap,
+        "dem_nodata_overlap": dem_overlap,
+    }
+
+
 def load_pga_raster(
-    path, model_grid, nodata_mask=None, row_order="south_to_north"
+    path,
+    model_grid,
+    nodata_mask=None,
+    row_order="south_to_north",
+    alignment_check=None,
 ):
     """Load a horizontal or vertical PGA raster in units of g.
 
@@ -184,6 +237,8 @@ def load_pga_raster(
         values = np.asarray(
             pga_grid.at_node["earthquake__pga"], dtype=np.float32
         ).reshape(model_grid.shape)
+
+    _verify_pga_alignment(values, nodata_mask, alignment_check, row_order)
 
     mask = np.zeros(model_grid.shape, dtype=bool)
     if nodata_mask is not None:
@@ -365,6 +420,22 @@ def prepare_config(config, chunking_override=None):
         raise ValueError(
             "pga.row_order must be north_to_south or south_to_north"
         )
+    alignment_check = pga.get("alignment_check", {})
+    if not isinstance(alignment_check, dict):
+        raise ValueError("pga.alignment_check must be a YAML mapping")
+    if alignment_check.get("enabled", False):
+        reference_value = alignment_check.get("reference_value")
+        if reference_value is not None and not np.isfinite(float(reference_value)):
+            raise ValueError(
+                "pga.alignment_check.reference_value must be finite or null"
+            )
+        minimum_iou = float(alignment_check.get("minimum_iou", 0.9))
+        if not 0.0 <= minimum_iou <= 1.0:
+            raise ValueError(
+                "pga.alignment_check.minimum_iou must be between 0 and 1"
+            )
+        if float(alignment_check.get("atol", 0.0)) < 0.0:
+            raise ValueError("pga.alignment_check.atol cannot be negative")
     vertical_ratio = pga.get("vertical_to_horizontal_ratio")
     if vertical_ratio is not None:
         vertical_ratio = float(vertical_ratio)
@@ -490,13 +561,22 @@ def configured_pga(grid, pga_cfg, default_seed):
     )
     if pga_cfg.get("distribution", "uniform") == "raster":
         row_order = pga_cfg.get("row_order", "south_to_north")
+        alignment_check = pga_cfg.get("alignment_check")
         pga_h = load_pga_raster(
-            pga_cfg["horizontal_path"], grid, nodata, row_order=row_order
+            pga_cfg["horizontal_path"],
+            grid,
+            nodata,
+            row_order=row_order,
+            alignment_check=alignment_check,
         ).ravel()
         vertical_path = pga_cfg.get("vertical_path")
         if vertical_path:
             pga_v = load_pga_raster(
-                vertical_path, grid, nodata, row_order=row_order
+                vertical_path,
+                grid,
+                nodata,
+                row_order=row_order,
+                alignment_check=alignment_check,
             ).ravel()
         else:
             ratio = pga_cfg.get("vertical_to_horizontal_ratio")

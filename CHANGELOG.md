@@ -9,6 +9,11 @@ every edited line.
 
 ## Unreleased working tree - multiflow runout and notebook integration
 
+- Added an optional pre-run spatial alignment check for measured PGA rasters.
+  It compares a configured raster background/NoData footprint with the DEM
+  NoData footprint after row-order conversion, logs overlap metrics, and
+  aborts before stability calculations when mask IoU is below the configured
+  threshold.
 - Fixed north-south orientation of measured PGA stored as NumPy arrays by
   adding an explicit row-order option. ESRI-derived north-first arrays are now
   flipped into Landlab's south-first node order before DEM masking and model

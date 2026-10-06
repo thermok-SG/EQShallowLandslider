@@ -71,6 +71,14 @@ pga:
   # The NumPy file preserves the ESRI ASCII convention: its first row is the
   # northern edge. Landlab node arrays start at the southern edge.
   row_order: "north_to_south"
+  # The resampled source uses exactly 1.0 outside its mapped footprint. Check
+  # that this background footprint overlaps the DEM nodata footprint before
+  # any stability tiles run. This catches flips, transposes, and large shifts.
+  alignment_check:
+    enabled: true
+    reference_value: 1.0
+    atol: 0.0
+    minimum_iou: 0.95
   # ShakeMap supplies horizontal PGA only. Retain the ensemble's V/H ratio
   # (0.2 / 0.5) for the vertical component used by the stability calculation.
   vertical_to_horizontal_ratio: 0.4

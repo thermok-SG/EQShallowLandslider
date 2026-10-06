@@ -103,6 +103,18 @@ def test_pga_raster_row_order_is_validated():
         prepare_config(config)
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("minimum_iou", 1.1), ("minimum_iou", -0.1), ("atol", -1.0)],
+)
+def test_pga_alignment_check_options_are_validated(key, value):
+    config = minimal_config()
+    config["pga"]["alignment_check"] = {"enabled": True, key: value}
+
+    with pytest.raises(ValueError, match=key):
+        prepare_config(config)
+
+
 def test_configured_pga_loads_numpy_raster_and_derives_vertical(tmp_path):
     grid = RasterModelGrid((3, 4), xy_spacing=30)
     grid.add_zeros("topographic__elevation", at="node")
@@ -150,6 +162,53 @@ def test_numpy_pga_raster_can_convert_north_first_rows_to_landlab_order(tmp_path
     values = load_pga_raster(path, grid, row_order="north_to_south")
 
     assert np.array_equal(values, np.flipud(north_first))
+
+
+def test_pga_alignment_check_accepts_matching_nodata_footprints(tmp_path):
+    grid = RasterModelGrid((3, 4), xy_spacing=30)
+    nodata = np.zeros(grid.shape, dtype=bool)
+    nodata[0, :] = True
+    north_first = np.full(grid.shape, 0.3, dtype="float32")
+    north_first[-1, :] = 1.0
+    path = tmp_path / "pga.npy"
+    np.save(path, north_first)
+
+    values = load_pga_raster(
+        path,
+        grid,
+        nodata,
+        row_order="north_to_south",
+        alignment_check={
+            "enabled": True,
+            "reference_value": 1.0,
+            "minimum_iou": 0.95,
+        },
+    )
+
+    assert np.isnan(values[0, :]).all()
+
+
+def test_pga_alignment_check_rejects_wrong_row_order(tmp_path):
+    grid = RasterModelGrid((3, 4), xy_spacing=30)
+    nodata = np.zeros(grid.shape, dtype=bool)
+    nodata[0, :] = True
+    north_first = np.full(grid.shape, 0.3, dtype="float32")
+    north_first[-1, :] = 1.0
+    path = tmp_path / "pga.npy"
+    np.save(path, north_first)
+
+    with pytest.raises(ValueError, match="below required minimum_iou"):
+        load_pga_raster(
+            path,
+            grid,
+            nodata,
+            row_order="south_to_north",
+            alignment_check={
+                "enabled": True,
+                "reference_value": 1.0,
+                "minimum_iou": 0.95,
+            },
+        )
 
 
 def test_invalid_drainage_relationship_is_rejected():

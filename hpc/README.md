@@ -124,8 +124,12 @@ so verify and resample the source against the DEM before conversion. Set
 `pga.row_order: north_to_south` when the first NumPy row is the northern edge,
 as in an array copied directly from ESRI ASCII; use `south_to_north` for an
 array already arranged in Landlab node order. The model enforces an identical
-array shape and masks PGA wherever the DEM is nodata. Keep these event rasters
-in `hpc/workspace/input_data/<region>/` and transfer them separately from Git.
+array shape and masks PGA wherever the DEM is nodata. For a spatial preflight,
+enable `pga.alignment_check`, specify the raster's background or nodata value,
+and set a minimum mask intersection-over-union. The run aborts before stability
+calculation if the oriented raster footprint does not sufficiently match the
+DEM nodata footprint. Keep these event rasters in
+`hpc/workspace/input_data/<region>/` and transfer them separately from Git.
 
 The ensemble launcher runs one member at a time. Increase `--jobs`, requested
 CPUs, and memory together only after measuring one complete member.
