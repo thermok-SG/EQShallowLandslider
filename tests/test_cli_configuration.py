@@ -95,6 +95,14 @@ def test_pga_vertical_raster_path_must_be_a_string():
         prepare_config(config)
 
 
+def test_pga_raster_row_order_is_validated():
+    config = minimal_config()
+    config["pga"]["row_order"] = "sideways"
+
+    with pytest.raises(ValueError, match="row_order"):
+        prepare_config(config)
+
+
 def test_configured_pga_loads_numpy_raster_and_derives_vertical(tmp_path):
     grid = RasterModelGrid((3, 4), xy_spacing=30)
     grid.add_zeros("topographic__elevation", at="node")
@@ -131,6 +139,17 @@ def test_numpy_pga_raster_shape_must_match_grid(tmp_path):
 
     with pytest.raises(ValueError, match="does not match DEM shape"):
         load_pga_raster(path, grid)
+
+
+def test_numpy_pga_raster_can_convert_north_first_rows_to_landlab_order(tmp_path):
+    grid = RasterModelGrid((3, 4), xy_spacing=30)
+    north_first = np.arange(12, dtype="float32").reshape(grid.shape)
+    path = tmp_path / "pga.npy"
+    np.save(path, north_first)
+
+    values = load_pga_raster(path, grid, row_order="north_to_south")
+
+    assert np.array_equal(values, np.flipud(north_first))
 
 
 def test_invalid_drainage_relationship_is_rejected():

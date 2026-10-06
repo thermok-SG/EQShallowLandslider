@@ -146,13 +146,16 @@ def load_soil_depth_raster(path, model_grid, nodata_mask=None):
     return values
 
 
-def load_pga_raster(path, model_grid, nodata_mask=None):
+def load_pga_raster(
+    path, model_grid, nodata_mask=None, row_order="south_to_north"
+):
     """Load a horizontal or vertical PGA raster in units of g.
 
     NumPy ``.npy`` files are preferred for large, already-aligned production
     rasters: they retain the source float32 precision while avoiding the size
-    and parsing overhead of a long-decimal ESRI ASCII grid. ESRI ASCII remains
-    supported for validation and smaller inputs.
+    and parsing overhead of a long-decimal ESRI ASCII grid. ``row_order``
+    declares whether a NumPy file follows geospatial north-first row order or
+    Landlab's south-first node order. ESRI ASCII is flipped by Landlab itself.
     """
     path = os.fspath(path)
     if path.lower().endswith(".npy"):
@@ -163,6 +166,8 @@ def load_pga_raster(path, model_grid, nodata_mask=None):
                 f"{model_grid.shape}"
             )
         values = np.asarray(values, dtype=np.float32)
+        if row_order == "north_to_south":
+            values = np.flipud(values)
     else:
         with open(path) as stream:
             pga_grid = esri_ascii.load(stream, name="earthquake__pga", at="node")
@@ -354,6 +359,12 @@ def prepare_config(config, chunking_override=None):
         pga["vertical_path"], str
     ):
         raise ValueError("pga.vertical_path must be null or a path string")
+    if pga.get("row_order", "south_to_north") not in {
+        "north_to_south", "south_to_north"
+    }:
+        raise ValueError(
+            "pga.row_order must be north_to_south or south_to_north"
+        )
     vertical_ratio = pga.get("vertical_to_horizontal_ratio")
     if vertical_ratio is not None:
         vertical_ratio = float(vertical_ratio)
@@ -478,10 +489,15 @@ def configured_pga(grid, pga_cfg, default_seed):
         grid.at_node["nodata__mask"] if "nodata__mask" in grid.at_node else None
     )
     if pga_cfg.get("distribution", "uniform") == "raster":
-        pga_h = load_pga_raster(pga_cfg["horizontal_path"], grid, nodata).ravel()
+        row_order = pga_cfg.get("row_order", "south_to_north")
+        pga_h = load_pga_raster(
+            pga_cfg["horizontal_path"], grid, nodata, row_order=row_order
+        ).ravel()
         vertical_path = pga_cfg.get("vertical_path")
         if vertical_path:
-            pga_v = load_pga_raster(vertical_path, grid, nodata).ravel()
+            pga_v = load_pga_raster(
+                vertical_path, grid, nodata, row_order=row_order
+            ).ravel()
         else:
             ratio = pga_cfg.get("vertical_to_horizontal_ratio")
             if ratio is None:

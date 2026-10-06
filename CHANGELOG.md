@@ -9,6 +9,10 @@ every edited line.
 
 ## Unreleased working tree - multiflow runout and notebook integration
 
+- Fixed north-south orientation of measured PGA stored as NumPy arrays by
+  adding an explicit row-order option. ESRI-derived north-first arrays are now
+  flipped into Landlab's south-first node order before DEM masking and model
+  calculations; existing south-first arrays remain supported.
 - Added measured-PGA raster input for single-event simulations. Horizontal and
   optional vertical PGA grids can be loaded from aligned ESRI ASCII or compact
   float32 NumPy files; when only horizontal PGA is available, the vertical

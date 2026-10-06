@@ -120,10 +120,12 @@ The raster-PGA interface is region-independent. A future Gorkha configuration
 can set `pga.distribution: raster`, point `pga.horizontal_path` at an aligned
 ASCII or `.npy` grid, and either provide `pga.vertical_path` or set
 `pga.vertical_to_horizontal_ratio`. NumPy grids do not contain georeferencing,
-so verify and resample the source against the DEM before conversion; the model
-then enforces an identical array shape and masks PGA wherever the DEM is
-nodata. Keep these event rasters in `hpc/workspace/input_data/<region>/` and
-transfer them separately from Git.
+so verify and resample the source against the DEM before conversion. Set
+`pga.row_order: north_to_south` when the first NumPy row is the northern edge,
+as in an array copied directly from ESRI ASCII; use `south_to_north` for an
+array already arranged in Landlab node order. The model enforces an identical
+array shape and masks PGA wherever the DEM is nodata. Keep these event rasters
+in `hpc/workspace/input_data/<region>/` and transfer them separately from Git.
 
 The ensemble launcher runs one member at a time. Increase `--jobs`, requested
 CPUs, and memory together only after measuring one complete member.
