@@ -168,8 +168,11 @@ class ShallowLandslider(Component):
     -----
     External setup (DEM, flow routing, terrain attributes, soil depth,
     PGA generation) is expected to be done outside the component to keep the
-    class simple. The component reads the following input fields when present:
-    `topographic__elevation`, `soil__depth`, and optional earthquake PGA fields.
+    class simple. The component reads `topographic__elevation`, `soil__depth`,
+    optional earthquake PGA fields, and `soil__relative_wetness` when
+    ``wetness_source="field"``. Omitted PGA is zero; shaking must be supplied
+    explicitly. Field-driven wetness is read on every stability evaluation so
+    an external hydrology component can update it through time.
     """
 
     _name = "ShallowLandslider"
@@ -193,6 +196,18 @@ class ShallowLandslider(Component):
             "units": "m",
             "optional": False,
             "doc": "Depth of soil or weathered bedrock",
+        },
+        "soil__relative_wetness": {
+            "intent": "in",
+            "mapping": "node",
+            "dtype": float,
+            "units": "-",
+            "optional": True,
+            "doc": (
+                "Relative saturated thickness of the potentially unstable soil "
+                "column. Required when wetness_source='field'; values at core "
+                "nodes must be finite and between zero and one."
+            ),
         },
         "earthquake__horizontal_pga": {
             "intent": "in",
@@ -228,10 +243,9 @@ class ShallowLandslider(Component):
         cohesion_eff: float = 15000.0,
         angle_int_frict: float = 30.0,
         submerged_soil_proportion: float = 0.5,
+        wetness_source: str = "constant",
         pga_h: Optional[np.ndarray | float] = None,
         pga_v: Optional[np.ndarray | float] = None,
-        pga_h_max: float = 0.3,
-        pga_v_max: float = 0.1,
         aspect_interval: int = 20,
         selection_method: str = "probabilistic",
         proportion_method: str = "conservative",
@@ -260,12 +274,19 @@ class ShallowLandslider(Component):
         angle_int_frict : float
             Angle of internal friction **in degrees**.
         submerged_soil_proportion : float, optional
-            Proportion of submerged soil (0-1); used for suction proxy. Default 0.5.
+            Fixed relative wetness of the potentially unstable soil column,
+            constrained to [0, 1]. Used only when ``wetness_source="constant"``.
+            The default is 0.5. This parameter retains the pre-2.0 interface.
+        wetness_source : {"constant", "field"}, optional
+            Source of relative wetness used by the unchanged ShallowLandslider
+            stability equations. ``"constant"`` uses
+            ``submerged_soil_proportion``. ``"field"`` requires the node field
+            ``soil__relative_wetness`` and reads its current values on every
+            stability evaluation. Default ``"constant"``.
         pga_h, pga_v : float or array-like, optional
-            Horizontal/vertical PGA in multiples of g. If omitted, `pga_h_max` and
-            `pga_v_max` are used to populate core nodes.
-        pga_h_max, pga_v_max : float, optional
-            Fallback PGA magnitudes (multiples of g) for core nodes.
+            Horizontal/vertical PGA in multiples of g. If omitted and no
+            corresponding grid field exists, PGA is zero. Shaking must be
+            supplied explicitly.
         aspect_interval : int, optional
             Degrees per aspect zone for subgrouping. Default 20.
         selection_method : {"probabilistic", "pga_weighted"}
@@ -304,6 +325,13 @@ class ShallowLandslider(Component):
         self.cohesion_eff = float(cohesion_eff)
         self.angle_int_frict = float(np.radians(angle_int_frict))
         self.submerged_soil_proportion = float(submerged_soil_proportion)
+        self.wetness_source = str(wetness_source)
+        if self.wetness_source not in {"constant", "field"}:
+            raise ValueError(
+                "wetness_source must be either 'constant' or 'field', got "
+                f"{self.wetness_source!r}"
+            )
+        self._relative_wetness = None
         self.aspect_interval = int(aspect_interval)
         self.selection_method = str(selection_method)
         self.proportion_method = str(proportion_method)
@@ -325,6 +353,7 @@ class ShallowLandslider(Component):
         self._a_transient = None
         self._a_driving = None
         self._a_diff = None
+        self._critical_wetness = None
         self._unstable_mask = None
         self._labels = None
         self._filled_labels = None
@@ -337,6 +366,12 @@ class ShallowLandslider(Component):
         self._high_disp_nodes = None
         self._group_properties_df = None
 
+        # Validate the configured wetness contract before creating optional
+        # bedrock or PGA fields. Field mode is checked again before every
+        # stability calculation because an external hydrology component may
+        # modify the field between calls.
+        self._relative_wetness = self._get_relative_wetness()
+
         # Ensure optional inputs
         z = self.grid.at_node["topographic__elevation"]
         if "bedrock__elevation" not in self.grid.at_node:
@@ -345,10 +380,10 @@ class ShallowLandslider(Component):
 
         # PGA fields
         self._pga_h = self._get_or_create_pga_field(
-            "earthquake__horizontal_pga", pga_h, pga_h_max
+            "earthquake__horizontal_pga", pga_h
         )
         self._pga_v = self._get_or_create_pga_field(
-            "earthquake__vertical_pga", pga_v, pga_v_max
+            "earthquake__vertical_pga", pga_v
         )
 
         # Cache aspect
@@ -384,7 +419,8 @@ class ShallowLandslider(Component):
         Returns
         -------
         dict
-            Contains keys: `factor_of_safety`, `a_transient`, `a_driving`, `a_diff`,
+            Contains keys: `relative_wetness`, `critical_relative_wetness`,
+            `factor_of_safety`, `a_transient`, `a_driving`, `a_diff`,
             `unstable_mask`, `labels`, `filled_labels`, `hole_fill_mask`,
             `aspect_labels`, `split_labels`,
             `selected_labels`, `selected_proportion`, `newmark`,
@@ -392,6 +428,8 @@ class ShallowLandslider(Component):
             runout-owned diagnostics under `runout` when enabled.
         """
         return {
+            "relative_wetness": self._relative_wetness,
+            "critical_relative_wetness": self._critical_wetness,
             "factor_of_safety": self._fos,
             "a_transient": self._a_transient,
             "a_driving": self._a_driving,
@@ -479,9 +517,7 @@ class ShallowLandslider(Component):
     # ---------------------------------------------------------------------
     # Pipeline steps
     # ---------------------------------------------------------------------
-    def _get_or_create_pga_field(
-        self, name: str, provided, fallback: float
-    ) -> np.ndarray:
+    def _get_or_create_pga_field(self, name: str, provided) -> np.ndarray:
         """
         Create or return an existing PGA node field.
 
@@ -490,10 +526,8 @@ class ShallowLandslider(Component):
         name : str
             Landlab node field name to use (e.g., 'earthquake__horizontal_pga').
         provided : float or array-like or None
-            If None, populate core nodes with `fallback`. If scalar, populate
+            If None, leave the newly created field at zero. If scalar, populate
             core nodes with the scalar. If array, it must be size `n_nodes`.
-        fallback : float
-            Fallback PGA magnitude for core nodes when `provided` is None.
 
         Returns
         -------
@@ -503,9 +537,7 @@ class ShallowLandslider(Component):
         if name in self.grid.at_node:
             return self.grid.at_node[name]
         arr = self.grid.add_zeros(name, at="node")
-        if provided is None:
-            arr[self.grid.core_nodes] = float(fallback)
-        else:
+        if provided is not None:
             if np.isscalar(provided):
                 arr[self.grid.core_nodes] = float(provided)
             else:
@@ -518,6 +550,55 @@ class ShallowLandslider(Component):
         arr[self.grid.boundary_nodes] = np.nan
         return arr
 
+    def _get_relative_wetness(self) -> np.ndarray:
+        """Return and validate the current node-wise relative wetness.
+
+        Relative wetness, conventionally denoted by ``m``, is the fraction of
+        the potentially unstable soil thickness occupied by saturated soil. It
+        is not interchangeable with root-zone volumetric water content.
+
+        In ``constant`` mode this method returns a zero-copy broadcast view of
+        :attr:`submerged_soil_proportion`. In ``field`` mode it returns a view
+        of ``soil__relative_wetness``. Field values are deliberately retrieved
+        on every call so a hydrology component can update them through time
+        without reconstructing ``ShallowLandslider``.
+
+        Only core nodes are validated because Landlab boundary nodes may carry
+        NaN sentinels. Core values must be finite and lie in the closed interval
+        [0, 1]. Invalid hydrologic state raises rather than being silently
+        clipped, which makes coupling and unit errors visible.
+        """
+        if self.wetness_source == "constant":
+            value = float(self.submerged_soil_proportion)
+            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    "submerged_soil_proportion must be finite and between 0 and 1 "
+                    "when wetness_source='constant'"
+                )
+            return np.broadcast_to(value, (self.grid.number_of_nodes,))
+
+        field_name = "soil__relative_wetness"
+        if field_name not in self.grid.at_node:
+            raise ValueError(
+                f"{field_name} is required when wetness_source='field'"
+            )
+
+        wetness = np.asarray(self.grid.at_node[field_name], dtype=float)
+        if wetness.shape != (self.grid.number_of_nodes,):
+            raise ValueError(
+                f"{field_name} must have shape ({self.grid.number_of_nodes},), "
+                f"got {wetness.shape}"
+            )
+
+        core_wetness = wetness[self.grid.core_nodes]
+        if not np.all(np.isfinite(core_wetness)):
+            raise ValueError(f"{field_name} must be finite at all core nodes")
+        if np.any((core_wetness < 0.0) | (core_wetness > 1.0)):
+            raise ValueError(
+                f"{field_name} must be between 0 and 1 at all core nodes"
+            )
+        return wetness
+
     def _compute_stability(self):
         """
         Compute per-node factor of safety and transient/drive accelerations.
@@ -528,17 +609,27 @@ class ShallowLandslider(Component):
 
         with _log_stage("_compute_stability"):
             n_nodes = self.grid.number_of_nodes
+            relative_wetness = self._get_relative_wetness()
+            self._relative_wetness = relative_wetness
+            core_wetness = relative_wetness[self.grid.core_nodes]
             logger.debug(
                 f"  cohesion_eff={self.cohesion_eff:.1f} Pa | "
                 f"phi={np.degrees(self.angle_int_frict):.1f}° | "
-                f"m={self.submerged_soil_proportion}"
+                f"wetness_source={self.wetness_source} | "
+                f"m_min={float(np.min(core_wetness)):.3f} | "
+                f"m_max={float(np.max(core_wetness)):.3f}"
             )
 
             self._fos = self._factor_of_safety(
                 self.grid,
                 self.cohesion_eff,
                 self.angle_int_frict,
-                submerged_soil_proportion=self.submerged_soil_proportion,
+                submerged_soil_proportion=relative_wetness,
+            )
+            self._critical_wetness = self._critical_relative_wetness(
+                self.grid,
+                self.cohesion_eff,
+                self.angle_int_frict,
             )
             fos_valid = self._fos[np.isfinite(self._fos)]
             
@@ -559,7 +650,7 @@ class ShallowLandslider(Component):
                 self.grid,
                 self.cohesion_eff,
                 self.angle_int_frict,
-                submerged_soil_proportion=self.submerged_soil_proportion,
+                submerged_soil_proportion=relative_wetness,
                 a_h=self._pga_h * self.g,
                 a_v=self._pga_v * self.g,
             )
@@ -909,11 +1000,17 @@ class ShallowLandslider(Component):
         grid,
         cohesion_eff: float,
         angle_int_frict_rad: float,
-        submerged_soil_proportion: float = 0.5,
+        submerged_soil_proportion: float | np.ndarray = 0.5,
         soil_unit_weight: float = 15e3,
         water_unit_weight: float = 9.8e3,
     ) -> np.ndarray:
-        """Compute static factor of safety (FoS) at nodes. (Memory-optimized)"""
+        """Compute the existing static factor of safety at nodes.
+
+        ``submerged_soil_proportion`` may be a scalar or a node array. This
+        generalisation does not alter the stability equation; it only permits
+        an external hydrology component to provide spatially and temporally
+        varying relative wetness.
+        """
         # MEMOPT: avoid full copy
         soil_depth = np.asarray(grid["node"]["soil__depth"], dtype=np.float32)
 
@@ -925,7 +1022,13 @@ class ShallowLandslider(Component):
         np.maximum(soil_depth, 1e-3, out=soil_depth)  # in-place min clamp
         slope_safe = np.where(slope == 0.0, np.nan, slope)  # small temp; unavoidable
 
-        psi = submerged_soil_proportion * water_unit_weight * soil_depth  # float32
+        relative_wetness = np.asarray(submerged_soil_proportion, dtype=float)
+        if relative_wetness.ndim > 0 and relative_wetness.shape != soil_depth.shape:
+            raise ValueError(
+                "submerged_soil_proportion must be scalar or have one value per node"
+            )
+
+        psi = relative_wetness * water_unit_weight * soil_depth
         # Upcasts where needed; results are float64 where slope participates
         fos = (cohesion_eff - psi * np.tan(angle_int_frict_rad)) / (
             soil_unit_weight * soil_depth * np.sin(slope_safe)
@@ -933,12 +1036,62 @@ class ShallowLandslider(Component):
 
         return fos
 
+    def _critical_relative_wetness(
+        self,
+        grid,
+        cohesion_eff: float,
+        angle_int_frict_rad: float,
+        soil_unit_weight: float = 15e3,
+        water_unit_weight: float = 9.8e3,
+    ) -> np.ndarray:
+        r"""Return the relative wetness at which static factor of safety is one.
+
+        This diagnostic is derived by solving the unchanged
+        :meth:`_factor_of_safety` equation for relative wetness ``m`` at
+        ``FoS = 1``:
+
+        .. math::
+
+            m_c = \frac{C + \gamma_s h \sin\beta
+                  (\tan\phi / \tan\beta - 1)}
+                 {\gamma_w h \tan\phi}
+
+        where ``C`` is effective cohesion, ``h`` soil depth, ``beta`` slope,
+        ``phi`` internal friction angle, and ``gamma_s`` and ``gamma_w`` are
+        soil and water unit weights. It is analogous to critical acceleration:
+
+        * ``m_c <= 0`` indicates failure even in the dry limit;
+        * ``0 < m_c <= 1`` indicates a hydrologically reachable threshold;
+        * ``m_c > 1`` indicates saturation alone cannot reach failure under
+          the current parameters.
+
+        Values are intentionally not clipped because values outside [0, 1]
+        carry physical diagnostic meaning. Boundary values are set to NaN.
+        """
+        soil_depth = np.asarray(grid["node"]["soil__depth"], dtype=np.float64).copy()
+        np.maximum(soil_depth, 1e-3, out=soil_depth)
+        slope = self._slope_rad64
+        tan_phi = np.tan(angle_int_frict_rad)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            critical_wetness = (
+                cohesion_eff
+                + soil_unit_weight
+                * soil_depth
+                * np.sin(slope)
+                * (tan_phi / np.tan(slope) - 1.0)
+            ) / (water_unit_weight * soil_depth * tan_phi)
+
+        critical_wetness = np.asarray(critical_wetness, dtype=np.float64)
+        critical_wetness[grid.boundary_nodes] = np.nan
+        return critical_wetness
+
     def _critical_transient_acceleration(
         self,
         grid,
         cohesion_eff: float,
         angle_int_frict: float,
-        submerged_soil_proportion: float,
+        submerged_soil_proportion: float | np.ndarray,
         a_h: np.ndarray | float = 0.0,
         a_v: np.ndarray | float = 0.0,
         soil_unit_weight: float = 15e3,
@@ -954,7 +1107,8 @@ class ShallowLandslider(Component):
         grid : landlab.ModelGrid
         cohesion_eff : float
         angle_int_frict : float
-        submerged_soil_proportion : float
+        submerged_soil_proportion : float or array-like
+            Relative wetness as a scalar or one value per node.
         a_h, a_v : float or array-like
             Horizontal/vertical PGA converted to m/s^2 by multiplying `g` externally.
         soil_unit_weight, water_unit_weight : float
@@ -969,10 +1123,19 @@ class ShallowLandslider(Component):
         soil_depth[soil_depth == 0] += 0.001  # Avoids division by zero
 
         slope = self._slope_rad64
-        if submerged_soil_proportion >= 0:
-            psi = submerged_soil_proportion * water_unit_weight * soil_depth
-        else:
-            psi = -15e3
+        relative_wetness = np.asarray(submerged_soil_proportion, dtype=float)
+        if relative_wetness.ndim > 0 and relative_wetness.shape != soil_depth.shape:
+            raise ValueError(
+                "submerged_soil_proportion must be scalar or have one value per node"
+            )
+        # Preserve the historical negative-scalar suction sentinel for direct
+        # private-method callers while supporting node-wise arrays. The public
+        # wetness contract accepts only [0, 1].
+        psi = np.where(
+            relative_wetness >= 0.0,
+            relative_wetness * water_unit_weight * soil_depth,
+            -15e3,
+        )
 
         # critical transient acceleration (a_c_transient) in 3D
         a_c_transient = (
