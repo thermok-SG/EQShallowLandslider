@@ -331,12 +331,20 @@ plot, run:
 python examples/plot_nepal_hydrologic_foundation.py \
   --rows 468 --cols 648 \
   --output analysis_output/nepal_hydrologic_foundation_full.png \
-  --analysis-output analysis_output/nepal_terrain_analysis_full.png
+  --analysis-output analysis_output/nepal_terrain_analysis_full.png \
+  --pipeline-output analysis_output/nepal_pipeline_stages_full.png
 ```
 
 The analysis figure is produced by `analysis.plot_run_maps`, not a separate
 example-specific plotter. Optional curvature and hydrologic rasters extend the
 same adaptive analysis used for normal saved model runs.
+
+The pipeline diagnostic uses `analysis.plot_pipeline_stages` to show raw
+instability, connected components, hole filling, aspect splitting, KDE-informed
+width splitting, and probabilistic selection. Supplying `--pipeline-output`
+loads the measured Nepal length-width KDE configured in
+`hpc/configs/nepal_config.yaml`; use `--disable-kde` to show the physics-only
+pipeline and an explicitly skipped KDE panel.
 
 The prescribed footprint tests the coupling interface but is not presented as
 a rainfall-to-saturation model. Useful options include `--rows`, `--cols`,

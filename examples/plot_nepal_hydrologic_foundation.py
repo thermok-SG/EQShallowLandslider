@@ -47,14 +47,24 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from analysis import plot_run_maps
+from analysis import plot_pipeline_stages, plot_run_maps
 from components.shallow_landslider import ShallowLandslider
-from utils.utilities import apply_soil_depth, calculate_terrain_attribute, get_topo
+from utils.utilities import (
+    apply_soil_depth,
+    calculate_terrain_attribute,
+    get_topo,
+    pickle_or_not_to_pickle,
+)
 
 
 DEFAULT_DEM = Path(
     "input_data/dem/"
     "SRTMGL1_28.169999999999998_85.03_28.3_85.21000000000001.asc"
+)
+DEFAULT_KDE_BUNDLE = Path("input_data/nepal/measured_data.pkl")
+DEFAULT_INVENTORY = Path("input_data/nepal/measuredLandslides_all.csv")
+DEFAULT_ZONAL_STATS = Path(
+    "input_data/nepal/measuredLandslides_all_ZonalStats.csv"
 )
 
 
@@ -84,6 +94,26 @@ def _parse_args() -> argparse.Namespace:
             "Optional standard spatial-analysis figure showing terrain, the "
             "modelled soil-depth assumption, wetness, and stability diagnostics"
         ),
+    )
+    parser.add_argument(
+        "--pipeline-output",
+        type=Path,
+        help=(
+            "Optional six-stage candidate-processing diagnostic. Supplying this "
+            "option enables the repository's Nepal KDE width-splitting bundle "
+            "unless --disable-kde is also supplied."
+        ),
+    )
+    parser.add_argument(
+        "--kde-bundle",
+        type=Path,
+        default=DEFAULT_KDE_BUNDLE,
+        help="Measured Nepal length-width KDE bundle",
+    )
+    parser.add_argument(
+        "--disable-kde",
+        action="store_true",
+        help="Skip KDE width splitting in the pipeline diagnostic",
     )
     return parser.parse_args()
 
@@ -227,6 +257,24 @@ def main() -> None:
     wetness_field = grid.add_full(
         "soil__relative_wetness", args.background_wetness, at="node"
     )
+    split_by_width_config = None
+    if args.pipeline_output is not None and not args.disable_kde:
+        kde_bundle = pickle_or_not_to_pickle(
+            {
+                "file1": str(DEFAULT_INVENTORY),
+                "file2": str(DEFAULT_ZONAL_STATS),
+            },
+            pickle_path=str(args.kde_bundle),
+            min_area=900,
+        )
+        split_by_width_config = {
+            "kde_data": kde_bundle["kde_data"],
+            "kde_transform": kde_bundle["kde_transform"],
+            "width_threshold": 1.5,
+            "max_iterations": 5,
+            "min_region_size": 10,
+            "convergence_threshold": 0.75,
+        }
     landslider = ShallowLandslider(
         grid,
         cohesion_eff=args.cohesion,
@@ -234,6 +282,7 @@ def main() -> None:
         wetness_source="field",
         # PGA is intentionally omitted and therefore zero.
         random_seed=0,
+        split_by_width_config=split_by_width_config,
     )
 
     background = np.full(grid.number_of_nodes, args.background_wetness)
@@ -247,6 +296,17 @@ def main() -> None:
         landslider, wetness_field, storm
     )
     critical_wetness = landslider.results["critical_relative_wetness"].copy()
+
+    if args.pipeline_output is not None:
+        pipeline_figure = plot_pipeline_stages(
+            landslider.results,
+            grid.at_node["topographic__elevation"].reshape(grid.shape),
+            dx=grid.dx,
+            dy=grid.dy,
+            output_path=args.pipeline_output,
+        )
+        plt.close(pipeline_figure)
+        print(f"Wrote {args.pipeline_output}")
 
     dry_count = int(np.count_nonzero(dry_unstable))
     storm_count = int(np.count_nonzero(storm_unstable))

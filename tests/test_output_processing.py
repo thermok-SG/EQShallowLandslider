@@ -18,6 +18,7 @@ from analysis import (
     load_run,
     plot_run,
     plot_run_maps,
+    plot_pipeline_stages,
     plot_parameter_sensitivity,
     summarize_run_distributions,
     swept_parameters,
@@ -381,6 +382,66 @@ def test_plot_run_maps_includes_optional_hydrologic_and_curvature_rasters(tmp_pa
     assert "Relative wetness" in titles
     assert "Critical relative wetness (display 0–1)" in titles
     assert "Storm-activated cells (n=6 cells)" in titles
+    plt.close(figure)
+
+
+def test_plot_pipeline_stages_reports_each_candidate_processing_stage(tmp_path):
+    elevation = np.arange(16, dtype=float).reshape((4, 4))
+    connected = np.zeros(16, dtype=int)
+    connected[[5, 6, 9, 10]] = 1
+    filled = connected.copy()
+    filled[7] = 1
+    aspect = np.zeros(16, dtype=int)
+    aspect[[5, 6]] = 1
+    aspect[[7, 9, 10]] = 2
+    split = aspect.copy()
+    split[[9, 10]] = 3
+    selected = np.where(split == 3, split, 0)
+    results = {
+        "unstable_mask": connected > 0,
+        "labels": connected,
+        "filled_labels": filled,
+        "aspect_labels": aspect,
+        "split_labels": split,
+        "selected_labels": selected,
+    }
+
+    output = tmp_path / "pipeline.png"
+    figure = plot_pipeline_stages(
+        results,
+        elevation,
+        dx=30.0,
+        output_path=output,
+    )
+    titles = {axis.get_title() for axis in figure.axes}
+
+    assert output.exists()
+    assert "Raw instability (4 cells)" in titles
+    assert "Connected components (1 region)" in titles
+    assert "Hole-filled regions (+1 cell)" in titles
+    assert "Aspect-split candidates (2 groups)" in titles
+    assert "KDE width-split candidates (3 groups)" in titles
+    assert "Probabilistically selected (1 group; 2 cells)" in titles
+    plt.close(figure)
+
+
+def test_plot_pipeline_stages_marks_kde_as_not_configured():
+    labels = np.zeros(9, dtype=int)
+    labels[4] = 1
+    results = {
+        "unstable_mask": labels > 0,
+        "labels": labels,
+        "filled_labels": labels,
+        "aspect_labels": labels,
+        "split_labels": None,
+        "selected_labels": labels,
+    }
+
+    figure = plot_pipeline_stages(results, np.arange(9).reshape((3, 3)), dx=30)
+
+    assert "KDE width splitting not configured" in {
+        axis.get_title() for axis in figure.axes
+    }
     plt.close(figure)
 
 

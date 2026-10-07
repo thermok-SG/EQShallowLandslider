@@ -202,6 +202,10 @@ core-node elevation. Pass `--analysis-output PATH` to route the example's
 terrain and hydrologic rasters through the repository's standard
 `analysis.plot_run_maps` function; this adds derived slope, planform/profile
 curvature, wetness, stability, and footprint panels when those rasters exist.
+Pass `--pipeline-output PATH` to additionally plot the component's actual
+candidate-processing stages. The Nepal KDE bundle is enabled for that
+diagnostic by default; `--disable-kde` leaves the KDE panel explicitly marked
+as skipped.
 
 This is deliberately an interface test rather than a hydrologic calibration:
 the storm footprint is synthetic. A later wetness adapter will replace that

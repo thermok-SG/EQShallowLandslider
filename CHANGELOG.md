@@ -30,6 +30,10 @@ every edited line.
   relationship `a_c = g sin(slope) (FoS - 1)`.
 - Documented the wetness field contract, equations, diagnostics, breaking PGA
   behavior, current limitations, and the staged time-evolving architecture.
+- Extended the standard spatial-analysis maps with optional curvature and
+  hydrologic fields, and added a reusable six-stage diagnostic from raw
+  instability through hole filling, aspect/KDE splitting, and probabilistic
+  selection. The full Nepal example uses the measured length-width KDE bundle.
 
 ### Scientific behavior and compatibility
 

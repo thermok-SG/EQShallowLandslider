@@ -843,6 +843,179 @@ def plot_run_maps(run, output_path=None, show=False):
     return fig
 
 
+def plot_pipeline_stages(
+    results,
+    elevation,
+    dx,
+    dy=None,
+    output_path=None,
+    show=False,
+):
+    """Plot the region-processing stages from instability to selection.
+
+    Parameters
+    ----------
+    results : mapping
+        A component ``results`` mapping containing ``unstable_mask``,
+        ``labels``, ``filled_labels``, ``aspect_labels``, ``split_labels``, and
+        ``selected_labels``. ``split_labels`` may be ``None`` when KDE width
+        splitting was not configured.
+    elevation : array-like
+        Two-dimensional elevation raster used as the common grayscale base.
+    dx, dy : float
+        Grid spacing in metres. ``dy`` defaults to ``dx``.
+    output_path : path-like, optional
+        Save the figure when provided.
+    show : bool, optional
+        Display the figure interactively.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The six-panel diagnostic figure.
+
+    Notes
+    -----
+    The panels are state diagnostics, not six independent calculations. Hole
+    filling and splitting alter candidate labels without changing the raw
+    physical ``unstable_mask``. The final panel is the stochastic selection
+    from the last available candidate-label stage.
+    """
+    elevation = np.asarray(elevation, dtype=float)
+    if elevation.ndim != 2:
+        raise ValueError("elevation must be a two-dimensional raster")
+    dy = float(dx if dy is None else dy)
+    dx = float(dx)
+    extent = (
+        0,
+        (elevation.shape[1] - 1) * dx / 1000,
+        0,
+        (elevation.shape[0] - 1) * dy / 1000,
+    )
+
+    required = (
+        "unstable_mask",
+        "labels",
+        "filled_labels",
+        "aspect_labels",
+        "selected_labels",
+    )
+    missing = [name for name in required if results.get(name) is None]
+    if missing:
+        raise ValueError(
+            "Pipeline-stage plot requires populated results: " + ", ".join(missing)
+        )
+
+    def raster(name, dtype=None):
+        values = np.asarray(results[name], dtype=dtype)
+        if values.size != elevation.size:
+            raise ValueError(
+                f"{name} has {values.size} values; expected {elevation.size}"
+            )
+        return values.reshape(elevation.shape)
+
+    unstable = raster("unstable_mask", dtype=bool)
+    connected = raster("labels", dtype=int)
+    filled = raster("filled_labels", dtype=int)
+    aspect = raster("aspect_labels", dtype=int)
+    selected = raster("selected_labels", dtype=int)
+    split_value = results.get("split_labels")
+    split = None if split_value is None else raster("split_labels", dtype=int)
+
+    def region_count(labels):
+        unique = np.unique(labels)
+        return int(np.count_nonzero(unique > 0))
+
+    def counted(number, singular, plural=None):
+        unit = singular if number == 1 else (plural or f"{singular}s")
+        return f"{number:,} {unit}"
+
+    filled_nodes = int(np.count_nonzero((filled > 0) & (connected == 0)))
+    stages = [
+        (
+            unstable.astype(int),
+            f"Raw instability ({np.count_nonzero(unstable):,} cells)",
+            "Oranges",
+        ),
+        (
+            connected,
+            f"Connected components ({counted(region_count(connected), 'region')})",
+            "turbo",
+        ),
+        (
+            filled,
+            f"Hole-filled regions (+{counted(filled_nodes, 'cell')})",
+            "turbo",
+        ),
+        (
+            aspect,
+            f"Aspect-split candidates ({counted(region_count(aspect), 'group')})",
+            "turbo",
+        ),
+        (
+            split,
+            (
+                "KDE width-split candidates "
+                f"({counted(region_count(split), 'group')})"
+                if split is not None
+                else "KDE width splitting not configured"
+            ),
+            "turbo",
+        ),
+        (
+            selected,
+            (
+                "Probabilistically selected "
+                f"({counted(region_count(selected), 'group')}; "
+                f"{counted(int(np.count_nonzero(selected)), 'cell')})"
+            ),
+            "turbo",
+        ),
+    ]
+
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9), layout="constrained")
+    for stage_index, (axis, (values, title, cmap)) in enumerate(
+        zip(axes.ravel(), stages)
+    ):
+        axis.imshow(elevation, origin="lower", extent=extent, cmap="gray")
+        if values is None:
+            axis.text(
+                0.5,
+                0.5,
+                "Skipped",
+                transform=axis.transAxes,
+                ha="center",
+                va="center",
+                fontsize=18,
+                bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "0.5"},
+            )
+        else:
+            overlay = np.ma.masked_where(values <= 0, values)
+            binary_limits = {"vmin": 0, "vmax": 1} if stage_index == 0 else {}
+            axis.imshow(
+                overlay,
+                origin="lower",
+                extent=extent,
+                cmap=cmap,
+                alpha=0.78,
+                interpolation="nearest",
+                **binary_limits,
+            )
+        axis.set_title(title)
+        axis.set_xlabel("Easting distance (km)")
+        axis.set_ylabel("Northing distance (km)")
+        axis.set_aspect("equal")
+
+    fig.suptitle("ShallowLandslider candidate-processing pipeline")
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=200)
+    if show:
+        plt.show()
+    return fig
+
+
 def plot_run(run, selected_only=True, observed=None, output_path=None, show=False):
     """Plot modeled distributions with optional measured-landslide overlays.
 

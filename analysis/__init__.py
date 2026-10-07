@@ -9,6 +9,7 @@ from .run_outputs import (
     plot_run,
     plot_run_maps,
     plot_parameter_sensitivity,
+    plot_pipeline_stages,
     summarize_run_distributions,
     swept_parameters,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "plot_run",
     "plot_run_maps",
     "plot_parameter_sensitivity",
+    "plot_pipeline_stages",
     "summarize_run_distributions",
     "swept_parameters",
 ]
