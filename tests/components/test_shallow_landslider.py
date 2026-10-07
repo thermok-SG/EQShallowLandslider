@@ -58,7 +58,7 @@ def test_initialization_creates_optional_fields():
     assert np.allclose(mg.at_node["soil__depth"], 0.5)
 
 
-def test_pga_fields_created_correctly():
+def test_omitted_pga_defaults_to_zero():
     mg = make_grid(add_soil=True)
 
     _ = ShallowLandslider(
@@ -67,15 +67,13 @@ def test_pga_fields_created_correctly():
         angle_int_frict=32,
         pga_h=None,
         pga_v=None,
-        pga_h_max=0.3,
-        pga_v_max=0.1,
     )
 
     h = mg.at_node["earthquake__horizontal_pga"]
     v = mg.at_node["earthquake__vertical_pga"]
 
-    assert np.allclose(h[mg.core_nodes], 0.3)
-    assert np.allclose(v[mg.core_nodes], 0.1)
+    assert np.allclose(h[mg.core_nodes], 0.0)
+    assert np.allclose(v[mg.core_nodes], 0.0)
     assert np.all(np.isnan(h[mg.boundary_nodes]))
     assert np.all(np.isnan(v[mg.boundary_nodes]))
 
