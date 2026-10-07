@@ -7,6 +7,43 @@ so their milestones are identified by commit hash. Descriptions are based on
 the committed diffs and messages and summarise the main changes rather than
 every edited line.
 
+## Unreleased - ShallowLandslider 2.0 development
+
+### Dynamic relative-wetness foundation
+
+- Added `wetness_source="constant" | "field"` to the same
+  `ShallowLandslider` component. Constant mode preserves the scalar
+  `submerged_soil_proportion`; field mode requires and rereads the node field
+  `soil__relative_wetness` during every stability evaluation.
+- Generalised the established factor-of-safety and critical-acceleration
+  calculations to accept node-wise relative wetness without changing their
+  equations.
+- Added the analytical `critical_relative_wetness` (`m_c`) diagnostic obtained
+  from the ShallowLandslider equation at `FoS = 1`.
+- Changed omitted horizontal and vertical PGA to zero and removed the
+  `pga_h_max`/`pga_v_max` fallback arguments. Earthquake forcing must now be
+  supplied explicitly.
+- Added validation for the wetness source and finite `[0, 1]` core-node field
+  values, with no silent clipping.
+- Added analytical and regression coverage for live hydrology updates,
+  constant/field equivalence, the critical-wetness threshold, and the zero-PGA
+  relationship `a_c = g sin(slope) (FoS - 1)`.
+- Documented the wetness field contract, equations, diagnostics, breaking PGA
+  behavior, current limitations, and the staged time-evolving architecture.
+
+### Scientific behavior and compatibility
+
+- The ShallowLandslider factor-of-safety equation remains authoritative and is
+  not replaced by SINMAP. SINMAP-style components may later supply relative
+  wetness through the new field contract.
+- Existing callers that relied on implicit fallback shaking must now provide
+  PGA explicitly. Existing CLI paths already construct and pass their PGA
+  arrays.
+- This is the stability foundation for 2.0, not yet the complete temporal
+  rainfall/earthquake model. Probabilistic hydrologic selection, landscape-
+  consistent runout, rerouting, hydrology adapters, and event sequencing remain
+  planned work.
+
 ## Unreleased working tree - multiflow runout and notebook integration
 
 - Added `RUN_NAME` support to the HPC single-run analysis launcher so named

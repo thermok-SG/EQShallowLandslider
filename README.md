@@ -243,6 +243,86 @@ For a faster first run, use
 crops the bundled DEM to a small domain, enables Quinn runout, and writes an
 analysis-ready directory beneath `runs/`.
 
+## ShallowLandslider 2.0 hydrologic foundation
+
+The 2.0 development interface allows the established stability equations to
+consume relative wetness from a live Landlab node field. This is the foundation
+for simulations in which rainfall events and earthquakes act on the same
+evolving landscape.
+
+Two wetness sources are supported:
+
+```python
+# Existing fixed-wetness behavior.
+ls = ShallowLandslider(
+    grid,
+    submerged_soil_proportion=0.4,
+    wetness_source="constant",
+)
+```
+
+```python
+# Time-varying wetness supplied by an external hydrology model.
+m = grid.add_zeros("soil__relative_wetness", at="node")
+m[:] = 0.2
+
+ls = ShallowLandslider(grid, wetness_source="field")
+ls.run_one_step()
+
+# A later storm updates the same field. ShallowLandslider rereads it.
+m[:] = storm_relative_wetness
+ls.run_one_step()
+```
+
+`soil__relative_wetness` is the saturated thickness divided by the potentially
+unstable soil thickness, not necessarily volumetric/root-zone saturation.
+Field values at core nodes must be finite and within `[0, 1]`. Field mode fails
+immediately when the field is missing and never silently clips invalid values.
+
+If PGA arguments and earthquake PGA fields are absent, PGA is now zero.
+Earthquake simulations must provide shaking explicitly. The old `pga_h_max`
+and `pga_v_max` fallback arguments have been removed so an omitted input cannot
+create an implicit earthquake.
+
+After stability calculation, these new diagnostics are available:
+
+- `ls.results["relative_wetness"]`: the node values used in that evaluation;
+- `ls.results["critical_relative_wetness"]`: the wetness `m_c` at which the
+  unchanged ShallowLandslider factor of safety equals one.
+
+At zero PGA, the existing equations satisfy
+`a_c = g sin(slope) (FoS - 1)`. Consequently, the existing acceleration-based
+instability comparison identifies static hydrologic failure when `FoS < 1`.
+No second stability equation is introduced, and SINMAP does not replace the
+ShallowLandslider equation.
+
+See [the relative-wetness interface](docs/relative-wetness-interface.md) for
+the equations, validation rules, examples, and current limitations. See the
+[hydrologic-triggering implementation plan](docs/hydrologic-triggering-plan.md)
+for the staged path to probabilistic hydrologic selection, landscape-consistent
+runout, hydrology adapters, and earthquake/rainfall event sequences.
+
+### Nepal DEM demonstration
+
+The field interface can be exercised on a central crop of the bundled Nepal
+SRTM DEM:
+
+```bash
+python examples/plot_nepal_hydrologic_foundation.py
+```
+
+The example uses the Nepal configuration's elevation-based soil-depth model,
+zero PGA, a uniform background wetness, and a prescribed Gaussian storm
+wetness footprint. It writes an eight-panel diagnostic figure to
+`analysis_output/nepal_hydrologic_foundation.png` showing elevation, soil depth,
+critical wetness, storm wetness, background/storm factor of safety, and unstable
+masks.
+
+The prescribed footprint tests the coupling interface but is not presented as
+a rainfall-to-saturation model. Useful options include `--rows`, `--cols`,
+`--row-offset`, `--col-offset`, `--cohesion`, `--background-wetness`,
+`--storm-peak-wetness`, and `--output`; run with `--help` for the complete list.
+
 ## CLI outputs and analysis (v1.2)
 
 Validate a YAML file without loading its DEM or starting a model run:
@@ -678,6 +758,7 @@ You can control simulation parameters via:
 | `cohesion_eff`         | Soil effective cohesion (Pa)                     |
 | `angle_int_frict`      | Internal friction angle (degrees)               |
 | `submerged_soil_proportion` | Fraction of soil saturated                   |
+| `wetness_source`       | `"constant"` or live `"field"` relative wetness |
 | `pga_h`, `pga_v`       | Horizontal & vertical PGA arrays                |
 | `selection_method`     | `"probabilistic"` or `"pga_weighted"`           |
 | `proportion_method`    | `"empirical"`, `"conservative"`, etc.           |
@@ -696,9 +777,9 @@ After `run_one_step()`, the component adds only its public output field:
 
 Intermediate and diagnostic arrays are exposed through `ls.results` instead
 of being copied into grid fields. These include factor of safety, critical and
-driving acceleration, the unstable mask, each label stage, and optional
-Newmark displacement. This keeps large model grids lean while retaining all
-diagnostics for saving and analysis.
+driving acceleration, relative wetness, critical relative wetness, the unstable
+mask, each label stage, and optional Newmark displacement. This keeps large
+model grids lean while retaining all diagnostics for saving and analysis.
 
 When runout is enabled, its own state-changing output fields are also present:
 - `landslide__erosion` when runout is enabled
