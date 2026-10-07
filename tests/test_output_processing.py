@@ -354,6 +354,36 @@ def test_observed_landslides_are_normalized_filtered_and_plotted(tmp_path):
     plt.close(figure)
 
 
+def test_plot_run_maps_includes_optional_hydrologic_and_curvature_rasters(tmp_path):
+    shape = (4, 4)
+    elevation = np.arange(16, dtype=float).reshape(shape)
+    run = {
+        "manifest": {"grid": {"dx": 30.0, "dy": 30.0}},
+        "summary": {"run_id": "hydrologic-map-test"},
+        "rasters": {
+            "topographic_elevation": elevation,
+            "planform_curvature": np.linspace(-0.1, 0.1, 16).reshape(shape),
+            "profile_curvature": np.linspace(0.1, -0.1, 16).reshape(shape),
+            "soil_depth": np.linspace(1.5, 0.0, 16).reshape(shape),
+            "relative_wetness": np.linspace(0.1, 0.9, 16).reshape(shape),
+            "critical_relative_wetness": np.linspace(0.2, 1.2, 16).reshape(shape),
+            "storm_activated_mask": (elevation % 3 == 0),
+        },
+    }
+
+    output = tmp_path / "hydrologic-maps.png"
+    figure = plot_run_maps(run, output_path=output)
+    titles = {axis.get_title() for axis in figure.axes}
+
+    assert output.exists()
+    assert "Planform curvature" in titles
+    assert "Profile curvature" in titles
+    assert "Relative wetness" in titles
+    assert "Critical relative wetness (display 0–1)" in titles
+    assert "Storm-activated cells (n=6 cells)" in titles
+    plt.close(figure)
+
+
 def test_optional_storage_formats_have_safe_fallbacks(tmp_path):
     config = make_config()
     config["outputs"].update({"write_parquet": True, "write_zarr": True})

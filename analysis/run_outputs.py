@@ -670,7 +670,8 @@ def plot_run_maps(run, output_path=None, show=False):
 
     The adaptive three-column figure includes elevation, derived terrain slope,
     soil depth, PGA, factor of safety, unstable/selected footprints, Newmark
-    displacement, and any saved erosion/deposition fields. Footprints are
+    displacement, and any saved erosion/deposition fields. Optional curvature
+    and hydrologic-wetness rasters are included when supplied. Footprints are
     draped on grayscale elevation. Missing optional fields are omitted.
 
     ``run`` may be a run path or a loaded run dictionary. Rasters are loaded
@@ -698,10 +699,45 @@ def plot_run_maps(run, output_path=None, show=False):
     panels = [
         ("topographic_elevation", "Elevation", "terrain", "m", "continuous"),
         ("terrain_slope", "Terrain slope", "magma", "degrees", "continuous"),
-        ("soil_depth", "Soil depth", "YlGnBu", "m", "continuous"),
+        (
+            "planform_curvature",
+            "Planform curvature",
+            "RdBu_r",
+            "1/m",
+            "diverging",
+        ),
+        (
+            "profile_curvature",
+            "Profile curvature",
+            "RdBu_r",
+            "1/m",
+            "diverging",
+        ),
+        ("soil_depth", "Soil depth (model input)", "YlGnBu", "m", "continuous"),
+        (
+            "relative_wetness",
+            "Relative wetness",
+            "Blues",
+            "saturated thickness / soil thickness",
+            "bounded_unit",
+        ),
+        (
+            "critical_relative_wetness",
+            "Critical relative wetness (display 0–1)",
+            "viridis",
+            "relative wetness",
+            "bounded_unit",
+        ),
         ("horizontal_pga", "Horizontal PGA", "magma", "g", "continuous"),
         ("factor_of_safety", "Factor of safety", "RdYlGn", "", "factor_safety"),
         ("unstable_mask", "Unstable cells", "Oranges", "", "footprint"),
+        (
+            "storm_activated_mask",
+            "Storm-activated cells",
+            "magma",
+            "",
+            "footprint",
+        ),
         ("selected_footprint", "Selected landslides", "Reds", "", "footprint"),
         (
             "newmark_displacement",
@@ -767,6 +803,8 @@ def plot_run_maps(run, output_path=None, show=False):
             if style == "positive_log" and vmin is not None and vmin > 0:
                 norm = LogNorm(vmin=vmin, vmax=vmax)
                 vmin = vmax = None
+            elif style == "bounded_unit":
+                vmin, vmax = 0.0, 1.0
             elif style == "factor_safety" and vmin is not None:
                 vmin = min(vmin, 0.99)
                 vmax = 2.5

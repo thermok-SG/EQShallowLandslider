@@ -195,6 +195,14 @@ on the same component instance with zero PGA. The output panels compare terrain,
 soil depth, `m_c`, current `m`, factor of safety, and instability masks. The
 default output is `analysis_output/nepal_hydrologic_foundation.png`.
 
+The example's soil depth is also model-assigned rather than observed. It uses
+the Nepal configuration's linear elevation rule, with depth decreasing from
+`max_soil_depth` at the minimum core-node elevation to zero at the maximum
+core-node elevation. Pass `--analysis-output PATH` to route the example's
+terrain and hydrologic rasters through the repository's standard
+`analysis.plot_run_maps` function; this adds derived slope, planform/profile
+curvature, wetness, stability, and footprint panels when those rasters exist.
+
 This is deliberately an interface test rather than a hydrologic calibration:
 the storm footprint is synthetic. A later wetness adapter will replace that
 prescription with state calculated from recharge, transmissivity, contributing

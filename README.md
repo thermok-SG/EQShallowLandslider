@@ -318,6 +318,26 @@ wetness footprint. It writes an eight-panel diagnostic figure to
 critical wetness, storm wetness, background/storm factor of safety, and unstable
 masks.
 
+The configured soil depth is a synthetic model input, not an observed Nepal
+soil-thickness dataset. For core nodes, the linear elevation rule is
+`h = h_max * (1 - (z - z_min) / (z_max - z_min))`: the lowest core elevation
+receives `h_max` (1.5 m by default), the highest receives zero, and intermediate
+elevations are linearly interpolated.
+
+For the complete bundled DEM and the repository's standard spatial-analysis
+plot, run:
+
+```bash
+python examples/plot_nepal_hydrologic_foundation.py \
+  --rows 468 --cols 648 \
+  --output analysis_output/nepal_hydrologic_foundation_full.png \
+  --analysis-output analysis_output/nepal_terrain_analysis_full.png
+```
+
+The analysis figure is produced by `analysis.plot_run_maps`, not a separate
+example-specific plotter. Optional curvature and hydrologic rasters extend the
+same adaptive analysis used for normal saved model runs.
+
 The prescribed footprint tests the coupling interface but is not presented as
 a rainfall-to-saturation model. Useful options include `--rows`, `--cols`,
 `--row-offset`, `--col-offset`, `--cohesion`, `--background-wetness`,

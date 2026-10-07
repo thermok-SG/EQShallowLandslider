@@ -10,8 +10,10 @@ Nepal configuration, and prescribes two relative-wetness states:
 * a synthetic Gaussian storm footprint.
 
 The same ``ShallowLandslider`` instance evaluates both states with zero PGA.
-The resulting figure shows terrain, soil depth, critical relative wetness,
-prescribed storm wetness, factor of safety, and unstable-node masks.
+The resulting hydrologic figure shows terrain, soil depth, critical relative
+wetness, prescribed storm wetness, factor of safety, and unstable-node masks.
+An optional standard run-analysis figure adds DEM-derived slope and curvature
+through :func:`analysis.plot_run_maps`.
 
 Run from the repository root:
 
@@ -45,8 +47,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from analysis import plot_run_maps
 from components.shallow_landslider import ShallowLandslider
-from utils.utilities import apply_soil_depth, get_topo
+from utils.utilities import apply_soil_depth, calculate_terrain_attribute, get_topo
 
 
 DEFAULT_DEM = Path(
@@ -71,6 +74,16 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=Path("analysis_output/nepal_hydrologic_foundation.png"),
+    )
+    parser.add_argument(
+        "--analysis-output",
+        "--terrain-output",
+        dest="analysis_output",
+        type=Path,
+        help=(
+            "Optional standard spatial-analysis figure showing terrain, the "
+            "modelled soil-depth assumption, wetness, and stability diagnostics"
+        ),
     )
     return parser.parse_args()
 
@@ -177,8 +190,8 @@ def _plot_field(
         interpolation="nearest",
     )
     ax.set_title(title)
-    ax.set_xlabel("Easting within crop (km)")
-    ax.set_ylabel("Northing within crop (km)")
+    ax.set_xlabel("Distance east (km)")
+    ax.set_ylabel("Distance north (km)")
     colorbar = ax.figure.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
     if colorbar_label:
         colorbar.set_label(colorbar_label)
@@ -240,6 +253,52 @@ def main() -> None:
     activated = storm_unstable & ~dry_unstable
     activated_count = int(np.count_nonzero(activated))
     core_count = int(grid.number_of_core_nodes)
+
+    if args.analysis_output is not None:
+        planform_curvature = calculate_terrain_attribute(
+            grid,
+            "topographic__elevation",
+            "planform_curvature",
+            out_field="terrain__planform_curvature",
+        )
+        profile_curvature = calculate_terrain_attribute(
+            grid,
+            "topographic__elevation",
+            "profile_curvature",
+            out_field="terrain__profile_curvature",
+        )
+        shape = grid.shape
+        analysis_run = {
+            "manifest": {"grid": {"dx": grid.dx, "dy": grid.dy}},
+            "summary": {
+                "run_id": (
+                    "Nepal hydrologic foundation "
+                    "(synthetic elevation-based soil depth; storm state)"
+                )
+            },
+            "rasters": {
+                "topographic_elevation": grid.at_node[
+                    "topographic__elevation"
+                ].reshape(shape),
+                "planform_curvature": planform_curvature.reshape(shape),
+                "profile_curvature": profile_curvature.reshape(shape),
+                "soil_depth": grid.at_node["soil__depth"].reshape(shape),
+                "relative_wetness": storm.reshape(shape),
+                "critical_relative_wetness": critical_wetness.reshape(shape),
+                "horizontal_pga": grid.at_node[
+                    "earthquake__horizontal_pga"
+                ].reshape(shape),
+                "factor_of_safety": storm_fos.reshape(shape),
+                "unstable_mask": storm_unstable.reshape(shape),
+                "storm_activated_mask": activated.reshape(shape),
+            },
+        }
+        analysis_figure = plot_run_maps(
+            analysis_run,
+            output_path=args.analysis_output,
+        )
+        plt.close(analysis_figure)
+        print(f"Wrote {args.analysis_output}")
 
     figure, axes = plt.subplots(2, 4, figsize=(19, 9), constrained_layout=True)
     _plot_field(
