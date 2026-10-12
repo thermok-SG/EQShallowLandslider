@@ -190,12 +190,6 @@ def main() -> None:
         "planform_curvature",
         out_field="terrain__planform_curvature",
     )
-    profile_curvature = calculate_terrain_attribute(
-        grid,
-        "topographic__elevation",
-        "profile_curvature",
-        out_field="terrain__profile_curvature",
-    )
     shape = grid.shape
     selected = result["selected_labels"] > 0
     affected = selected | (runout["erosion"] > 0) | (runout["deposition"] > 0)
@@ -212,8 +206,7 @@ def main() -> None:
                 "topographic__elevation"
             ].reshape(shape),
             "planform_curvature": planform_curvature.reshape(shape),
-            "profile_curvature": profile_curvature.reshape(shape),
-            "soil_depth": grid.at_node["soil__depth"].reshape(shape),
+            "soil_depth": soil_before.reshape(shape),
             "relative_wetness": wetness.reshape(shape),
             "critical_relative_wetness": result[
                 "critical_relative_wetness"
@@ -230,6 +223,9 @@ def main() -> None:
                 shape
             ),
             "combined_affected_footprint": affected.reshape(shape),
+            "post_failure_soil_depth": grid.at_node["soil__depth"].reshape(
+                shape
+            ),
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

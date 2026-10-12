@@ -65,6 +65,9 @@ every edited line.
   deterministic selection, the existing aspect/KDE pipeline, and a prescribed
   mobility distance, with standard terrain and runout plots plus an explicit
   mass-balance check.
+- Clarified the Nepal runout figure by plotting the untouched input soil depth
+  separately from a final post-failure soil-depth panel, and removed unused
+  profile curvature from the shared spatial figure.
 
 ### Scientific behavior and compatibility
 

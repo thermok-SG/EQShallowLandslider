@@ -378,10 +378,33 @@ def test_plot_run_maps_includes_optional_hydrologic_and_curvature_rasters(tmp_pa
 
     assert output.exists()
     assert "Planform curvature" in titles
-    assert "Profile curvature" in titles
+    assert "Profile curvature" not in titles
     assert "Relative wetness" in titles
     assert "Critical relative wetness (display 0–1)" in titles
     assert "Storm-activated cells (n=6 cells)" in titles
+    plt.close(figure)
+
+
+def test_plot_run_maps_separates_input_and_post_failure_soil_depth():
+    shape = (4, 4)
+    run = {
+        "manifest": {"grid": {"dx": 30.0, "dy": 30.0}},
+        "summary": {"run_id": "soil-state-map-test"},
+        "rasters": {
+            "topographic_elevation": np.arange(16, dtype=float).reshape(shape),
+            "soil_depth": np.ones(shape),
+            "profile_curvature": np.ones(shape),
+            "post_failure_soil_depth": np.full(shape, 2.0),
+        },
+    }
+
+    figure = plot_run_maps(run)
+    titles = [axis.get_title() for axis in figure.axes]
+
+    assert titles.index("Soil depth (model input)") < titles.index(
+        "Soil depth after failure and runout"
+    )
+    assert "Profile curvature" not in titles
     plt.close(figure)
 
 

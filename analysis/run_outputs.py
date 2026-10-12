@@ -670,9 +670,11 @@ def plot_run_maps(run, output_path=None, show=False):
 
     The adaptive three-column figure includes elevation, derived terrain slope,
     soil depth, PGA, factor of safety, unstable/selected footprints, Newmark
-    displacement, and any saved erosion/deposition fields. Optional curvature
-    and hydrologic-wetness rasters are included when supplied. Footprints are
-    draped on grayscale elevation. Missing optional fields are omitted.
+    displacement, and any saved erosion/deposition fields. Optional planform
+    curvature and hydrologic-wetness rasters are included when supplied.
+    A post-failure soil-depth field, when available, is placed at the end so it
+    can be compared with the input soil-depth panel. Footprints are draped on
+    grayscale elevation. Missing optional fields are omitted.
 
     ``run`` may be a run path or a loaded run dictionary. Rasters are loaded
     automatically if needed. The created Matplotlib figure is returned for
@@ -702,13 +704,6 @@ def plot_run_maps(run, output_path=None, show=False):
         (
             "planform_curvature",
             "Planform curvature",
-            "RdBu_r",
-            "1/m",
-            "diverging",
-        ),
-        (
-            "profile_curvature",
-            "Profile curvature",
             "RdBu_r",
             "1/m",
             "diverging",
@@ -761,6 +756,13 @@ def plot_run_maps(run, output_path=None, show=False):
             "Purples",
             "",
             "footprint",
+        ),
+        (
+            "post_failure_soil_depth",
+            "Soil depth after failure and runout",
+            "YlGnBu",
+            "m",
+            "continuous",
         ),
     ]
     available = [

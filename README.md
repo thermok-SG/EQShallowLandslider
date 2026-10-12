@@ -378,9 +378,11 @@ python examples/plot_nepal_hydrologic_runout.py \
 
 This integration example retains aspect and measured-width KDE splitting,
 uses `selection_method="all"`, verifies erosion/deposition mass balance, and
-plots elevation, slope, curvature, wetness, stability, source, erosion,
-deposition, and net soil-depth change. The prescribed distance is not a
-calibrated rainfall-runout mobility law.
+plots elevation, slope, planform curvature, wetness, stability, source,
+erosion, deposition, net soil-depth change, and separate input and
+post-failure soil-depth states. Profile curvature is omitted because it is not
+used in this model setup. The prescribed distance is not a calibrated
+rainfall-runout mobility law.
 
 ## CLI outputs and analysis (v1.2)
 
