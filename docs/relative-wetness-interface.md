@@ -1,11 +1,11 @@
 # Relative wetness and static hydrologic instability
 
 This document specifies the hydrologic stability interface introduced during
-development of ShallowLandslider 2.0. It covers the first foundation only:
-supplying dynamic wetness to the existing stability equations and identifying
-static failure without earthquake shaking. Rainfall-to-recharge conversion,
-probabilistic hydrologic selection, event sequencing, and landscape-evolving
-runout are separate stages described in
+development of ShallowLandslider 2.0. The transient GDP coupling that now
+publishes this field is documented in
+[`gdp-hydrologic-coupling.md`](gdp-hydrologic-coupling.md).
+Rainfall-to-recharge conversion, probabilistic hydrologic selection, and the
+complete event scheduler remain separate stages described in
 [`hydrologic-triggering-plan.md`](hydrologic-triggering-plan.md).
 
 ## Scientific definition
@@ -172,14 +172,12 @@ a complete rainfall-landslide model:
 - It does not calculate wetness directly from rainfall.
 - It does not yet calculate hydrologic selection probability from `m / m_c`.
 - It does not provide a hydrologic runout-distance model.
-- Existing runout does not yet update topographic elevation and cached terrain
-  derivatives consistently for the next event.
 - It does not yet provide the earthquake/storm event-sequence driver.
 
-Those capabilities build on this field contract. A steady-state SINMAP-style
-adapter or transient groundwater component will write the same
-`soil__relative_wetness` field, allowing ShallowLandslider to remain independent
-of the particular hydrology model.
+Those capabilities build on this field contract. The implemented
+`GroundwaterWetnessCoupler` now writes the same `soil__relative_wetness` field
+from transient GDP saturated thickness. ShallowLandslider therefore remains
+independent of the particular hydrology model.
 
 ## Real-DEM demonstration
 
@@ -208,6 +206,17 @@ diagnostic by default; `--disable-kde` leaves the KDE panel explicitly marked
 as skipped.
 
 This is deliberately an interface test rather than a hydrologic calibration:
-the storm footprint is synthetic. A later wetness adapter will replace that
-prescription with state calculated from recharge, transmissivity, contributing
-area, or transient groundwater.
+the storm footprint is synthetic.
+
+The repository also includes a transient-groundwater diagnostic. Its default
+run uses the complete bundled Nepal raster:
+
+```bash
+python examples/plot_nepal_gdp_coupling.py
+```
+
+It advances GDP through prescribed recharge and zero-recharge recovery,
+transfers saturation-excess runoff to `water__unit_flux_in`, reruns
+`PriorityFloodFlowRouter`, and compares zero-PGA instability before and after
+the storm. The prescribed recharge and hydraulic properties are diagnostic,
+not calibrated rainfall-to-recharge parameters.
