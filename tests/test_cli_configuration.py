@@ -61,7 +61,52 @@ def test_invalid_options_fail_during_validation(section, key, value, message):
 def test_runout_flag_dependencies_are_validated():
     config = minimal_config()
     config["simulation"]["enable_runout"] = True
-    with pytest.raises(ValueError, match="compute_displacement and update_soil"):
+    with pytest.raises(ValueError, match="requires update_soil"):
+        prepare_config(config)
+
+    config["simulation"]["update_soil"] = True
+    with pytest.raises(ValueError, match="newmark requires compute_displacement"):
+        prepare_config(config)
+
+
+def test_selected_runout_does_not_require_newmark_displacement():
+    config = minimal_config()
+    config["simulation"].update(
+        {
+            "enable_runout": True,
+            "update_soil": True,
+            "runout_source_mode": "selected",
+            "runout_distance": 60.0,
+            "selection_method": "all",
+            "compute_displacement": False,
+        }
+    )
+
+    prepared = prepare_config(config)
+
+    assert prepared["simulation"]["runout_source_mode"] == "selected"
+    assert prepared["simulation"]["selection_method"] == "all"
+
+
+def test_selected_runout_requires_a_mobility_distance():
+    config = minimal_config()
+    config["simulation"].update(
+        {
+            "enable_runout": True,
+            "update_soil": True,
+            "runout_source_mode": "selected",
+        }
+    )
+
+    with pytest.raises(ValueError, match="selected requires runout_distance"):
+        prepare_config(config)
+
+
+def test_landscape_evolution_requires_runout():
+    config = minimal_config()
+    config["simulation"]["evolve_landscape"] = True
+
+    with pytest.raises(ValueError, match="evolve_landscape requires"):
         prepare_config(config)
 
 

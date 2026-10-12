@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import numpy as np
 import heapq
 import logging
+
+import numpy as np
 
 from landlab.core.model_component import Component
 
@@ -87,7 +88,7 @@ class ShallowLandslideRunout(Component):
 
     def __init__(self, grid):
         super().__init__(grid)
-        self._last_failed_nodes = np.array([], dtype=int)
+        self._last_source_nodes = np.array([], dtype=int)
         self._last_paths = []
         self._last_path_proportions = np.array([], dtype=float)
         self._last_path_details = {}
@@ -128,7 +129,10 @@ class ShallowLandslideRunout(Component):
     def results(self):
         """Return diagnostics owned by the latest multiflow runout step."""
         return {
-            "failed_nodes": self._last_failed_nodes,
+            "source_nodes": self._last_source_nodes,
+            # Compatibility alias for callers written before runout sources
+            # were made independent of the triggering mechanism.
+            "failed_nodes": self._last_source_nodes,
             "paths": self._last_paths,
             "path_proportions": self._last_path_proportions,
             "path_details": self._last_path_details,
@@ -144,14 +148,48 @@ class ShallowLandslideRunout(Component):
 
     def run_one_step(
         self,
-        failed_nodes: np.ndarray,
-        runout_distance: np.ndarray,
+        source_nodes: np.ndarray | None = None,
+        runout_distance: float | np.ndarray | None = None,
         return_paths: bool = False,
+        *,
+        failed_nodes: np.ndarray | None = None,
     ):
+        """Transport soil from source nodes along distance-limited paths.
+
+        Parameters
+        ----------
+        source_nodes : array-like of int
+            Nodes supplying mobile material. The runout component deliberately
+            does not infer why these nodes became active: they may come from a
+            seismic, hydrologic, or externally supplied trigger calculation.
+        runout_distance : float or array-like
+            Maximum travel distance in metres. Supply one value for all
+            sources, one value per source, or one value per grid node.
+        return_paths : bool, optional
+            If true, return the detailed multiflow paths grouped by source.
+        failed_nodes : array-like of int, optional
+            Compatibility alias for ``source_nodes``. Do not supply both.
+
+        Notes
+        -----
+        This method changes ``soil__depth`` and the three runout diagnostic
+        fields. The calling model is responsible for updating surface
+        elevation and rerunning flow routing before its next event.
         """
-        Route failed shallow-landslide material downslope and update
-        soil thickness on the grid.
-        """
+
+        if source_nodes is not None and failed_nodes is not None:
+            raise TypeError("supply source_nodes or failed_nodes, not both")
+        if source_nodes is None:
+            source_nodes = failed_nodes
+        if source_nodes is None:
+            raise TypeError("source_nodes is required")
+        if runout_distance is None:
+            raise TypeError("runout_distance is required")
+
+        source_nodes = self._validate_source_nodes(source_nodes)
+        distances = self._normalize_runout_distance(
+            runout_distance, source_nodes
+        )
 
         erosion_field = self._grid.at_node["landslide__erosion"]
         deposition_field = self._grid.at_node["landslide__deposition"]
@@ -159,20 +197,20 @@ class ShallowLandslideRunout(Component):
         erosion_field.fill(0.0)
         deposition_field.fill(0.0)
         soil_change_field.fill(0.0)
-        self._last_failed_nodes = np.asarray(failed_nodes, dtype=int).copy()
+        self._last_source_nodes = source_nodes.copy()
         self._last_paths = []
         self._last_path_proportions = np.array([], dtype=float)
         self._last_path_details = {}
         self._last_source_proportion_sums = {}
         self._last_source_path_counts = {}
 
-        if failed_nodes.size == 0:
+        if source_nodes.size == 0:
             self._last_erosion = erosion_field.copy()
             self._last_deposition = deposition_field.copy()
             return None
 
         paths, proportions, details = self._trace_paths_landslides(
-            failed_nodes, runout_distance
+            source_nodes, distances
         )
         self._last_paths = paths
         self._last_path_proportions = np.asarray(proportions, dtype=float)
@@ -209,6 +247,47 @@ class ShallowLandslideRunout(Component):
             return details
 
     # %% Helpers
+    def _validate_source_nodes(self, source_nodes):
+        """Return validated, one-dimensional source-node IDs."""
+        raw = np.asarray(source_nodes)
+        if raw.ndim != 1:
+            raise ValueError("source_nodes must be a one-dimensional array")
+        if not np.issubdtype(raw.dtype, np.integer):
+            raise TypeError("source_nodes must contain integer node IDs")
+
+        nodes = raw.astype(int, copy=True)
+        if np.any((nodes < 0) | (nodes >= self._grid.number_of_nodes)):
+            raise ValueError("source_nodes contains a node outside the grid")
+        if np.unique(nodes).size != nodes.size:
+            raise ValueError("source_nodes must not contain duplicate nodes")
+        return nodes
+
+    def _normalize_runout_distance(self, runout_distance, source_nodes):
+        """Return a node-sized travel-distance array for path tracing."""
+        values = np.asarray(runout_distance, dtype=float)
+        if values.ndim == 0:
+            source_values = np.full(source_nodes.size, float(values))
+        elif values.ndim != 1:
+            raise ValueError("runout_distance must be scalar or one-dimensional")
+        elif values.size == self._grid.number_of_nodes:
+            source_values = values[source_nodes]
+        elif values.size == source_nodes.size:
+            source_values = values
+        else:
+            raise ValueError(
+                "runout_distance must be scalar, contain one value per source, "
+                "or contain one value per grid node"
+            )
+
+        if not np.all(np.isfinite(source_values)):
+            raise ValueError("runout_distance must be finite at all source nodes")
+        if np.any(source_values < 0):
+            raise ValueError("runout_distance cannot be negative")
+
+        distances = np.zeros(self._grid.number_of_nodes, dtype=float)
+        distances[source_nodes] = source_values
+        return distances
+
     def _calculate_node_distance(self, node1, node2):
         grid = self._grid
         x1, y1 = grid.node_x[node1], grid.node_y[node1]
@@ -217,9 +296,9 @@ class ShallowLandslideRunout(Component):
 
     def _trace_paths_landslides(
         self,
-        starting_nodes,
-        newmark_distances,
-        ):
+        source_nodes,
+        runout_distances,
+    ):
         grid = self._grid
 
         receiver_nodes = grid.at_node["hill_flow__receiver_node"]
@@ -232,8 +311,8 @@ class ShallowLandslideRunout(Component):
         
         logger.info("Tracing landslide runout paths...")
 
-        for node in starting_nodes:
-            max_dist = newmark_distances[node]
+        for node in source_nodes:
+            max_dist = runout_distances[node]
             stack = [(0.0, node, 1.0, [node])]
             path_details[node] = []
 
@@ -300,7 +379,7 @@ class ShallowLandslideRunout(Component):
         paths,
         proportions,
         soil_depth,
-        ):
+    ):
         # Restore the 2025 source-to-endpoint transport concept: receiver
         # topology determines each branch and its proportion, while soil is
         # eroded only at the initiating node and deposited only at endpoints.

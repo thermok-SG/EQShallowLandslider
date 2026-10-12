@@ -464,9 +464,11 @@ def prepare_config(config, chunking_override=None):
 
     simulation = config["simulation"]
     if simulation.get("selection_method", "probabilistic") not in {
-        "probabilistic", "pga_weighted"
+        "all", "probabilistic", "pga_weighted"
     }:
-        raise ValueError("simulation.selection_method must be probabilistic or pga_weighted")
+        raise ValueError(
+            "simulation.selection_method must be all, probabilistic, or pga_weighted"
+        )
     if simulation.get("proportion_method", "conservative") not in {
         "empirical", "statistical", "risk_profile", "adaptive", "conservative"
     }:
@@ -488,12 +490,32 @@ def prepare_config(config, chunking_override=None):
     compute = bool(simulation.get("compute_displacement", False))
     runout = bool(simulation.get("enable_runout", False))
     update_soil = bool(simulation.get("update_soil", False))
-    if runout and not (compute and update_soil):
+    source_mode = simulation.get("runout_source_mode", "newmark")
+    if source_mode not in {"newmark", "selected"}:
         raise ValueError(
-            "simulation.enable_runout requires compute_displacement and update_soil"
+            "simulation.runout_source_mode must be newmark or selected"
+        )
+    runout_distance = simulation.get("runout_distance")
+    if runout_distance is not None and float(runout_distance) < 0:
+        raise ValueError("simulation.runout_distance cannot be negative")
+    if runout and not update_soil:
+        raise ValueError(
+            "simulation.enable_runout requires update_soil"
+        )
+    if runout and source_mode == "newmark" and not compute:
+        raise ValueError(
+            "simulation.runout_source_mode=newmark requires compute_displacement"
+        )
+    if runout and source_mode == "selected" and runout_distance is None:
+        raise ValueError(
+            "simulation.runout_source_mode=selected requires runout_distance"
         )
     if update_soil and not runout:
         raise ValueError("simulation.update_soil is only supported with enable_runout")
+    if simulation.get("evolve_landscape", False) and not (runout and update_soil):
+        raise ValueError(
+            "simulation.evolve_landscape requires enable_runout and update_soil"
+        )
     if runout:
         flow = config["flow_params"]
         if not flow.get("enable", True) or not flow.get("separate_hill_flow", True):
@@ -830,6 +852,13 @@ def main():
             ),
             enable_runout=config["simulation"].get("enable_runout", False),
             update_soil=config["simulation"].get("update_soil", False),
+            runout_source_mode=config["simulation"].get(
+                "runout_source_mode", "newmark"
+            ),
+            runout_distance=config["simulation"].get("runout_distance"),
+            evolve_landscape=config["simulation"].get(
+                "evolve_landscape", False
+            ),
             verbose=config["simulation"].get("verbose", False),
             n_jobs=config["simulation"].get("n_jobs", 1),
             split_by_width_config=(

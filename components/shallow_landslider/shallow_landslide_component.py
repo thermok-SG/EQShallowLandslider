@@ -6,7 +6,7 @@ Grid-based simulation of coseismic shallow landslides
 """
 
 from __future__ import annotations
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Callable
 import numpy as np
 import pandas as pd
 import logging
@@ -155,14 +155,14 @@ class ShallowLandslider(Component):
     unstable regions, fills enclosed holes in their candidate footprints,
     sub-groups the filled regions by aspect, optionally splits groups by
     measured length-width relationships (KDE-informed), selects candidate
-    landslides with either probabilistic or PGA-weighted strategies, and can
-    compute Newmark displacement.
+    landslides with deterministic, probabilistic, or PGA-weighted strategies,
+    and can compute Newmark displacement.
 
-    Optional runout updates `soil__depth` after displacement is computed. To
-    use runout through this component, run `PriorityFloodFlowRouter` first with
-    `separate_hill_flow=True` so the grid contains `hill_flow__receiver_node`
-    and `hill_flow__receiver_proportions`, then initialize with
-    `compute_displacement=True`, `enable_runout=True`, and `update_soil=True`.
+    Optional runout can use either Newmark-thresholded seismic sources or the
+    selected physically unstable nodes directly. To use runout, run
+    `PriorityFloodFlowRouter` first with `separate_hill_flow=True` so the grid
+    contains `hill_flow__receiver_node` and
+    `hill_flow__receiver_proportions`.
 
     Notes
     -----
@@ -225,6 +225,17 @@ class ShallowLandslider(Component):
             "optional": True,
             "doc": "Vertical PGA (multiples of g).",
         },
+        "landslide__runout_distance": {
+            "intent": "in",
+            "mapping": "node",
+            "dtype": float,
+            "units": "m",
+            "optional": True,
+            "doc": (
+                "Maximum source-node runout distance. Used when "
+                "runout_source_mode='selected' and no constructor value is supplied."
+            ),
+        },
         # The selected candidates are the only persistent component output.
         # Intermediate arrays remain available through ``results``.
         "landslide__selected_labels": {
@@ -257,6 +268,9 @@ class ShallowLandslider(Component):
         displacement_threshold: float = 0.0,
         enable_runout: bool = False,
         update_soil: bool = False,
+        runout_source_mode: str = "newmark",
+        runout_distance: float | np.ndarray | str | Callable | None = None,
+        evolve_landscape: bool = False,
         g: float = 9.81,
         split_by_width_config: Optional[dict] = None,
         verbose: bool = False,
@@ -289,7 +303,7 @@ class ShallowLandslider(Component):
             supplied explicitly.
         aspect_interval : int, optional
             Degrees per aspect zone for subgrouping. Default 20.
-        selection_method : {"probabilistic", "pga_weighted"}
+        selection_method : {"all", "probabilistic", "pga_weighted"}
             Candidate selection strategy. Default "probabilistic".
         proportion_method : str, optional
             Proportion rule for probabilistic selection (e.g., "conservative").
@@ -307,8 +321,25 @@ class ShallowLandslider(Component):
             `separate_hill_flow=True`.
         update_soil : bool, optional
             If True, create a default `soil__depth` field if absent. When
-            combined with `compute_displacement=True` and `enable_runout=True`,
-            runout erosion/deposition modifies `soil__depth`.
+            combined with `enable_runout=True`, runout erosion/deposition
+            modifies `soil__depth` and `topographic__elevation`.
+        runout_source_mode : {"newmark", "selected"}, optional
+            ``"newmark"`` preserves seismic behavior and uses selected nodes
+            whose computed displacement exceeds ``displacement_threshold``.
+            ``"selected"`` uses selected physically unstable nodes directly
+            and does not require Newmark displacement.
+        runout_distance : float, array-like, field name, callable, or None
+            Maximum runout distance in metres for ``runout_source_mode="selected"``.
+            A scalar applies to every source, an array must contain one value per
+            node, a string names a node field, and a callable receives
+            ``(grid, source_nodes)``. If None, the optional node field
+            ``landslide__runout_distance`` is used when present.
+        evolve_landscape : bool, optional
+            Require landscape-changing runout and enforce an external-state
+            refresh between events. After runout, soil depth and topographic
+            elevation are updated, slope/aspect are refreshed, and
+            ``terrain_dirty`` becomes true until the driver acknowledges that
+            routing and hydrologic derivatives were recomputed.
         g : float, optional
             Gravitational acceleration (m s^-2). Default 9.81.
         split_by_width_config : dict, optional
@@ -343,6 +374,9 @@ class ShallowLandslider(Component):
         self.displacement_threshold = float(displacement_threshold)
         self.enable_runout = bool(enable_runout)
         self.update_soil = bool(update_soil)
+        self.runout_source_mode = str(runout_source_mode)
+        self.runout_distance = runout_distance
+        self.evolve_landscape = bool(evolve_landscape)
         self.g = float(g)
         self.split_by_width_config = split_by_width_config
         self.verbose = verbose
@@ -365,6 +399,37 @@ class ShallowLandslider(Component):
         self._newmark = None
         self._high_disp_nodes = None
         self._group_properties_df = None
+        self._terrain_dirty = False
+        self._terrain_revision = 0
+
+        if self.selection_method not in {"all", "probabilistic", "pga_weighted"}:
+            raise ValueError(
+                "selection_method must be 'all', 'probabilistic', or 'pga_weighted'"
+            )
+        if self.runout_source_mode not in {"newmark", "selected"}:
+            raise ValueError(
+                "runout_source_mode must be either 'newmark' or 'selected'"
+            )
+        if self.enable_runout and not self.update_soil:
+            raise ValueError("enable_runout requires update_soil=True")
+        if self.enable_runout and self.runout_source_mode == "newmark" and not self.compute_displacement:
+            raise ValueError(
+                "runout_source_mode='newmark' requires compute_displacement=True"
+            )
+        if self.evolve_landscape and not (self.enable_runout and self.update_soil):
+            raise ValueError(
+                "evolve_landscape=True requires enable_runout=True and update_soil=True"
+            )
+        if (
+            self.enable_runout
+            and self.runout_source_mode == "selected"
+            and self.runout_distance is None
+            and "landslide__runout_distance" not in self.grid.at_node
+        ):
+            raise ValueError(
+                "runout_source_mode='selected' requires runout_distance or the "
+                "landslide__runout_distance node field"
+            )
 
         # Validate the configured wetness contract before creating optional
         # bedrock or PGA fields. Field mode is checked again before every
@@ -376,7 +441,12 @@ class ShallowLandslider(Component):
         z = self.grid.at_node["topographic__elevation"]
         if "bedrock__elevation" not in self.grid.at_node:
             br = self.grid.add_zeros("bedrock__elevation", at="node")
-            br[:] = z - self.grid.at_node.get("soil__depth", np.zeros_like(z))
+            soil_depth = (
+                self.grid.at_node["soil__depth"]
+                if "soil__depth" in self.grid.at_node
+                else np.zeros_like(z)
+            )
+            br[:] = z - soil_depth
 
         # PGA fields
         self._pga_h = self._get_or_create_pga_field(
@@ -386,18 +456,7 @@ class ShallowLandslider(Component):
             "earthquake__vertical_pga", pga_v
         )
 
-        # Cache aspect
-        _asp = self.grid.calc_aspect_at_node(
-            elevs="topographic__elevation", unit="degrees", ignore_closed_nodes=True
-        )
-        self._aspect = np.asarray(_asp, dtype=float).copy()
-        self._aspect[self.grid.boundary_nodes] = np.nan
-
-        _slope_rad = self.grid.calc_slope_at_node(
-            elevs="topographic__elevation"
-        )  # Landlab returns float64
-        self._slope_rad64 = np.asarray(_slope_rad, dtype=np.float64)
-        self._slope_deg32 = np.degrees(self._slope_rad64).astype(np.float32, copy=False)
+        self._refresh_terrain_derivatives()
 
         if self.enable_runout:
             
@@ -442,11 +501,29 @@ class ShallowLandslider(Component):
             "split_labels": self._split_labels,
             "selected_labels": self._selected_labels,
             "selected_proportion": self._selected_proportion,
+            "selection_method": self.selection_method,
             "newmark": self._newmark,
             "high_displacement_nodes": self._high_disp_nodes,
             "group_properties": self._group_properties_df,
             "runout": self._runout.results if self.enable_runout else None,
+            "terrain_dirty": self._terrain_dirty,
+            "terrain_revision": self._terrain_revision,
         }
+
+    @property
+    def terrain_dirty(self) -> bool:
+        """Whether external routing and hydrologic derivatives need refreshing."""
+        return self._terrain_dirty
+
+    def acknowledge_external_state_updated(self) -> None:
+        """Clear the post-runout dirty flag after external state is refreshed.
+
+        The caller must rerun flow routing and update any hydrologic fields that
+        depend on topography before invoking this method. Local slope and aspect
+        are recalculated defensively from the current topographic elevation.
+        """
+        self._refresh_terrain_derivatives()
+        self._terrain_dirty = False
 
     def run_one_step(
         self, dt: Optional[float] = None, kde_input: Optional[dict] = None
@@ -462,6 +539,13 @@ class ShallowLandslider(Component):
         kde_input : dict, optional
             If provided, overrides `split_by_width_config` for KDE-based width splitting.
         """
+        if self.evolve_landscape and self._terrain_dirty:
+            raise RuntimeError(
+                "The landscape changed during the previous event. Rerun flow "
+                "routing, update topography-dependent hydrology, then call "
+                "acknowledge_external_state_updated() before the next event."
+            )
+
         t_total = _time.perf_counter()
         logger.info(
             f"=== run_one_step | grid {self.grid.shape[0]}×{self.grid.shape[1]} "
@@ -484,35 +568,98 @@ class ShallowLandslider(Component):
         if self.compute_displacement:
             self._compute_displacement(dt or self.time_shaking)
 
-            if self.enable_runout and self.update_soil:
-                required_fields = (
-                    "hill_flow__receiver_node","hill_flow__receiver_proportions",
-                    )
-                missing = [
-                    f for f in required_fields if f not in self.grid.at_node
-                    ]
+        if self.enable_runout and self.update_soil:
+            self._run_runout()
                 
-                if missing:
-                    raise RuntimeError(
-                        f"Runout simulation requested, but flow routing fields are missing: {missing}. You must run the flow routing before enabling runout"
-                    )
-
-                disp = self._newmark
-
-                failed_nodes = np.where(
-                    np.isfinite(disp) & (disp > self.displacement_threshold)
-                )[0]
-
-                # Run even for an empty source set so the runout component
-                # clears fields and diagnostics from any preceding step.
-                self._runout.run_one_step(
-                    failed_nodes=failed_nodes,
-                    runout_distance=disp,
-                )
-
         logger.info(
             f"=== run_one_step complete — total {_time.perf_counter() - t_total:.1f}s ==="
         )
+
+    def _refresh_terrain_derivatives(self) -> None:
+        """Recalculate the slope and aspect arrays used by the component."""
+        aspect = self.grid.calc_aspect_at_node(
+            elevs="topographic__elevation",
+            unit="degrees",
+            ignore_closed_nodes=True,
+        )
+        self._aspect = np.asarray(aspect, dtype=float).copy()
+        self._aspect[self.grid.boundary_nodes] = np.nan
+
+        slope = self.grid.calc_slope_at_node(elevs="topographic__elevation")
+        self._slope_rad64 = np.asarray(slope, dtype=np.float64)
+        self._slope_deg32 = np.degrees(self._slope_rad64).astype(
+            np.float32, copy=False
+        )
+
+    def _resolve_runout_distance(self, source_nodes: np.ndarray) -> np.ndarray:
+        """Return a validated node-wise runout-distance array in metres."""
+        specification = self.runout_distance
+        if specification is None:
+            specification = "landslide__runout_distance"
+
+        if isinstance(specification, str):
+            if specification not in self.grid.at_node:
+                raise ValueError(
+                    f"Runout-distance field {specification!r} does not exist"
+                )
+            values = np.asarray(self.grid.at_node[specification], dtype=float)
+        elif callable(specification):
+            values = np.asarray(specification(self.grid, source_nodes), dtype=float)
+        else:
+            values = np.asarray(specification, dtype=float)
+
+        if values.ndim == 0:
+            distances = np.full(self.grid.number_of_nodes, float(values))
+        elif values.shape == (self.grid.number_of_nodes,):
+            distances = values
+        elif values.shape == (len(source_nodes),):
+            distances = np.zeros(self.grid.number_of_nodes, dtype=float)
+            distances[source_nodes] = values
+        else:
+            raise ValueError(
+                "runout_distance must be scalar, contain one value per node, or "
+                "contain one value per selected source"
+            )
+
+        source_distances = distances[source_nodes]
+        if not np.all(np.isfinite(source_distances)):
+            raise ValueError("runout_distance must be finite at all source nodes")
+        if np.any(source_distances < 0.0):
+            raise ValueError("runout_distance cannot be negative at source nodes")
+        return distances
+
+    def _run_runout(self) -> None:
+        """Run transport using Newmark or directly selected unstable sources."""
+        if self.runout_source_mode == "newmark":
+            distances = self._newmark
+            source_nodes = np.where(
+                np.isfinite(distances)
+                & (distances > self.displacement_threshold)
+            )[0]
+        else:
+            source_nodes = np.where(
+                (self._selected_labels > 0) & self._unstable_mask
+            )[0]
+            distances = self._resolve_runout_distance(source_nodes)
+
+        # Run even for an empty source set so runout-owned outputs from the
+        # preceding event are cleared.
+        self._runout.run_one_step(
+            source_nodes=source_nodes,
+            runout_distance=distances,
+        )
+
+        changed = np.any(
+            self.grid.at_node["landslide__soil_depth_change"] != 0.0
+        )
+        if changed:
+            self.grid.at_node["topographic__elevation"][:] = (
+                self.grid.at_node["bedrock__elevation"]
+                + self.grid.at_node["soil__depth"]
+            )
+            self._refresh_terrain_derivatives()
+            self._terrain_revision += 1
+            self._terrain_dirty = True
 
     # ---------------------------------------------------------------------
     # Pipeline steps
@@ -878,7 +1025,15 @@ class ShallowLandslider(Component):
                 f"proportion_method={self.proportion_method}"
             )
 
-            if self.selection_method == "probabilistic":
+            if self.selection_method == "all":
+                self._selected_labels = subgroup_array.copy()
+                self._selected_proportion = 1.0 if n_candidates > 0 else 0.0
+                logger.info(
+                    "  Deterministic selection retained all %s candidate groups",
+                    f"{n_candidates:,}",
+                )
+
+            elif self.selection_method == "probabilistic":
                 probs, _meta = self._generate_landslide_probability(
                     labeled_2d=subgroup_array.reshape(self.grid.shape),
                     slope_deg_1d=self._slope_deg32,

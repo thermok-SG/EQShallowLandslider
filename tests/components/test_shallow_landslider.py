@@ -56,6 +56,10 @@ def test_initialization_creates_optional_fields():
     assert "soil__depth" in mg.at_node
     assert "bedrock__elevation" in mg.at_node
     assert np.allclose(mg.at_node["soil__depth"], 0.5)
+    np.testing.assert_allclose(
+        mg.at_node["bedrock__elevation"],
+        mg.at_node["topographic__elevation"] - mg.at_node["soil__depth"],
+    )
 
 
 def test_omitted_pga_defaults_to_zero():
@@ -150,6 +154,128 @@ def test_run_one_step_without_measured_width_data():
     assert "landslide__selected_labels" in mg.at_node
 
 
+def test_all_selection_retains_every_candidate_group():
+    mg = make_grid(add_soil=True)
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1.0,
+        angle_int_frict=10.0,
+        selection_method="all",
+        split_by_width_config=None,
+    )
+
+    comp.run_one_step()
+
+    candidates = comp.results["aspect_labels"]
+    np.testing.assert_array_equal(comp.results["selected_labels"], candidates)
+    expected_proportion = 1.0 if np.any(candidates > 0) else 0.0
+    assert comp.results["selected_proportion"] == expected_proportion
+
+
+def test_hydrologic_runout_updates_landscape_and_requires_external_refresh():
+    mg = make_runout_grid()
+    wetness = mg.add_full("soil__relative_wetness", 1.0, at="node")
+    elevation_before = mg.at_node["topographic__elevation"].copy()
+
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1.0,
+        angle_int_frict=10.0,
+        wetness_source="field",
+        selection_method="all",
+        compute_displacement=False,
+        enable_runout=True,
+        update_soil=True,
+        runout_source_mode="selected",
+        runout_distance=20.0,
+        evolve_landscape=True,
+        split_by_width_config=None,
+    )
+
+    comp.run_one_step()
+
+    assert comp.results["newmark"] is None
+    assert comp.terrain_dirty
+    assert comp.results["terrain_revision"] == 1
+    assert np.any(mg.at_node["topographic__elevation"] != elevation_before)
+    np.testing.assert_allclose(
+        mg.at_node["topographic__elevation"],
+        mg.at_node["bedrock__elevation"] + mg.at_node["soil__depth"],
+    )
+    expected_sources = np.flatnonzero(
+        (comp.results["selected_labels"] > 0) & comp.results["unstable_mask"]
+    )
+    np.testing.assert_array_equal(
+        comp.results["runout"]["source_nodes"], expected_sources
+    )
+    assert np.isclose(
+        np.sum(comp.results["runout"]["erosion"]),
+        np.sum(comp.results["runout"]["deposition"]),
+    )
+
+    with pytest.raises(RuntimeError, match="Rerun flow routing"):
+        comp.run_one_step()
+
+    # The driver is responsible for updating routing and wetness after terrain
+    # changes. Wetness is kept saturated here to isolate landscape feedback.
+    router = PriorityFloodFlowRouter(
+        mg,
+        flow_metric="D8",
+        separate_hill_flow=True,
+        hill_flow_metric="Quinn",
+        depression_handler="fill",
+        update_hill_depressions=True,
+        accumulate_flow=True,
+    )
+    router.run_one_step()
+    wetness[:] = 1.0
+    first_fos = comp.results["factor_of_safety"].copy()
+    comp.acknowledge_external_state_updated()
+    assert not comp.terrain_dirty
+    comp.run_one_step()
+    assert not np.allclose(
+        comp.results["factor_of_safety"][mg.core_nodes],
+        first_fos[mg.core_nodes],
+        equal_nan=True,
+    )
+
+
+def test_selected_runout_distance_can_come_from_node_field():
+    mg = make_runout_grid()
+    mg.add_full("landslide__runout_distance", 25.0, at="node")
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1.0,
+        angle_int_frict=10.0,
+        selection_method="all",
+        enable_runout=True,
+        update_soil=True,
+        runout_source_mode="selected",
+        split_by_width_config=None,
+    )
+
+    comp.run_one_step()
+
+    assert np.all(
+        mg.at_node["landslide__runout_distance"][
+            comp.results["runout"]["source_nodes"]
+        ]
+        == 25.0
+    )
+
+
+def test_selected_runout_requires_distance_provider():
+    mg = make_runout_grid()
+
+    with pytest.raises(ValueError, match="requires runout_distance"):
+        ShallowLandslider(
+            mg,
+            enable_runout=True,
+            update_soil=True,
+            runout_source_mode="selected",
+        )
+
+
 def test_runout_updates_soil_depth_when_enabled():
     mg = make_runout_grid()
     soil_before = mg.at_node["soil__depth"].copy()
@@ -189,14 +315,14 @@ def test_runout_updates_soil_depth_when_enabled():
     assert np.all(mg.at_node["soil__depth"] >= 0)
     runout_results = comp.results["runout"]
     np.testing.assert_array_equal(
-        runout_results["failed_nodes"], comp.results["high_displacement_nodes"]
+        runout_results["source_nodes"], comp.results["high_displacement_nodes"]
     )
     assert all(
-        path[0] in set(runout_results["failed_nodes"])
+        path[0] in set(runout_results["source_nodes"])
         for path in runout_results["paths"]
     )
     assert set(np.flatnonzero(runout_results["erosion"])) <= set(
-        runout_results["failed_nodes"]
+        runout_results["source_nodes"]
     )
     assert len(runout_results["paths"]) == len(
         runout_results["path_proportions"]
@@ -227,6 +353,56 @@ def test_runout_restores_source_to_endpoint_transport():
     assert updated[13] == 1.5
     assert updated[25] == 1.5
     assert np.sum(erosion) == np.sum(deposition) == 1.0
+
+
+def test_runout_accepts_trigger_neutral_sources_and_source_distances():
+    mg = make_runout_grid()
+    runout = ShallowLandslideRunout(mg)
+
+    runout.run_one_step(
+        source_nodes=np.array([27, 28]),
+        runout_distance=np.array([20.0, 30.0]),
+    )
+
+    np.testing.assert_array_equal(runout.results["source_nodes"], [27, 28])
+    assert np.sum(runout.results["erosion"]) > 0.0
+    assert np.isclose(
+        np.sum(runout.results["erosion"]),
+        np.sum(runout.results["deposition"]),
+    )
+
+
+def test_runout_retains_failed_nodes_keyword_as_alias():
+    mg = make_runout_grid()
+    runout = ShallowLandslideRunout(mg)
+
+    runout.run_one_step(failed_nodes=np.array([27]), runout_distance=20.0)
+
+    np.testing.assert_array_equal(runout.results["source_nodes"], [27])
+    assert runout.results["failed_nodes"] is runout.results["source_nodes"]
+
+
+@pytest.mark.parametrize(
+    ("source_nodes", "runout_distance", "error", "message"),
+    [
+        ([27.0], 20.0, TypeError, "integer node IDs"),
+        (np.array([999]), 20.0, ValueError, "outside the grid"),
+        (np.array([27, 27]), 20.0, ValueError, "duplicate"),
+        (np.array([27]), -1.0, ValueError, "cannot be negative"),
+        (np.array([27]), np.array([1.0, 2.0]), ValueError, "per source"),
+    ],
+)
+def test_runout_validates_trigger_neutral_inputs(
+    source_nodes, runout_distance, error, message
+):
+    mg = make_runout_grid()
+    runout = ShallowLandslideRunout(mg)
+
+    with pytest.raises(error, match=message):
+        runout.run_one_step(
+            source_nodes=source_nodes,
+            runout_distance=runout_distance,
+        )
 
 
 def test_runout_rejects_single_flow_hill_routing():
