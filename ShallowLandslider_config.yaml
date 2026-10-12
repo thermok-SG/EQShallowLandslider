@@ -123,11 +123,18 @@ simulation:
   compute_displacement: false
   time_shaking: 10 # seconds (used for Newmark displacement if enabled)
   displacement_threshold: 0.0
-  # Runout requires full-grid mode, compute_displacement: true,
-  # enable_runout: true, update_soil: true, flow_params.enable: true,
-  # and flow_params.separate_hill_flow: true.
+  # Runout requires full-grid mode, enable_runout: true, update_soil: true,
+  # flow_params.enable: true, and flow_params.separate_hill_flow: true.
+  # "newmark" uses displacement-derived sources/distances and therefore also
+  # requires compute_displacement: true. "selected" transports all unstable,
+  # selected nodes and does not require shaking.
   enable_runout: false
   update_soil: false
+  runout_source_mode: "newmark" # newmark|selected
+  runout_distance: null # metres; required by the CLI for selected mode
+  # If true, update topography after runout and require rerouting before the
+  # next event. This is intended for event sequences managed by a driver.
+  evolve_landscape: false
 
 split_by_width:
   enabled: true

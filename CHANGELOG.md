@@ -35,6 +35,37 @@ every edited line.
   instability through hole filling, aspect/KDE splitting, and probabilistic
   selection. The full Nepal example uses the measured length-width KDE bundle.
 
+### Trigger-independent runout foundation
+
+- Added deterministic `selection_method="all"` for integration tests and
+  experiments where every geometrically processed candidate should be passed
+  to transport.
+- Separated runout inputs from trigger physics. `ShallowLandslideRunout` now
+  accepts source nodes plus scalar, per-source, or per-node mobility distances;
+  it does not inspect PGA, wetness, factor of safety, or trigger type.
+- Retained `failed_nodes` as a compatibility alias while making
+  `source_nodes` the primary runout diagnostic.
+- Added `runout_source_mode="newmark" | "selected"`. Newmark mode preserves
+  displacement-derived seismic sources and distances. Selected mode sends all
+  unstable selected nodes to runout using an explicit scalar, node array,
+  field, or callable distance provider, so it can operate without shaking.
+- Added landscape-state feedback after transport: surface elevation is kept
+  equal to bedrock elevation plus soil depth, terrain derivatives are
+  refreshed, and an explicit dirty-state contract prevents a subsequent
+  evolving-landscape event until external routing and hydrology are refreshed.
+- Preserved the existing mass-conservative Quinn multiflow branch tracing and
+  source-to-endpoint soil allocation without changing their calculations.
+- Added direct validation and integration tests for trigger-neutral sources,
+  mobility-distance forms, zero-PGA hydrologic runout, mass conservation,
+  topographic consistency, and stale-routing protection.
+- Corrected internally created bedrock elevation to use surface elevation minus
+  soil depth, preventing landscape feedback from rebuilding the surface from an
+  incorrect zero-thickness bedrock reference.
+- Added a reproducible Nepal DEM runout diagnostic using zero PGA,
+  deterministic selection, the existing aspect/KDE pipeline, and a prescribed
+  mobility distance, with standard terrain and runout plots plus an explicit
+  mass-balance check.
+
 ### Scientific behavior and compatibility
 
 - The ShallowLandslider factor-of-safety equation remains authoritative and is
@@ -43,10 +74,10 @@ every edited line.
 - Existing callers that relied on implicit fallback shaking must now provide
   PGA explicitly. Existing CLI paths already construct and pass their PGA
   arrays.
-- This is the stability foundation for 2.0, not yet the complete temporal
-  rainfall/earthquake model. Probabilistic hydrologic selection, landscape-
-  consistent runout, rerouting, hydrology adapters, and event sequencing remain
-  planned work.
+- This remains a 2.0 foundation rather than the complete temporal
+  rainfall/earthquake model. Trigger-independent, landscape-consistent runout
+  is now available; probabilistic hydrologic selection, hydrology adapters,
+  automatic rerouting, and event sequencing remain planned work.
 
 ## Unreleased working tree - multiflow runout and notebook integration
 

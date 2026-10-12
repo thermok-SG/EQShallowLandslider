@@ -445,6 +445,27 @@ def test_plot_pipeline_stages_marks_kde_as_not_configured():
     plt.close(figure)
 
 
+def test_plot_pipeline_stages_labels_deterministic_all_selection():
+    labels = np.zeros(9, dtype=int)
+    labels[4] = 1
+    results = {
+        "unstable_mask": labels > 0,
+        "labels": labels,
+        "filled_labels": labels,
+        "aspect_labels": labels,
+        "split_labels": labels,
+        "selected_labels": labels,
+        "selection_method": "all",
+    }
+
+    figure = plot_pipeline_stages(results, np.arange(9).reshape((3, 3)), dx=30)
+
+    assert "All candidates selected (1 group; 1 cell)" in {
+        axis.get_title() for axis in figure.axes
+    }
+    plt.close(figure)
+
+
 def test_optional_storage_formats_have_safe_fallbacks(tmp_path):
     config = make_config()
     config["outputs"].update({"write_parquet": True, "write_zarr": True})

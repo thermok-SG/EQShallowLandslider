@@ -878,7 +878,7 @@ def plot_pipeline_stages(
     -----
     The panels are state diagnostics, not six independent calculations. Hole
     filling and splitting alter candidate labels without changing the raw
-    physical ``unstable_mask``. The final panel is the stochastic selection
+    physical ``unstable_mask``. The final panel is the configured selection
     from the last available candidate-label stage.
     """
     elevation = np.asarray(elevation, dtype=float)
@@ -919,6 +919,12 @@ def plot_pipeline_stages(
     filled = raster("filled_labels", dtype=int)
     aspect = raster("aspect_labels", dtype=int)
     selected = raster("selected_labels", dtype=int)
+    selection_method = results.get("selection_method", "probabilistic")
+    selection_title = {
+        "all": "All candidates selected",
+        "probabilistic": "Probabilistically selected",
+        "pga_weighted": "PGA-weighted selection",
+    }.get(selection_method, f"Selected ({selection_method})")
     split_value = results.get("split_labels")
     split = None if split_value is None else raster("split_labels", dtype=int)
 
@@ -965,7 +971,7 @@ def plot_pipeline_stages(
         (
             selected,
             (
-                "Probabilistically selected "
+                f"{selection_title} "
                 f"({counted(region_count(selected), 'group')}; "
                 f"{counted(int(np.count_nonzero(selected)), 'cell')})"
             ),

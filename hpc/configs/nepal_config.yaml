@@ -111,11 +111,15 @@ simulation:
   compute_displacement: false
   time_shaking: 10 # seconds (used for Newmark displacement if enabled)
   displacement_threshold: 0.0
-  # Runout requires full-grid mode, compute_displacement: true,
-  # enable_runout: true, update_soil: true, flow_params.enable: true,
-  # and flow_params.separate_hill_flow: true.
+  # Runout requires full-grid mode, enable_runout: true, update_soil: true,
+  # flow_params.enable: true, and flow_params.separate_hill_flow: true.
+  # "newmark" additionally requires compute_displacement: true; "selected"
+  # instead transports unstable selected nodes without requiring shaking.
   enable_runout: false
   update_soil: false
+  runout_source_mode: "newmark" # newmark|selected
+  runout_distance: null # metres; required by the CLI for selected mode
+  evolve_landscape: false
 
 split_by_width:
   enabled: true

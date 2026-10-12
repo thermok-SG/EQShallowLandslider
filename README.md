@@ -96,11 +96,19 @@ cannot divide material among branching sediment paths.
 
 ### Source and endpoint behaviour
 
-The selected and runout footprints have related but different meanings:
+The selected and runout footprints have related but different meanings. Runout
+is trigger-independent: it receives source nodes and travel distances after the
+stability and selection stages have decided which material is mobile.
 
 - A **selected node** has `landslide__selected_labels > 0`.
-- A **runout source** is a selected node whose finite Newmark displacement is
-  greater than `displacement_threshold`.
+- In `runout_source_mode="newmark"`, a **runout source** is a selected node
+  whose finite Newmark displacement is greater than `displacement_threshold`;
+  its Newmark displacement supplies the travel distance.
+- In `runout_source_mode="selected"`, every unstable selected node is a runout
+  source. `runout_distance` supplies the travel distance as a scalar, node
+  array, node-field name, or callable. This mode does not require shaking or a
+  Newmark calculation and is intended for hydrologic or externally prescribed
+  triggering.
 - Every runout source independently starts its own Quinn branch tree. A node is
   not treated as one bulk source merely because it belongs to a selected
   region.
@@ -114,24 +122,29 @@ The selected and runout footprints have related but different meanings:
 - Stopped Quinn proportions are retained as terminated branches. Per-source
   allocation is mass conserving and does not allow negative soil depth.
 
-Runout is only executed when all three component flags are enabled:
-
-- `compute_displacement=True`
-- `enable_runout=True`
-- `update_soil=True`
+Runout requires `enable_runout=True` and `update_soil=True`. Newmark-source
+runout additionally requires `compute_displacement=True`; selected-source
+runout does not.
 
 In the YAML CLI config, this means using `chunking.mode: never`, keeping
 `flow_params.enable` and `flow_params.separate_hill_flow` true, and setting
-`simulation.compute_displacement`, `simulation.enable_runout`, and
-`simulation.update_soil` to true. Runout modifies `soil__depth` in place and
-caches the source nodes, paths, proportions, per-source branch totals, and
-erosion/deposition arrays on the runout subcomponent.
+`simulation.enable_runout` and `simulation.update_soil` to true. Set
+`simulation.runout_source_mode` to `newmark` or `selected`. The latter also
+requires a scalar `simulation.runout_distance`. Runout modifies `soil__depth`
+in place and caches the source nodes, paths, proportions, per-source branch
+totals, and erosion/deposition arrays on the runout subcomponent.
+
+When `evolve_landscape=True`, the parent component also updates
+`topographic__elevation = bedrock__elevation + soil__depth`. Before the next
+event, the driver must rerun flow routing and any hydrology tied to the changed
+terrain, then call `acknowledge_external_state_updated()`.
 
 The latest runout diagnostics are available at `ls.results["runout"]`:
 
 | Key | Meaning |
 |---|---|
-| `failed_nodes` | Selected nodes above the displacement threshold |
+| `source_nodes` | Nodes that supplied mobile material in the latest runout step |
+| `failed_nodes` | Compatibility alias for `source_nodes` |
 | `paths` | Terminated multiflow paths, including their source and endpoint |
 | `path_proportions` | Quinn branch weight corresponding to each path |
 | `path_details` | Paths and weights grouped by initiating source |
@@ -299,8 +312,9 @@ ShallowLandslider equation.
 See [the relative-wetness interface](docs/relative-wetness-interface.md) for
 the equations, validation rules, examples, and current limitations. See the
 [hydrologic-triggering implementation plan](docs/hydrologic-triggering-plan.md)
-for the staged path to probabilistic hydrologic selection, landscape-consistent
-runout, hydrology adapters, and earthquake/rainfall event sequences.
+for the staged path from the implemented trigger-independent runout foundation
+to probabilistic hydrologic selection, hydrology adapters, and
+earthquake/rainfall event sequences.
 
 ### Nepal DEM demonstration
 
@@ -350,6 +364,23 @@ The prescribed footprint tests the coupling interface but is not presented as
 a rainfall-to-saturation model. Useful options include `--rows`, `--cols`,
 `--row-offset`, `--col-offset`, `--cohesion`, `--background-wetness`,
 `--storm-peak-wetness`, and `--output`; run with `--help` for the complete list.
+
+To pass every zero-PGA storm-unstable node through the existing Quinn runout
+calculation on the complete Nepal subregion, using a diagnostic 60 m mobility
+distance, run:
+
+```bash
+python examples/plot_nepal_hydrologic_runout.py \
+  --rows 468 --cols 648 \
+  --output analysis_output/nepal_hydrologic_runout_full.png \
+  --pipeline-output analysis_output/nepal_runout_pipeline_stages_full.png
+```
+
+This integration example retains aspect and measured-width KDE splitting,
+uses `selection_method="all"`, verifies erosion/deposition mass balance, and
+plots elevation, slope, curvature, wetness, stability, source, erosion,
+deposition, and net soil-depth change. The prescribed distance is not a
+calibrated rainfall-runout mobility law.
 
 ## CLI outputs and analysis (v1.2)
 
@@ -788,13 +819,16 @@ You can control simulation parameters via:
 | `submerged_soil_proportion` | Fraction of soil saturated                   |
 | `wetness_source`       | `"constant"` or live `"field"` relative wetness |
 | `pga_h`, `pga_v`       | Horizontal & vertical PGA arrays                |
-| `selection_method`     | `"probabilistic"` or `"pga_weighted"`           |
+| `selection_method`     | `"all"`, `"probabilistic"`, or `"pga_weighted"` |
 | `proportion_method`    | `"empirical"`, `"conservative"`, etc.           |
 | `random_seed`          | For reproducibility                             |
 | `compute_displacement` | Calculate Newmark displacement for selected nodes |
 | `displacement_threshold` | Minimum displacement for a node to become a runout source |
 | `enable_runout`        | Enable the optional multiflow runout subcomponent |
 | `update_soil`          | Allow runout to update source and endpoint soil depth |
+| `runout_source_mode`   | `"newmark"` or trigger-neutral `"selected"` sources |
+| `runout_distance`      | Selected-source mobility distance provider       |
+| `evolve_landscape`     | Enforce rerouting/hydrology refresh between events |
 | `verbose`              | Print progress and info (default: False)        |
 
 ---

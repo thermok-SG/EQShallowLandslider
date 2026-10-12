@@ -18,6 +18,18 @@ around that stable interface. The larger objective is a time-evolving sequence
 of ordinary storms and intermittent earthquakes in which every event inherits
 the landscape produced by all preceding events.
 
+## Implementation status (2026-10-12)
+
+The dynamic relative-wetness foundation and trigger-independent runout
+foundation are implemented on `feat/hydrologic-triggering`. The component now
+supports field-driven wetness, zero default PGA, deterministic `"all"`
+selection, Newmark or directly selected runout sources, explicit mobility
+distance providers, surface/soil/bedrock consistency, refreshed local terrain
+derivatives, and a dirty-state barrier requiring the driver to refresh routing
+and hydrology before another evolving-landscape event. Automatic hydrology,
+automatic rerouting, probabilistic hydrologic selection, and an event scheduler
+remain future phases.
+
 ## Time-evolving model architecture
 
 This work is not just a choice between two trigger modes. It requires a
@@ -69,9 +81,10 @@ rainfall acts on coseismically modified soil, topography, and drainage.
 
 ### Derived state and invalidation
 
-The current component caches slope and aspect at construction, and the current
-runout code changes `soil__depth` without changing `topographic__elevation`.
-Both behaviours must change for meaningful landscape evolution.
+The component now refreshes slope and aspect when runout changes the surface,
+updates `topographic__elevation` from bedrock plus soil, and marks external
+routing/hydrology state dirty. The external driver remains responsible for
+rerouting and recomputing hydrology before acknowledging that state as current.
 
 After erosion or deposition, the model must:
 
@@ -126,14 +139,16 @@ Consequently, the existing instability test
 stability mechanics can therefore support static hydrologic failure after the
 wetness input and earthquake-specific downstream assumptions are separated.
 
-The current barriers are:
+The original barriers and their present status are:
 
-1. `submerged_soil_proportion` is a scalar captured at construction time.
-2. Omitted PGA values create non-zero fallback shaking.
-3. Both group-selection strategies use PGA.
-4. Runout is only invoked through Newmark displacement and shaking duration.
-5. There is no hydrologic analogue of the existing critical-acceleration ratio
-   used by probabilistic group selection.
+1. **Resolved:** relative wetness can be reread from a node field.
+2. **Resolved:** omitted PGA is zero.
+3. **Partly resolved:** deterministic `"all"` selection supports integration,
+   but a calibrated probabilistic hydrologic selector remains planned.
+4. **Resolved:** directly selected unstable nodes can enter runout with an
+   explicit mobility distance and without Newmark displacement.
+5. **Diagnostic implemented:** critical relative wetness is available; its use
+   in a scientifically supported occurrence-probability model remains planned.
 
 ## Hydrologic state contract
 
@@ -213,7 +228,7 @@ Responsibilities:
 - Apply trigger-appropriate selection.
 - Pass selected failures to runout independently of Newmark displacement.
 
-An `"all"` selection method may be useful for analytical tests, deterministic
+An `"all"` selection method is implemented for analytical tests, deterministic
 hazard envelopes, and debugging; it means that every candidate landslide is
 selected. It is not the primary hydrologic occurrence model.
 
