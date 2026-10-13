@@ -20,6 +20,7 @@ from analysis import (
     plot_run_maps,
     plot_pipeline_stages,
     plot_parameter_sensitivity,
+    plot_trigger_sequence_distributions,
     summarize_run_distributions,
     swept_parameters,
 )
@@ -355,6 +356,56 @@ def test_observed_landslides_are_normalized_filtered_and_plotted(tmp_path):
     plt.close(figure)
 
 
+def test_observed_landslides_accepts_west_nepal_elevation_alias(tmp_path):
+    zonal_path = tmp_path / "Roback2017_ZonalStats_west.csv"
+    pd.DataFrame(
+        {
+            "Area_m2": [1800.0, 2700.0],
+            "Mean_slope": [31.0, 37.0],
+            "mean_elev": [2200.0, 2800.0],
+        }
+    ).to_csv(zonal_path, index=False)
+
+    observed = load_observed_landslides(zonal_stats_path=zonal_path)
+
+    assert observed["median_elevation"].tolist() == [2200.0, 2800.0]
+
+
+def test_trigger_sequence_distribution_plot_overlays_trigger_pairs(tmp_path):
+    runs = []
+    for number, event_type in enumerate(
+        ("storm", "earthquake", "earthquake", "storm"), start=1
+    ):
+        runs.append(
+            {
+                "summary": {
+                    "run_id": f"Trigger row {number}",
+                    "event_type": event_type,
+                    "order_label": (
+                        "storm → earthquake" if number <= 2 else "earthquake → storm"
+                    ),
+                },
+                "regions": pd.DataFrame(
+                    {
+                        "area": [900.0 + number * 900.0],
+                        "median_slope": [25.0 + number],
+                        "median_elevation": [2000.0 + number * 100.0],
+                        "selected": [True],
+                    }
+                ),
+            }
+        )
+
+    output = tmp_path / "trigger-sequence.png"
+    figure = plot_trigger_sequence_distributions(runs, output_path=output)
+
+    assert output.exists()
+    assert len(figure.axes) == 6
+    assert "storm → earthquake" in figure.axes[0].get_ylabel()
+    assert any("Δmean=" in text.get_text() for text in figure.axes[0].texts)
+    plt.close(figure)
+
+
 def test_plot_run_maps_includes_optional_hydrologic_and_curvature_rasters(tmp_path):
     shape = (4, 4)
     elevation = np.arange(16, dtype=float).reshape(shape)
@@ -484,6 +535,27 @@ def test_plot_pipeline_stages_labels_deterministic_all_selection():
     figure = plot_pipeline_stages(results, np.arange(9).reshape((3, 3)), dx=30)
 
     assert "All candidates selected (1 group; 1 cell)" in {
+        axis.get_title() for axis in figure.axes
+    }
+    plt.close(figure)
+
+
+def test_plot_pipeline_stages_labels_hydrologic_selection():
+    labels = np.zeros(9, dtype=int)
+    labels[4] = 1
+    results = {
+        "unstable_mask": labels > 0,
+        "labels": labels,
+        "filled_labels": labels,
+        "aspect_labels": labels,
+        "split_labels": labels,
+        "selected_labels": labels,
+        "selection_method": "hydrologic",
+    }
+
+    figure = plot_pipeline_stages(results, np.arange(9).reshape((3, 3)), dx=30)
+
+    assert "Critical-wetness-weighted selection (1 group; 1 cell)" in {
         axis.get_title() for axis in figure.axes
     }
     plt.close(figure)

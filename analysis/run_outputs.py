@@ -925,6 +925,7 @@ def plot_pipeline_stages(
     selection_title = {
         "all": "All candidates selected",
         "probabilistic": "Probabilistically selected",
+        "hydrologic": "Critical-wetness-weighted selection",
         "pga_weighted": "PGA-weighted selection",
     }.get(selection_method, f"Selected ({selection_method})")
     split_value = results.get("split_labels")
@@ -1086,6 +1087,147 @@ def plot_run(run, selected_only=True, observed=None, output_path=None, show=Fals
         axis.grid(alpha=0.2)
     selection = "selected" if selected_only else "candidate"
     fig.suptitle(f"{run['summary']['run_id']} — {selection} regions")
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=200)
+    if show:
+        plt.show()
+    return fig
+
+
+def plot_trigger_sequence_distributions(
+    runs,
+    output_path=None,
+    show=False,
+):
+    """Compare first- and second-trigger distributions for event sequences.
+
+    Consecutive pairs of runs form rows. The first trigger is drawn as a pale
+    background distribution and the second as the stronger foreground. Mean
+    markers are joined by an arrow labelled with the signed change. Columns
+    use common bins and limits so the two event orderings remain comparable.
+    """
+    runs = [run if isinstance(run, dict) else load_run(run) for run in runs]
+    if not runs or len(runs) % 2:
+        raise ValueError("Provide consecutive first/second trigger pairs")
+
+    columns = _PLOT_COLUMNS[:3]
+    pairs = [runs[index : index + 2] for index in range(0, len(runs), 2)]
+    fig, axes = plt.subplots(
+        len(pairs),
+        len(columns),
+        figsize=(15, 4.2 * len(pairs)),
+        squeeze=False,
+        layout="constrained",
+    )
+    trigger_colors = {"storm": "#2166ac", "earthquake": "#b2182b"}
+
+    for column_index, (column, label, log_x) in enumerate(columns):
+        model_values_by_run = []
+        for run in runs:
+            regions = run["regions"]
+            if "selected" in regions:
+                regions = regions[regions["selected"]]
+            model_values_by_run.append(
+                _numeric_values(regions, column, positive=log_x)
+            )
+        nonempty = [values for values in model_values_by_run if len(values)]
+        combined = np.concatenate(nonempty) if nonempty else np.array([])
+        bins = _shared_bins(combined, log_x) if len(combined) else None
+        x_limits = (combined.min(), combined.max()) if len(combined) else None
+
+        for row_index, pair in enumerate(pairs):
+            axis = axes[row_index, column_index]
+            pair_start = row_index * 2
+            pair_values = model_values_by_run[pair_start : pair_start + 2]
+            if bins is not None:
+                means = []
+                for trigger_index, (run, values) in enumerate(
+                    zip(pair, pair_values), start=1
+                ):
+                    event_type = run["summary"].get("event_type", "trigger")
+                    color = trigger_colors.get(event_type, "tab:blue")
+                    alpha = 0.25 if trigger_index == 1 else 0.62
+                    mean = float(np.mean(values)) if len(values) else np.nan
+                    means.append(mean)
+                    if not len(values):
+                        continue
+                    axis.hist(
+                        values,
+                        bins=bins,
+                        density=True,
+                        color=color,
+                        alpha=alpha,
+                        histtype="stepfilled",
+                        edgecolor=color,
+                        linewidth=1.2,
+                        label=(
+                            f"Trigger {trigger_index}: {event_type.title()} "
+                            f"(n={len(values):,}, mean={mean:,.1f})"
+                        ),
+                    )
+                    axis.axvline(
+                        mean,
+                        color=color,
+                        linestyle="--" if trigger_index == 1 else "-",
+                        linewidth=2.0,
+                        alpha=0.9,
+                    )
+                axis.set_xlim(x_limits)
+
+                if np.all(np.isfinite(means)):
+                    ymax = axis.get_ylim()[1]
+                    arrow_y = ymax * 0.92
+                    second_color = trigger_colors.get(
+                        pair[1]["summary"].get("event_type", ""), "tab:orange"
+                    )
+                    axis.annotate(
+                        "",
+                        xy=(means[1], arrow_y),
+                        xytext=(means[0], arrow_y),
+                        arrowprops={
+                            "arrowstyle": "->",
+                            "color": second_color,
+                            "linewidth": 2.2,
+                        },
+                    )
+                    change = means[1] - means[0]
+                    midpoint = (
+                        np.sqrt(means[0] * means[1])
+                        if log_x and means[0] > 0 and means[1] > 0
+                        else 0.5 * (means[0] + means[1])
+                    )
+                    axis.text(
+                        midpoint,
+                        arrow_y,
+                        f" Δmean={change:+,.1f}",
+                        color=second_color,
+                        fontsize=9,
+                        weight="bold",
+                        ha="left",
+                        va="bottom",
+                    )
+            if log_x:
+                axis.set_xscale("log")
+            if row_index == 0:
+                axis.set_title(label, fontsize=12, weight="bold")
+            if row_index == len(pairs) - 1:
+                axis.set_xlabel(label)
+            if column_index == 0:
+                axis.set_ylabel(
+                    f"{pair[0]['summary'].get('order_label', f'Sequence {row_index + 1}')}\nDensity",
+                    fontsize=11,
+                    weight="bold",
+                )
+            axis.grid(alpha=0.2)
+            axis.legend(loc="best", fontsize="small")
+
+    fig.suptitle(
+        "How modelled failure-region distributions change with trigger order\n"
+        "Trigger 1 is translucent; Trigger 2 is foreground; arrows join means",
+        fontsize=15,
+    )
     if output_path is not None:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
