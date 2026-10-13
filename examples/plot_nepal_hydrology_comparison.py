@@ -118,6 +118,8 @@ def _mechanism_figure(
 ):
     """Plot the different model structures alongside their measured response."""
     fig, axes = plt.subplots(2, 2, figsize=(15, 10), layout="constrained")
+    recharge_mm_per_day = args.storm_recharge * 86400.0 * 1000.0
+    recharge_depth_mm = recharge_mm_per_day * args.storm_hours / 24.0
 
     model_panels = (
         (
@@ -194,8 +196,33 @@ def _mechanism_figure(
         linewidth=2.5,
         label="SINMAP style",
     )
-    time_axis.axvspan(0.0, storm_end, color="0.75", alpha=0.25, label="Recharge on")
+    time_axis.axvspan(
+        0.0,
+        storm_end,
+        color="0.75",
+        alpha=0.25,
+        label=f"Recharge on ({recharge_mm_per_day:.1f} mm/day)",
+    )
     time_axis.axvline(storm_end, color="0.4", linestyle="--", linewidth=1)
+    time_axis.text(
+        0.5 * storm_end,
+        0.08,
+        f"Prescribed aquifer recharge\n{recharge_depth_mm:.1f} mm total",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+        color="0.25",
+    )
+    if args.recovery_days > 0.0:
+        time_axis.text(
+            storm_end + 0.5 * args.recovery_days,
+            0.08,
+            f"Zero recharge\nfor {args.recovery_days:g} days",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            color="0.25",
+        )
     time_axis.set(xlabel="Elapsed time (days)", ylabel="Mean core-node relative wetness")
     time_axis.set_ylim(-0.03, 1.05)
     time_axis.set_title(
@@ -231,7 +258,8 @@ def _mechanism_figure(
 
     fig.suptitle(
         "Why GDP and SINMAP-style hydrology respond differently\n"
-        "Identical prescribed recharge and ShallowLandslider stability equation",
+        f"Uniform aquifer recharge: {recharge_mm_per_day:.1f} mm/day for "
+        f"{args.storm_hours:g} h ({recharge_depth_mm:.1f} mm total); not rainfall",
         fontsize=16,
     )
     return fig
@@ -356,8 +384,11 @@ def main() -> None:
     )
     fig.suptitle(
         "GDP transient storage versus SINMAP-style equilibrium wetness\n"
-        f"Same recharge={args.storm_recharge:g} m/s, K={args.hydraulic_conductivity:g} m/s, "
-        "and ShallowLandslider stability equation",
+        f"Uniform prescribed aquifer recharge={args.storm_recharge:g} m/s "
+        f"({args.storm_recharge * 86400.0 * 1000.0:.1f} mm/day) for "
+        f"{args.storm_hours:g} h; then {args.recovery_days:g} d at zero recharge\n"
+        f"Total recharge depth={args.storm_recharge * args.storm_hours * 3600.0 * 1000.0:.1f} mm; "
+        "this is not a rainfall hyetograph",
         fontsize=15,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -399,6 +430,13 @@ def main() -> None:
         "grid_shape": list(shape),
         "core_node_count": int(core.size),
         "storm_recharge_m_per_s": args.storm_recharge,
+        "storm_recharge_mm_per_day": args.storm_recharge * 86400.0 * 1000.0,
+        "storm_total_recharge_mm": (
+            args.storm_recharge * args.storm_hours * 3600.0 * 1000.0
+        ),
+        "forcing_interpretation": (
+            "uniform prescribed groundwater recharge; no rainfall-to-recharge model"
+        ),
         "storm_hours": args.storm_hours,
         "recovery_days": args.recovery_days,
         "hydraulic_conductivity_m_per_s": args.hydraulic_conductivity,
