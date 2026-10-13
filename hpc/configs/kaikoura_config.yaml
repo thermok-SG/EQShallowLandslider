@@ -9,18 +9,19 @@ smooth_num: 0
 output_dir: "runs/kaikoura/single"
 
 # Run the base configuration above with run_single.sbatch first. Once that
-# completes successfully, this block is ready for a 45-member ensemble.
+# completes successfully, this block is ready for a 90-member ensemble.
 ensemble:
   enabled: true
-  name: kaikoura_ensemble
-  output_dir: runs/kaikoura/ensemble
+  name: kaikoura_curvature_linear_pga
+  output_dir: runs/kaikoura/ensemble/curvature_linear_pga
   jobs: 1
   parameters:
-    soil_params.distribution: [elevation]
+    soil_params.distribution: [curvature]
     soil_params.relationship: [linear]
     soil_params.cohesion_eff: [15000]
     soil_params.angle_int_frict: [25, 30, 35]
     soil_params.submerged_soil_proportion: [0.1, 0.25, 0.5, 0.75, 1.0]
+    pga.horizontal_max: [0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
 
 outputs:
   write_parquet: true
@@ -69,8 +70,9 @@ soil_params:
   window: 5
 
 pga:
-  horizontal_max: 0.5
-  vertical_max: 0.2
+  horizontal_max: 0.1
+  vertical_max: 0.04
+  vertical_to_horizontal_ratio: 0.4
   distribution: "uniform"
   center: null
   random_center: false
