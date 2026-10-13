@@ -9,6 +9,7 @@ calibration: it isolates the consequence of groundwater storage and recession.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -52,6 +53,16 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("analysis_output/nepal_gdp_sinmap_comparison.png"),
     )
+    parser.add_argument(
+        "--mechanism-output",
+        type=Path,
+        help="Optional mechanism/time-response figure path; derived from --output by default",
+    )
+    parser.add_argument(
+        "--results-output",
+        type=Path,
+        help="Optional JSON summary path; derived from --output by default",
+    )
     return parser.parse_args()
 
 
@@ -91,6 +102,135 @@ def _map(ax, values, shape, title, *, cmap="Blues", vmin=None, vmax=None):
     ax.set_xticks([])
     ax.set_yticks([])
     plt.colorbar(image, ax=ax, shrink=0.78)
+
+
+def _mechanism_figure(
+    args: argparse.Namespace,
+    *,
+    gdp_storm_mean: float,
+    sinmap_storm_mean: float,
+    gdp_recovery_mean: float,
+    sinmap_recovery_mean: float,
+    gdp_unstable_count: int,
+    sinmap_unstable_count: int,
+    gdp_minimum_fos: float,
+    sinmap_minimum_fos: float,
+):
+    """Plot the different model structures alongside their measured response."""
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10), layout="constrained")
+
+    model_panels = (
+        (
+            axes[0, 0],
+            "GDP: transient groundwater balance",
+            "Recharge $R(t)$",
+            "Stored saturated thickness $h_s(t)$\n"
+            "$n\\,\\partial h_s/\\partial t = R - \\nabla\\cdot q$",
+            "Lateral drainage + return flow",
+            "Wetness $m(t)=h_s(t)/h_{soil}$\nMemory: yes",
+            "#2166ac",
+        ),
+        (
+            axes[0, 1],
+            "SINMAP style: instantaneous equilibrium index",
+            "Recharge $R$ + terrain $a,\\,\\beta$",
+            "Topographic equilibrium\n$m=\\min[(R/T)(a/\\sin\\beta),1]$",
+            "No storage-balance evolution",
+            "Wetness changes with forcing immediately\nMemory: no",
+            "#b2182b",
+        ),
+    )
+    for axis, title, source, state, loss, output, color in model_panels:
+        axis.set_title(title, fontsize=13, weight="bold")
+        axis.set_xlim(0, 1)
+        axis.set_ylim(0, 1)
+        axis.axis("off")
+        boxes = ((0.05, 0.72, source), (0.31, 0.40, state), (0.62, 0.10, output))
+        for x, y, label in boxes:
+            axis.text(
+                x,
+                y,
+                label,
+                transform=axis.transAxes,
+                ha="left",
+                va="center",
+                fontsize=11,
+                bbox={
+                    "boxstyle": "round,pad=0.5",
+                    "facecolor": color,
+                    "edgecolor": color,
+                    "alpha": 0.14,
+                },
+            )
+        axis.annotate(
+            "",
+            xy=(0.42, 0.52),
+            xytext=(0.23, 0.70),
+            xycoords="axes fraction",
+            arrowprops={"arrowstyle": "->", "color": color, "linewidth": 2},
+        )
+        axis.annotate(
+            "",
+            xy=(0.72, 0.22),
+            xytext=(0.58, 0.39),
+            xycoords="axes fraction",
+            arrowprops={"arrowstyle": "->", "color": color, "linewidth": 2},
+        )
+        axis.text(0.05, 0.17, loss, transform=axis.transAxes, fontsize=10, color="0.3")
+
+    time_axis = axes[1, 0]
+    storm_end = args.storm_hours / 24.0
+    recovery_end = storm_end + args.recovery_days
+    gdp_times = [0.0, storm_end, recovery_end]
+    gdp_values = [0.0, gdp_storm_mean, gdp_recovery_mean]
+    sinmap_times = [0.0, 1.0e-6, storm_end, storm_end + 1.0e-6, recovery_end]
+    sinmap_values = [0.0, sinmap_storm_mean, sinmap_storm_mean, 0.0, 0.0]
+    time_axis.plot(gdp_times, gdp_values, "o-", color="#2166ac", linewidth=2.5, label="GDP")
+    time_axis.plot(
+        sinmap_times,
+        sinmap_values,
+        drawstyle="steps-post",
+        color="#b2182b",
+        linewidth=2.5,
+        label="SINMAP style",
+    )
+    time_axis.axvspan(0.0, storm_end, color="0.75", alpha=0.25, label="Recharge on")
+    time_axis.axvline(storm_end, color="0.4", linestyle="--", linewidth=1)
+    time_axis.set(xlabel="Elapsed time (days)", ylabel="Mean core-node relative wetness")
+    time_axis.set_ylim(-0.03, 1.05)
+    time_axis.set_title("Observed response to the same forcing", weight="bold")
+    time_axis.grid(alpha=0.2)
+    time_axis.legend(loc="best")
+
+    outcome_axis = axes[1, 1]
+    models = ["GDP", "SINMAP style"]
+    counts = [gdp_unstable_count, sinmap_unstable_count]
+    colors = ["#2166ac", "#b2182b"]
+    bars = outcome_axis.bar(models, counts, color=colors, alpha=0.8)
+    outcome_axis.set_ylabel("Unstable core nodes after storm")
+    outcome_axis.set_title(
+        "Consequences for the unchanged stability model", weight="bold", pad=14
+    )
+    outcome_axis.set_ylim(0.0, max(counts) * 1.16 if max(counts) else 1.0)
+    outcome_axis.grid(axis="y", alpha=0.2)
+    for bar, count, minimum_fos in zip(
+        bars, counts, (gdp_minimum_fos, sinmap_minimum_fos)
+    ):
+        outcome_axis.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            f"{count:,}\nminimum FS={minimum_fos:.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+        )
+
+    fig.suptitle(
+        "Why GDP and SINMAP-style hydrology respond differently\n"
+        "Identical prescribed recharge and ShallowLandslider stability equation",
+        fontsize=16,
+    )
+    return fig
 
 
 def main() -> None:
@@ -221,28 +361,82 @@ def main() -> None:
     plt.close(fig)
 
     core = grid.core_nodes
+    gdp_storm_mean = float(np.mean(gdp_storm[core]))
+    sinmap_storm_mean = float(np.mean(sinmap_storm[core]))
+    gdp_recovery_mean = float(np.mean(gdp_recovery[core]))
+    sinmap_recovery_mean = float(np.mean(sinmap_recovery[core]))
+    gdp_unstable_count = int(np.count_nonzero(gdp_unstable[core]))
+    sinmap_unstable_count = int(np.count_nonzero(sinmap_unstable[core]))
+    gdp_minimum_fos = float(np.nanmin(gdp_fos[core]))
+    sinmap_minimum_fos = float(np.nanmin(sinmap_fos[core]))
+
+    mechanism_output = args.mechanism_output or args.output.with_name(
+        f"{args.output.stem}_mechanism{args.output.suffix}"
+    )
+    mechanism = _mechanism_figure(
+        args,
+        gdp_storm_mean=gdp_storm_mean,
+        sinmap_storm_mean=sinmap_storm_mean,
+        gdp_recovery_mean=gdp_recovery_mean,
+        sinmap_recovery_mean=sinmap_recovery_mean,
+        gdp_unstable_count=gdp_unstable_count,
+        sinmap_unstable_count=sinmap_unstable_count,
+        gdp_minimum_fos=gdp_minimum_fos,
+        sinmap_minimum_fos=sinmap_minimum_fos,
+    )
+    mechanism_output.parent.mkdir(parents=True, exist_ok=True)
+    mechanism.savefig(mechanism_output, dpi=180)
+    plt.close(mechanism)
+
+    results_output = args.results_output or args.output.with_name(
+        f"{args.output.stem}_results.json"
+    )
+    results = {
+        "grid_shape": list(shape),
+        "core_node_count": int(core.size),
+        "storm_recharge_m_per_s": args.storm_recharge,
+        "storm_hours": args.storm_hours,
+        "recovery_days": args.recovery_days,
+        "hydraulic_conductivity_m_per_s": args.hydraulic_conductivity,
+        "porosity": args.porosity,
+        "sinmap_transmissivity": "hydraulic_conductivity * local_soil_depth",
+        "sinmap_specific_contributing_area": "drainage_area / grid.dx",
+        "gdp": {
+            "mean_storm_wetness": gdp_storm_mean,
+            "mean_recovery_wetness": gdp_recovery_mean,
+            "unstable_storm_core_nodes": gdp_unstable_count,
+            "minimum_storm_factor_of_safety": gdp_minimum_fos,
+        },
+        "sinmap": {
+            "mean_storm_wetness": sinmap_storm_mean,
+            "mean_recovery_wetness": sinmap_recovery_mean,
+            "unstable_storm_core_nodes": sinmap_unstable_count,
+            "minimum_storm_factor_of_safety": sinmap_minimum_fos,
+        },
+    }
+    results_output.parent.mkdir(parents=True, exist_ok=True)
+    results_output.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+
     print(f"Grid: {shape[0]} rows x {shape[1]} columns")
     print(
         "Mean storm wetness on core nodes: "
-        f"GDP={np.mean(gdp_storm[core]):.4f}, "
-        f"SINMAP={np.mean(sinmap_storm[core]):.4f}"
+        f"GDP={gdp_storm_mean:.4f}, SINMAP={sinmap_storm_mean:.4f}"
     )
     print(
         "Mean recovery wetness on core nodes: "
-        f"GDP={np.mean(gdp_recovery[core]):.4f}, "
-        f"SINMAP={np.mean(sinmap_recovery[core]):.4f}"
+        f"GDP={gdp_recovery_mean:.4f}, SINMAP={sinmap_recovery_mean:.4f}"
     )
     print(
         "Unstable storm core nodes: "
-        f"GDP={np.count_nonzero(gdp_unstable[core])}, "
-        f"SINMAP={np.count_nonzero(sinmap_unstable[core])}"
+        f"GDP={gdp_unstable_count}, SINMAP={sinmap_unstable_count}"
     )
     print(
         "Minimum storm factor of safety: "
-        f"GDP={np.nanmin(gdp_fos[core]):.4f}, "
-        f"SINMAP={np.nanmin(sinmap_fos[core]):.4f}"
+        f"GDP={gdp_minimum_fos:.4f}, SINMAP={sinmap_minimum_fos:.4f}"
     )
     print(f"Saved {args.output}")
+    print(f"Saved {mechanism_output}")
+    print(f"Saved {results_output}")
 
 
 if __name__ == "__main__":
