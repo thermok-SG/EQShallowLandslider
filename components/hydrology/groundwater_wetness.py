@@ -14,10 +14,11 @@ Thus the relative-wetness field represents the fraction of the potentially
 unstable soil column occupied by the saturated zone. It is not root-zone
 volumetric water content.
 
-GDP assumes a positive permeable thickness. Cells with no modelled soil are
-given a numerically negligible aquifer thickness internally, receive no
-recharge, and are assigned zero relative wetness. The physical soil-depth
-field and topographic surface are not changed by this regularisation.
+GDP assumes a positive permeable thickness. Cells with no modelled soil, or a
+soil column thinner than ``minimum_aquifer_thickness``, are given a numerically
+negligible aquifer thickness internally, receive no recharge, and are assigned
+zero relative wetness. The physical soil-depth field and topographic surface
+are not changed by this regularisation.
 """
 
 from __future__ import annotations
@@ -129,6 +130,7 @@ class GroundwaterWetnessCoupler:
         self._sync_aquifer_base()
 
         initial_thickness = initial_wetness * grid.at_node["soil__depth"]
+        initial_thickness[~self._hydrologically_active_soil()] = 0.0
         initial_water_table = self._aquifer_base + initial_thickness
         if "water_table__elevation" in grid.at_node:
             grid.at_node["water_table__elevation"][:] = initial_water_table
@@ -271,7 +273,7 @@ class GroundwaterWetnessCoupler:
             0.0,
         )
         new_thickness = np.minimum(old_thickness, physical_capacity)
-        new_thickness[self.grid.at_node["soil__depth"] <= 0.0] = 0.0
+        new_thickness[~self._hydrologically_active_soil()] = 0.0
 
         porosity = np.asarray(self.groundwater.n, dtype=float)
         self.geomorphic_water_excess[:] = porosity * np.maximum(
@@ -288,8 +290,15 @@ class GroundwaterWetnessCoupler:
 
     def _effective_recharge(self) -> np.ndarray:
         recharge = self._requested_recharge.copy()
-        recharge[self.grid.at_node["soil__depth"] <= 0.0] = 0.0
+        recharge[~self._hydrologically_active_soil()] = 0.0
         return recharge
+
+    def _hydrologically_active_soil(self) -> np.ndarray:
+        """Mask physical soil columns resolved above GDP's numerical floor."""
+        return (
+            np.asarray(self.grid.at_node["soil__depth"], dtype=float)
+            >= self.minimum_aquifer_thickness
+        )
 
     def _sync_aquifer_base(self) -> None:
         physical_base = np.asarray(
@@ -306,9 +315,9 @@ class GroundwaterWetnessCoupler:
     def _update_relative_wetness(self) -> None:
         soil = np.asarray(self.grid.at_node["soil__depth"], dtype=float)
         saturated = np.asarray(self.saturated_thickness, dtype=float)
-        positive_soil = soil > 0.0
+        active_soil = self._hydrologically_active_soil()
         tolerance = 1.0e-10 * np.maximum(soil, 1.0)
-        invalid = positive_soil & (
+        invalid = active_soil & (
             (saturated < -tolerance) | (saturated > soil + tolerance)
         )
         if np.any(invalid):
@@ -320,8 +329,8 @@ class GroundwaterWetnessCoupler:
             )
 
         self.relative_wetness[:] = 0.0
-        self.relative_wetness[positive_soil] = (
-            saturated[positive_soil] / soil[positive_soil]
+        self.relative_wetness[active_soil] = (
+            saturated[active_soil] / soil[active_soil]
         )
         # Only remove roundoff after checking for meaningful violations.
         np.clip(self.relative_wetness, 0.0, 1.0, out=self.relative_wetness)

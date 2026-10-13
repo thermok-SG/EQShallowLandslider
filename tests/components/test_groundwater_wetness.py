@@ -106,6 +106,27 @@ def test_zero_soil_nodes_are_dry_and_receive_no_recharge():
     )
 
 
+def test_sub_resolution_soil_is_hydrologically_inactive():
+    grid = make_aquifer_grid()
+    thin = int(grid.core_nodes[0])
+    grid.at_node["soil__depth"][thin] = 1.0e-7
+    grid.at_node["topographic__elevation"][thin] = (
+        grid.at_node["bedrock__elevation"][thin] + 1.0e-7
+    )
+
+    coupling = GroundwaterWetnessCoupler(
+        grid,
+        minimum_aquifer_thickness=1.0e-6,
+        recharge_rate=1.0e-6,
+        initial_relative_wetness=0.5,
+    )
+    coupling.run_one_step(3600.0)
+
+    assert coupling.relative_wetness[thin] == 0.0
+    assert coupling.groundwater.recharge[thin] == 0.0
+    assert grid.at_node["soil__depth"][thin] == 1.0e-7
+
+
 def test_runoff_transfer_combines_gdp_and_external_surface_runoff():
     grid = make_aquifer_grid()
     coupling = GroundwaterWetnessCoupler(grid, initial_relative_wetness=1.0)
