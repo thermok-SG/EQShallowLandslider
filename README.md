@@ -225,7 +225,7 @@ ls = ShallowLandslider(
     submerged_soil_proportion=0.5,
     pga_h=pga_h,
     pga_v=pga_v,
-    selection_method="probabilistic",  # or "pga_weighted"
+    selection_method="probabilistic",  # or "pga_weighted" for seismic runs
     proportion_method="conservative",
     random_seed=5000,
     compute_displacement=True,
@@ -301,7 +301,26 @@ After stability calculation, these new diagnostics are available:
 
 - `ls.results["relative_wetness"]`: the node values used in that evaluation;
 - `ls.results["critical_relative_wetness"]`: the wetness `m_c` at which the
-  unchanged ShallowLandslider factor of safety equals one.
+  unchanged ShallowLandslider factor of safety equals one;
+- `ls.results["selection_weight"]`: the nodal field used to weight candidate
+  selection (not necessarily a calibrated occurrence probability).
+
+The first hydrologic stochastic selector mirrors the simple critical-threshold
+ranking used by the coseismic path:
+
+```python
+ls = ShallowLandslider(
+    grid,
+    wetness_source="field",
+    selection_method="hydrologic",
+    random_seed=5000,
+)
+```
+
+For current candidate nodes it min-max normalizes and inverts critical relative
+wetness, so candidates requiring less wetting receive greater weight. It then
+uses the existing group selection machinery. The field is an uncalibrated
+selection weight, not an observed rainfall-event probability.
 
 At zero PGA, the existing equations satisfy
 `a_c = g sin(slope) (FoS - 1)`. Consequently, the existing acceleration-based
@@ -309,12 +328,10 @@ instability comparison identifies static hydrologic failure when `FoS < 1`.
 No second stability equation is introduced, and SINMAP does not replace the
 ShallowLandslider equation.
 
-See [the relative-wetness interface](docs/relative-wetness-interface.md) for
-the equations, validation rules, examples, and current limitations. See the
-[hydrologic-triggering implementation plan](docs/hydrologic-triggering-plan.md)
-for the staged path from the implemented trigger-independent runout foundation
-to probabilistic hydrologic selection, hydrology adapters, and
-earthquake/rainfall event sequences.
+The research narrative, equations, validation rules, implementation plan, and
+current limitations are maintained together in the ShallowLandslider Research
+Obsidian vault. See the [research-notes pointer](docs/README.md) for its local
+location; the exact software-facing contract is note 09 in that vault.
 
 ### Nepal DEM demonstration
 
@@ -821,7 +838,7 @@ You can control simulation parameters via:
 | `submerged_soil_proportion` | Fraction of soil saturated                   |
 | `wetness_source`       | `"constant"` or live `"field"` relative wetness |
 | `pga_h`, `pga_v`       | Horizontal & vertical PGA arrays                |
-| `selection_method`     | `"all"`, `"probabilistic"`, or `"pga_weighted"` |
+| `selection_method`     | `"all"`, `"probabilistic"`, `"hydrologic"`, or `"pga_weighted"` |
 | `proportion_method`    | `"empirical"`, `"conservative"`, etc.           |
 | `random_seed`          | For reproducibility                             |
 | `compute_displacement` | Calculate Newmark displacement for selected nodes |
