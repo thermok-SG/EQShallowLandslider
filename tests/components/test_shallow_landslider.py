@@ -172,6 +172,74 @@ def test_all_selection_retains_every_candidate_group():
     assert comp.results["selected_proportion"] == expected_proportion
 
 
+def test_hydrologic_selection_weight_inverts_candidate_critical_wetness():
+    mg = make_grid(add_soil=True)
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1.0,
+        angle_int_frict=10.0,
+        selection_method="hydrologic",
+        split_by_width_config=None,
+    )
+    labels = np.zeros(mg.shape, dtype=int)
+    labels[1, 1:4] = 1
+    critical = np.full(mg.number_of_nodes, np.nan)
+    candidate_nodes = np.flatnonzero(labels.ravel() > 0)
+    critical[candidate_nodes] = [0.2, 0.5, 0.8]
+
+    weights, metadata = comp._generate_hydrologic_selection_weight(
+        labels, critical
+    )
+
+    np.testing.assert_allclose(weights.ravel()[candidate_nodes], [1.0, 0.5, 0.0])
+    assert np.all(weights[labels == 0] == 0.0)
+    assert metadata["minimum_critical_wetness"] == pytest.approx(0.2)
+    assert metadata["maximum_critical_wetness"] == pytest.approx(0.8)
+    assert metadata["calibrated_probability"] is False
+
+
+def test_hydrologic_selection_weight_uses_equal_weights_for_constant_range():
+    mg = make_grid(add_soil=True)
+    comp = ShallowLandslider(mg, selection_method="hydrologic")
+    labels = np.zeros(mg.shape, dtype=int)
+    labels[1:3, 1:3] = 1
+    critical = np.zeros(mg.number_of_nodes)
+    critical[labels.ravel() > 0] = 0.4
+
+    weights, metadata = comp._generate_hydrologic_selection_weight(
+        labels, critical
+    )
+
+    assert np.all(weights[labels > 0] == 1.0)
+    assert metadata["performed"] is False
+    assert "same critical wetness" in metadata["reason"]
+
+
+def test_hydrologic_selection_runs_at_zero_pga_and_exposes_weight():
+    mg = make_grid(add_soil=True)
+    mg.add_full("soil__relative_wetness", 1.0, at="node")
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1.0,
+        angle_int_frict=10.0,
+        wetness_source="field",
+        selection_method="hydrologic",
+        random_seed=42,
+        split_by_width_config=None,
+    )
+
+    comp.run_one_step()
+
+    candidates = comp.results["aspect_labels"] > 0
+    weights = comp.results["selection_weight"]
+    assert np.all(weights[~candidates] == 0.0)
+    assert np.all((weights[candidates] >= 0.0) & (weights[candidates] <= 1.0))
+    assert comp.results["selection_metadata"]["weight_type"] == (
+        "inverted_critical_relative_wetness"
+    )
+    assert comp.results["selection_metadata"]["calibrated_probability"] is False
+
+
 def test_hydrologic_runout_updates_landscape_and_requires_external_refresh():
     mg = make_runout_grid()
     wetness = mg.add_full("soil__relative_wetness", 1.0, at="node")

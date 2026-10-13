@@ -88,6 +88,15 @@ def test_selected_runout_does_not_require_newmark_displacement():
     assert prepared["simulation"]["selection_method"] == "all"
 
 
+def test_hydrologic_selection_method_is_accepted():
+    config = minimal_config()
+    config["simulation"]["selection_method"] = "hydrologic"
+
+    prepared = prepare_config(config)
+
+    assert prepared["simulation"]["selection_method"] == "hydrologic"
+
+
 def test_selected_runout_requires_a_mobility_distance():
     config = minimal_config()
     config["simulation"].update(

@@ -464,10 +464,11 @@ def prepare_config(config, chunking_override=None):
 
     simulation = config["simulation"]
     if simulation.get("selection_method", "probabilistic") not in {
-        "all", "probabilistic", "pga_weighted"
+        "all", "probabilistic", "hydrologic", "pga_weighted"
     }:
         raise ValueError(
-            "simulation.selection_method must be all, probabilistic, or pga_weighted"
+            "simulation.selection_method must be all, probabilistic, hydrologic, "
+            "or pga_weighted"
         )
     if simulation.get("proportion_method", "conservative") not in {
         "empirical", "statistical", "risk_profile", "adaptive", "conservative"

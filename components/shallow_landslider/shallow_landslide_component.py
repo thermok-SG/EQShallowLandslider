@@ -155,7 +155,8 @@ class ShallowLandslider(Component):
     unstable regions, fills enclosed holes in their candidate footprints,
     sub-groups the filled regions by aspect, optionally splits groups by
     measured length-width relationships (KDE-informed), selects candidate
-    landslides with deterministic, probabilistic, or PGA-weighted strategies,
+    landslides with deterministic, seismic-probabilistic, hydrologic, or
+    PGA-weighted strategies,
     and can compute Newmark displacement.
 
     Optional runout can use either Newmark-thresholded seismic sources or the
@@ -303,8 +304,10 @@ class ShallowLandslider(Component):
             supplied explicitly.
         aspect_interval : int, optional
             Degrees per aspect zone for subgrouping. Default 20.
-        selection_method : {"all", "probabilistic", "pga_weighted"}
-            Candidate selection strategy. Default "probabilistic".
+        selection_method : {"all", "probabilistic", "hydrologic", "pga_weighted"}
+            Candidate selection strategy. ``"hydrologic"`` min-max inverts
+            critical relative wetness over candidate nodes and uses the result
+            as an uncalibrated selection weight. Default "probabilistic".
         proportion_method : str, optional
             Proportion rule for probabilistic selection (e.g., "conservative").
         random_seed : int, optional
@@ -396,15 +399,23 @@ class ShallowLandslider(Component):
         self._split_labels = None
         self._selected_labels = None
         self._selected_proportion = None
+        self._selection_weight = None
+        self._selection_metadata = None
         self._newmark = None
         self._high_disp_nodes = None
         self._group_properties_df = None
         self._terrain_dirty = False
         self._terrain_revision = 0
 
-        if self.selection_method not in {"all", "probabilistic", "pga_weighted"}:
+        if self.selection_method not in {
+            "all",
+            "probabilistic",
+            "hydrologic",
+            "pga_weighted",
+        }:
             raise ValueError(
-                "selection_method must be 'all', 'probabilistic', or 'pga_weighted'"
+                "selection_method must be 'all', 'probabilistic', "
+                "'hydrologic', or 'pga_weighted'"
             )
         if self.runout_source_mode not in {"newmark", "selected"}:
             raise ValueError(
@@ -501,6 +512,8 @@ class ShallowLandslider(Component):
             "split_labels": self._split_labels,
             "selected_labels": self._selected_labels,
             "selected_proportion": self._selected_proportion,
+            "selection_weight": self._selection_weight,
+            "selection_metadata": self._selection_metadata,
             "selection_method": self.selection_method,
             "newmark": self._newmark,
             "high_displacement_nodes": self._high_disp_nodes,
@@ -1028,6 +1041,11 @@ class ShallowLandslider(Component):
             if self.selection_method == "all":
                 self._selected_labels = subgroup_array.copy()
                 self._selected_proportion = 1.0 if n_candidates > 0 else 0.0
+                self._selection_weight = (subgroup_array > 0).astype(np.float32)
+                self._selection_metadata = {
+                    "weight_type": "deterministic_all",
+                    "calibrated_probability": False,
+                }
                 logger.info(
                     "  Deterministic selection retained all %s candidate groups",
                     f"{n_candidates:,}",
@@ -1057,10 +1075,51 @@ class ShallowLandslider(Component):
                 )
                 self._selected_labels   = selected_groups.reshape(self.grid.number_of_nodes)
                 self._selected_proportion = meta_sel.get("proportion_calculated", None)
+                self._selection_weight = probs.reshape(self.grid.number_of_nodes)
+                self._selection_metadata = {
+                    "weight_type": "seismic_probability_heuristic",
+                    "calibrated_probability": False,
+                    "generation": _meta,
+                    "selection": meta_sel,
+                }
                 logger.info(
                     f"  Selected {meta_sel.get('num_groups_selected', '?'):,} / "
                     f"{meta_sel.get('num_groups_total', '?'):,} groups | "
                     f"proportion={self._selected_proportion:.4f}"
+                )
+
+            elif self.selection_method == "hydrologic":
+                weights, weight_meta = self._generate_hydrologic_selection_weight(
+                    labeled_2d=subgroup_array.reshape(self.grid.shape),
+                    critical_wetness_1d=self._critical_wetness,
+                )
+                selected_groups, meta_sel = self._probabilistic_group_selection(
+                    labeled_2d=subgroup_array.reshape(self.grid.shape),
+                    probability_2d=weights,
+                    proportion_method=self.proportion_method,
+                    custom_proportion=self.custom_proportion,
+                    random_seed=self.random_seed,
+                    reproducible=True,
+                )
+                self._selected_labels = selected_groups.reshape(
+                    self.grid.number_of_nodes
+                )
+                self._selected_proportion = meta_sel.get(
+                    "proportion_calculated", None
+                )
+                self._selection_weight = weights.reshape(self.grid.number_of_nodes)
+                self._selection_metadata = {
+                    "weight_type": "inverted_critical_relative_wetness",
+                    "calibrated_probability": False,
+                    "generation": weight_meta,
+                    "selection": meta_sel,
+                }
+                logger.info(
+                    "  Hydrologic selection retained %s / %s groups | "
+                    "proportion=%.4f",
+                    f"{meta_sel.get('num_groups_selected', 0):,}",
+                    f"{meta_sel.get('num_groups_total', 0):,}",
+                    self._selected_proportion,
                 )
 
             elif self.selection_method == "pga_weighted":
@@ -1078,6 +1137,13 @@ class ShallowLandslider(Component):
                 )
                 self._selected_labels   = groups.reshape(self.grid.number_of_nodes)
                 self._selected_proportion = proportion
+                self._selection_weight = probs.reshape(self.grid.number_of_nodes)
+                self._selection_metadata = {
+                    "weight_type": "pga_weighted_heuristic",
+                    "calibrated_probability": False,
+                    "generation": _meta,
+                    "selected_labels": _labels,
+                }
                 logger.info(
                     f"  Selected proportion={proportion:.4f} | "
                     f"n_selected_nodes="
@@ -1975,6 +2041,61 @@ class ShallowLandslider(Component):
     # ---------------------------------------------------------------------
     # SELECTION (inlined from selection.py)
     # ---------------------------------------------------------------------
+    def _generate_hydrologic_selection_weight(
+        self,
+        labeled_2d: np.ndarray,
+        critical_wetness_1d: np.ndarray,
+    ) -> Tuple[np.ndarray, dict]:
+        """Invert critical wetness over current candidate nodes.
+
+        This is the hydrologic counterpart to ranking candidates by a critical
+        forcing threshold in the coseismic path. Lower critical wetness means
+        less hydrologic forcing is required for failure and therefore receives
+        greater weight. The result is an uncalibrated selection weight, not an
+        event-occurrence probability.
+        """
+        labels = np.asarray(labeled_2d)
+        if labels.shape != self.grid.shape:
+            raise ValueError("labeled_2d must match the grid shape")
+        critical = np.asarray(critical_wetness_1d, dtype=float)
+        if critical.size != self.grid.number_of_nodes:
+            raise ValueError(
+                "critical_wetness_1d must contain one value per grid node"
+            )
+        critical = critical.reshape(self.grid.shape)
+        candidates = labels > 0
+        weights = np.zeros(self.grid.shape, dtype=np.float32)
+        if not np.any(candidates):
+            return weights, {
+                "performed": False,
+                "reason": "No candidate nodes",
+                "calibrated_probability": False,
+            }
+        if not np.all(np.isfinite(critical[candidates])):
+            raise ValueError("critical wetness must be finite at candidate nodes")
+
+        minimum = float(np.min(critical[candidates]))
+        maximum = float(np.max(critical[candidates]))
+        if maximum > minimum:
+            weights[candidates] = (
+                1.0
+                - (critical[candidates] - minimum) / (maximum - minimum)
+            ).astype(np.float32)
+            performed = True
+            reason = None
+        else:
+            weights[candidates] = 1.0
+            performed = False
+            reason = "All candidate nodes have the same critical wetness"
+        np.clip(weights, 0.0, 1.0, out=weights)
+        return weights, {
+            "performed": performed,
+            "reason": reason,
+            "minimum_critical_wetness": minimum,
+            "maximum_critical_wetness": maximum,
+            "calibrated_probability": False,
+        }
+
     def _generate_landslide_probability(
         self,
         labeled_2d: np.ndarray,
