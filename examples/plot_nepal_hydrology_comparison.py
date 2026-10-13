@@ -198,7 +198,11 @@ def _mechanism_figure(
     time_axis.axvline(storm_end, color="0.4", linestyle="--", linewidth=1)
     time_axis.set(xlabel="Elapsed time (days)", ylabel="Mean core-node relative wetness")
     time_axis.set_ylim(-0.03, 1.05)
-    time_axis.set_title("Observed response to the same forcing", weight="bold")
+    time_axis.set_title(
+        "Endpoint response to the same forcing\n"
+        "Connecting lines guide the eye; they are not resolved hydrographs",
+        weight="bold",
+    )
     time_axis.grid(alpha=0.2)
     time_axis.legend(loc="best")
 
