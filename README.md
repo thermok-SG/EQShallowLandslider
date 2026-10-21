@@ -328,7 +328,7 @@ instability comparison identifies static hydrologic failure when `FoS < 1`.
 No second stability equation is introduced, and SINMAP does not replace the
 ShallowLandslider equation.
 
-Two interchangeable wetness couplers are available for direct comparison:
+Three interchangeable wetness couplers are available for direct comparison:
 
 ```python
 from components.hydrology import create_wetness_coupler
@@ -336,29 +336,33 @@ from components.hydrology import create_wetness_coupler
 hydrology = create_wetness_coupler(grid, "gdp", **gdp_parameters)
 # or, using the same soil__relative_wetness output contract:
 hydrology = create_wetness_coupler(grid, "sinmap", **sinmap_parameters)
+# or transient vertical infiltration pressure:
+hydrology = create_wetness_coupler(grid, "iverson", **iverson_parameters)
 ```
 
 GDP evolves groundwater storage and recession through time. The SINMAP-style
 option evaluates the steady-state index
 `m = min((R / T) (a / sin(beta)), 1)` and therefore has no antecedent storage:
-wetness changes immediately with recharge. It supplies wetness only; both
-options continue to use the ShallowLandslider factor-of-safety equation.
+wetness changes immediately with recharge. The Iverson option evaluates the
+transient one-dimensional pressure response to surface infiltration at the
+modelled failure depth and converts pressure head to effective wetness with
+`m = clip(psi / soil__depth, 0, 1)`. It retains storm and recession memory but
+does not calculate lateral flow. All three options supply hydrology only and
+continue to use the unchanged ShallowLandslider factor-of-safety, coseismic,
+candidate-selection, and runout calculations.
 
-Run the paired Nepal diagnostic with:
-
-```bash
-python examples/plot_nepal_hydrology_comparison.py
-```
-
-The figure applies the same prescribed recharge, hydraulic conductivity, soil
-depth, and stability parameters to both models. SINMAP transmissivity is set to
-hydraulic conductivity times local soil depth, and raster specific contributing
-area is approximated as `drainage_area / grid.dx`.
+Iverson inputs are surface infiltration, vertical saturated conductivity,
+hydraulic diffusivity, initial water-table depth, and the steady background
+pressure profile. Infiltration is not raw rainfall. The component retains raw
+and beta-line-limited pressure-head fields; negative pressure (suction) is
+omitted only when converting to ShallowLandslider's bounded wetness field.
 
 The research narrative, equations, validation rules, implementation plan, and
 current limitations are maintained together in the ShallowLandslider Research
-Obsidian vault. See the [research-notes pointer](docs/README.md) for its local
-location; the exact software-facing contract is note 09 in that vault.
+Obsidian vault. That separate repository also contains the Nepal three-model
+experiment, its executable runner, and all generated artifacts. See the
+[research-notes pointer](docs/README.md) for its local location; the exact
+software-facing contract is note 09 in that vault.
 
 ### Nepal DEM demonstration
 

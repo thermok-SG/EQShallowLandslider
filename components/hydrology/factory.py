@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .groundwater_wetness import GroundwaterWetnessCoupler
+from .iverson_wetness import IversonWetnessCoupler
 from .sinmap_wetness import SinmapWetnessCoupler
 
 
@@ -13,9 +14,10 @@ def create_wetness_coupler(grid, model="gdp", **kwargs):
     ----------
     grid : landlab.ModelGrid
         Model grid shared with ShallowLandslider.
-    model : {"gdp", "sinmap"}
+    model : {"gdp", "sinmap", "iverson"}
         ``"gdp"`` selects transient groundwater storage and flow;
-        ``"sinmap"`` selects the instantaneous equilibrium wetness index.
+        ``"sinmap"`` selects the instantaneous equilibrium wetness index;
+        ``"iverson"`` selects transient one-dimensional infiltration pressure.
     **kwargs
         Passed to the selected coupler.
     """
@@ -24,4 +26,6 @@ def create_wetness_coupler(grid, model="gdp", **kwargs):
         return GroundwaterWetnessCoupler(grid, **kwargs)
     if model == "sinmap":
         return SinmapWetnessCoupler(grid, **kwargs)
-    raise ValueError("hydrology model must be either 'gdp' or 'sinmap'")
+    if model == "iverson":
+        return IversonWetnessCoupler(grid, **kwargs)
+    raise ValueError("hydrology model must be 'gdp', 'sinmap', or 'iverson'")

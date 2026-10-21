@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Grid-based simulation of coseismic shallow landslides
 
@@ -6,23 +5,34 @@ Grid-based simulation of coseismic shallow landslides
 """
 
 from __future__ import annotations
-from typing import Optional, Dict, Any, Tuple, Callable
+
+import logging
+from collections.abc import Callable
+from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
 import pandas as pd
-import logging
-
 from landlab.core.model_component import Component
-from .shallow_landslide_runout import ShallowLandslideRunout
-
 from scipy import ndimage as _nd
 from scipy.ndimage import (
-    binary_fill_holes as _binary_fill_holes,
-    label as _label,
-    gaussian_filter as _gaussian_filter,
     binary_dilation as _binary_dilation,
+)
+from scipy.ndimage import (
+    binary_fill_holes as _binary_fill_holes,
+)
+from scipy.ndimage import (
+    gaussian_filter as _gaussian_filter,
+)
+from scipy.ndimage import (
     generate_binary_structure as _generate_binary_structure,
 )
+from scipy.ndimage import (
+    label as _label,
+)
 from scipy.special import expit as _expit
+
+from .shallow_landslide_runout import ShallowLandslideRunout
+
 # from joblib import Parallel, delayed
 
 try:

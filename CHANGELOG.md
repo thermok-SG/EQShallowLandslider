@@ -9,6 +9,26 @@ every edited line.
 
 ## Unreleased - ShallowLandslider 2.0 development
 
+### Iverson transient-infiltration hydrology
+
+- Added `IversonWetnessCoupler`, implementing the pressure-head response in
+  Iverson (2000), equations 27a--27e, for piecewise-constant infiltration
+  histories with analytical storm superposition and recession.
+- Converted beta-line-limited pressure head at the soil-base failure depth to
+  bounded effective relative wetness without changing any ShallowLandslider
+  factor-of-safety, critical-acceleration, PGA, Newmark, selection, or runout
+  equation.
+- Retained raw and limited pressure-head diagnostics, represented
+  infiltration-capacity excess as runoff, excluded zero-depth cells, and made
+  loss of pressure history after terrain change an explicit opt-in reset.
+- Added `model="iverson"` to the interchangeable hydrology factory and tests
+  for the published response function, initial pressure, pulse superposition,
+  recession, beta-line limiting, infiltration excess, validation, geometry
+  changes, and factory construction.
+- Kept application experiments and generated comparison artifacts outside the
+  component repository; the GDP--SINMAP--Iverson Nepal diagnostic is maintained
+  in the companion ShallowLandslider Research vault.
+
 ### Dynamic relative-wetness foundation
 
 - Added `wetness_source="constant" | "field"` to the same

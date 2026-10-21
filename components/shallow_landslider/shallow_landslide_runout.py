@@ -4,7 +4,6 @@ import heapq
 import logging
 
 import numpy as np
-
 from landlab.core.model_component import Component
 
 try:
@@ -30,7 +29,7 @@ class ShallowLandslideRunout(Component):
             "mapping": "node",
             "units": "m",
             "optional": False,
-            "doc": "Soil thickness at nodes."
+            "doc": "Soil thickness at nodes.",
         },
         "hill_flow__receiver_node": {
             "dtype": int,
@@ -96,7 +95,7 @@ class ShallowLandslideRunout(Component):
         self._last_source_path_counts = {}
         self._last_erosion = np.zeros(grid.number_of_nodes, dtype=float)
         self._last_deposition = np.zeros(grid.number_of_nodes, dtype=float)
-        
+
         required = (
             "hill_flow__receiver_node",
             "hill_flow__receiver_proportions",
@@ -140,11 +139,8 @@ class ShallowLandslideRunout(Component):
             "source_path_counts": self._last_source_path_counts,
             "erosion": self._last_erosion,
             "deposition": self._last_deposition,
-            "soil_depth_change": self._grid.at_node[
-                "landslide__soil_depth_change"
-            ],
+            "soil_depth_change": self._grid.at_node["landslide__soil_depth_change"],
         }
-
 
     def run_one_step(
         self,
@@ -187,9 +183,7 @@ class ShallowLandslideRunout(Component):
             raise TypeError("runout_distance is required")
 
         source_nodes = self._validate_source_nodes(source_nodes)
-        distances = self._normalize_runout_distance(
-            runout_distance, source_nodes
-        )
+        distances = self._normalize_runout_distance(runout_distance, source_nodes)
 
         erosion_field = self._grid.at_node["landslide__erosion"]
         deposition_field = self._grid.at_node["landslide__deposition"]
@@ -220,8 +214,7 @@ class ShallowLandslideRunout(Component):
                 continue
             source = int(path[0])
             self._last_source_proportion_sums[source] = (
-                self._last_source_proportion_sums.get(source, 0.0)
-                + float(proportion)
+                self._last_source_proportion_sums.get(source, 0.0) + float(proportion)
             )
             self._last_source_path_counts[source] = (
                 self._last_source_path_counts.get(source, 0) + 1
@@ -308,7 +301,7 @@ class ShallowLandslideRunout(Component):
         final_paths = []
         final_proportions = []
         path_details = {}
-        
+
         logger.info("Tracing landslide runout paths...")
 
         for node in source_nodes:
@@ -351,14 +344,12 @@ class ShallowLandslideRunout(Component):
                     continue
 
                 for r, p in zip(recs[valid_receivers], props[valid_receivers]):
-
                     new_dist = dist + self._calculate_node_distance(current, r)
                     new_prop = prop * p
                     new_path = path + [r]
 
-                    if (
-                        r in boundary_nodes
-                        or np.isnan(grid.at_node["topographic__elevation"][r])
+                    if r in boundary_nodes or np.isnan(
+                        grid.at_node["topographic__elevation"][r]
                     ):
                         # This receiver branch terminates at the current node.
                         # Retain its own multiflow weight; using the parent's
@@ -368,12 +359,10 @@ class ShallowLandslideRunout(Component):
                         final_proportions.append(new_prop)
                         path_details[node].append((path, new_prop))
                     else:
-                        heapq.heappush(
-                            stack, (new_dist, r, new_prop, new_path)
-                        )
+                        heapq.heappush(stack, (new_dist, r, new_prop, new_path))
 
         return final_paths, final_proportions, path_details
-    
+
     def _update_soil_depth(
         self,
         paths,
@@ -422,4 +411,3 @@ class ShallowLandslideRunout(Component):
         soil += deposition
 
         return soil, erosion, deposition
-

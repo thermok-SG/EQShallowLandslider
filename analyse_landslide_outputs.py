@@ -25,9 +25,9 @@ from analysis import (
     load_observed_landslides,
     load_region_ensemble,
     load_run,
+    plot_parameter_sensitivity,
     plot_run,
     plot_run_maps,
-    plot_parameter_sensitivity,
     summarize_run_distributions,
     swept_parameters,
 )

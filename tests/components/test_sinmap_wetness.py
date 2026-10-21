@@ -104,7 +104,7 @@ def test_factory_selects_hydrology_model():
     gdp = create_wetness_coupler(gdp_grid, "gdp")
     assert isinstance(gdp, GroundwaterWetnessCoupler)
 
-    with pytest.raises(ValueError, match="gdp.*sinmap"):
+    with pytest.raises(ValueError, match="gdp.*sinmap.*iverson"):
         create_wetness_coupler(make_grid(), "bucket")
 
 
