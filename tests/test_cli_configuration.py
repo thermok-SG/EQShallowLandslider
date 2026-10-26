@@ -132,6 +132,36 @@ def test_hydrology_model_cli_override_preserves_combined_trigger():
     assert prepared["simulation"]["trigger_mode"] == "combined"
 
 
+def test_hydrology_model_override_selects_matching_parameter_block(monkeypatch):
+    calls = {}
+
+    class Coupler:
+        pass
+
+    def fake_create(grid, model, **parameters):
+        calls.update(model=model, parameters=parameters)
+        return Coupler()
+
+    monkeypatch.setattr(
+        "run_landslide_model_cli.create_wetness_coupler", fake_create
+    )
+    config = minimal_config()
+    config["hydrology"] = {
+        "parameters": {
+            "gdp": {"recharge_rate": 1.0e-7},
+            "iverson": {"infiltration_rate": 2.0e-6},
+        }
+    }
+    prepared = prepare_config(config, hydrology_model_override="iverson")
+
+    configure_hydrology(object(), prepared["hydrology"])
+
+    assert calls == {
+        "model": "iverson",
+        "parameters": {"infiltration_rate": 2.0e-6},
+    }
+
+
 @pytest.mark.parametrize(
     ("hydrology", "message"),
     [

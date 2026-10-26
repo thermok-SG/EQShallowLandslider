@@ -362,9 +362,10 @@ hydrology:
   model: iverson
   duration_seconds: 86400
   parameters:
-    hydraulic_diffusivity: 1.0e-4
-    vertical_hydraulic_conductivity: 1.0e-5
-    infiltration_rate: 5.0e-6
+    iverson:
+      hydraulic_diffusivity: 1.0e-4
+      vertical_hydraulic_conductivity: 1.0e-5
+      infiltration_rate: 5.0e-6
 
 simulation:
   trigger_mode: hydrologic  # use combined to retain earthquake forcing too

@@ -109,12 +109,20 @@ hydrology:
   model: "gdp"                    # gdp | sinmap | iverson
   duration_seconds: 0.0           # 0 keeps the initialized/equilibrium state
   parameters:
-    # Model-specific keyword arguments are passed to create_wetness_coupler.
-    # GDP examples:
-    hydraulic_conductivity: 1.0e-5
-    porosity: 0.2
-    recharge_rate: 0.0
-    initial_relative_wetness: 0.0
+    # The block matching model is passed to create_wetness_coupler. This makes
+    # --hydrology-model safe to use without passing another model's keywords.
+    gdp:
+      hydraulic_conductivity: 1.0e-5
+      porosity: 0.2
+      recharge_rate: 0.0
+      initial_relative_wetness: 0.0
+    sinmap:
+      transmissivity: 1.0e-5
+      recharge_rate: 0.0
+    iverson:
+      hydraulic_diffusivity: 1.0e-4
+      vertical_hydraulic_conductivity: 1.0e-5
+      infiltration_rate: 0.0
 
 pga:
   horizontal_max: 0.5

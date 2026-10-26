@@ -120,6 +120,18 @@ def apply_configured_soil_depth(grid, soil_cfg, raster_values=None):
     return apply_soil_depth(grid, **params)
 
 
+def configured_hydrology_parameters(hydrology_cfg):
+    """Return parameters for the selected model, accepting legacy flat maps."""
+    parameters = hydrology_cfg.get("parameters", {})
+    model_keys = {"gdp", "sinmap", "iverson"}
+    if model_keys.intersection(parameters):
+        selected = parameters.get(hydrology_cfg.get("model", "gdp"), {})
+        if not isinstance(selected, dict):
+            raise ValueError("hydrology.parameters model entries must be mappings")
+        return selected
+    return parameters
+
+
 def configure_hydrology(grid, hydrology_cfg):
     """Create and advance the configured wetness model on *grid*.
 
@@ -134,7 +146,7 @@ def configure_hydrology(grid, hydrology_cfg):
     coupler = create_wetness_coupler(
         grid,
         hydrology_cfg.get("model", "gdp"),
-        **hydrology_cfg.get("parameters", {}),
+        **configured_hydrology_parameters(hydrology_cfg),
     )
     duration = float(hydrology_cfg.get("duration_seconds", 0.0))
     if duration > 0.0:
@@ -445,13 +457,19 @@ def prepare_config(
     parameters = hydrology.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ValueError("hydrology.parameters must be a YAML mapping")
+    model_parameter_keys = {"gdp", "sinmap", "iverson"}.intersection(parameters)
+    if model_parameter_keys and any(
+        not isinstance(parameters[key], dict) for key in model_parameter_keys
+    ):
+        raise ValueError("hydrology.parameters model entries must be mappings")
+    selected_parameters = configured_hydrology_parameters(hydrology)
     duration = float(hydrology.get("duration_seconds", 0.0))
     if not np.isfinite(duration) or duration < 0.0:
         raise ValueError("hydrology.duration_seconds must be finite and non-negative")
     if (
         hydrology.get("enabled", False)
         and hydrology.get("model", "gdp") == "sinmap"
-        and parameters.get("specific_contributing_area") is None
+        and selected_parameters.get("specific_contributing_area") is None
         and not config["flow_params"].get("enable", True)
     ):
         raise ValueError(
