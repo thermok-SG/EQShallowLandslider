@@ -89,6 +89,53 @@ def test_selected_runout_does_not_require_newmark_displacement():
     assert prepared["simulation"]["selection_method"] == "all"
 
 
+def test_selected_empirical_runout_does_not_require_prescribed_distance():
+    config = minimal_config()
+    config["simulation"].update(
+        {
+            "enable_runout": True,
+            "update_soil": True,
+            "runout_source_mode": "selected",
+            "runout_distance_model": "empirical",
+            "runout_empirical": {
+                "intercept": 1.5,
+                "volume_exponent": 0.2,
+                "sigma_ln": 0.4,
+            },
+        }
+    )
+
+    prepared = prepare_config(config)
+
+    assert prepared["simulation"].get("runout_distance") is None
+    assert prepared["simulation"]["runout_distance_model"] == "empirical"
+
+
+@pytest.mark.parametrize(
+    ("empirical", "message"),
+    [
+        (None, "requires simulation.runout_empirical"),
+        ({"intercept": 1.0}, "volume_exponent"),
+        (
+            {"intercept": 1.0, "volume_exponent": 0.2, "sigma_ln": -1.0},
+            "sigma_ln",
+        ),
+    ],
+)
+def test_invalid_empirical_runout_configuration_is_rejected(empirical, message):
+    config = minimal_config()
+    config["simulation"].update(
+        {
+            "runout_source_mode": "selected",
+            "runout_distance_model": "empirical",
+            "runout_empirical": empirical,
+        }
+    )
+
+    with pytest.raises(ValueError, match=message):
+        prepare_config(config)
+
+
 def test_hydrologic_selection_method_is_accepted():
     config = minimal_config()
     config["simulation"]["selection_method"] = "hydrologic"

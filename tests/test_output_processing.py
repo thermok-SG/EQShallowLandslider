@@ -187,6 +187,21 @@ def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(
     tmp_path,
 ):
     completed = make_completed_run()
+    empirical_sources = completed.results["selected_labels"] > 0
+    completed.results.update(
+        {
+            "runout_distance_median": np.where(empirical_sources, 50.0, np.nan),
+            "runout_log_residual": np.where(empirical_sources, 0.1, np.nan),
+            "runout_source_volume": np.where(empirical_sources, 2250.0, np.nan),
+            "runout_group_wetness": np.where(empirical_sources, 0.7, np.nan),
+        }
+    )
+    properties = completed.results["group_properties"]
+    properties["runout_source_volume_m3"] = [np.nan, 2250.0]
+    properties["runout_mean_relative_wetness"] = [np.nan, 0.7]
+    properties["runout_distance_median_m"] = [np.nan, 50.0]
+    properties["runout_log_residual"] = [np.nan, 0.1]
+    properties["runout_distance_sampled_m"] = [np.nan, 60.0]
     completed.grid.add_field(
         "aquifer__thickness", np.linspace(0.0, 0.5, 16), at="node"
     )
@@ -211,6 +226,10 @@ def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(
         "soil_depth",
         "post_failure_soil_depth",
         "runout_distance",
+        "runout_distance_median",
+        "runout_log_residual",
+        "runout_source_volume",
+        "runout_group_wetness",
         "aquifer_thickness",
     ):
         assert name in rasters
@@ -225,6 +244,10 @@ def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(
         assert name not in rasters
     np.testing.assert_allclose(rasters["soil_depth"], 0.75)
     np.testing.assert_allclose(rasters["post_failure_soil_depth"], 1.0)
+    regions = pd.read_csv(run_dir / "regions.csv")
+    selected = regions.loc[regions["selected"]].iloc[0]
+    assert selected["runout_source_volume_m3"] == 2250.0
+    assert selected["runout_distance_sampled_m"] == 60.0
 
 
 def test_analysis_loaders_and_plot(tmp_path):

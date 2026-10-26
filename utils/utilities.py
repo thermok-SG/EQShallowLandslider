@@ -1482,6 +1482,10 @@ def _collect_raster_arrays(ls, config=None):
         "split_labels": results.get("split_labels"),
         "selected_labels": results.get("selected_labels"),
         "runout_distance": results.get("runout_distance"),
+        "runout_distance_median": results.get("runout_distance_median"),
+        "runout_log_residual": results.get("runout_log_residual"),
+        "runout_source_volume": results.get("runout_source_volume"),
+        "runout_group_wetness": results.get("runout_group_wetness"),
     }
     if trigger_mode in {"hydrologic", "combined"}:
         arrays.update(

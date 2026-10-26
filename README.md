@@ -105,10 +105,12 @@ stability and selection stages have decided which material is mobile.
   whose finite Newmark displacement is greater than `displacement_threshold`;
   its Newmark displacement supplies the travel distance.
 - In `runout_source_mode="selected"`, every unstable selected node is a runout
-  source. `runout_distance` supplies the travel distance as a scalar, node
-  array, node-field name, or callable. This mode does not require shaking or a
-  Newmark calculation and is intended for hydrologic or externally prescribed
-  triggering.
+  source. With `runout_distance_model="prescribed"`, `runout_distance` supplies
+  travel distance as a scalar, node array, node-field name, or callable. With
+  `runout_distance_model="empirical"`, one lognormal distance is drawn per
+  selected failure group from user-supplied volume/wetness coefficients and is
+  shared by that group's physically unstable source nodes. Neither option
+  requires shaking or a Newmark calculation.
 - Every runout source independently starts its own Quinn branch tree. A node is
   not treated as one bulk source merely because it belongs to a selected
   region.
@@ -129,10 +131,21 @@ runout does not.
 In the YAML CLI config, this means using `chunking.mode: never`, keeping
 `flow_params.enable` and `flow_params.separate_hill_flow` true, and setting
 `simulation.enable_runout` and `simulation.update_soil` to true. Set
-`simulation.runout_source_mode` to `newmark` or `selected`. The latter also
-requires a scalar `simulation.runout_distance`. Runout modifies `soil__depth`
-in place and caches the source nodes, paths, proportions, per-source branch
-totals, and erosion/deposition arrays on the runout subcomponent.
+`simulation.runout_source_mode` to `newmark` or `selected`. For selected
+sources, choose `simulation.runout_distance_model: prescribed` and supply a
+scalar `simulation.runout_distance`, or choose `empirical` and supply
+`simulation.runout_empirical` coefficients. The empirical model is
+
+```text
+ln(L / 1 m) = intercept + volume_exponent * ln(V / 1 m3)
+              + wetness_coefficient * mean_wetness + Normal(0, sigma_ln)
+```
+
+where volume is computed before erosion over the unstable source nodes in each
+selected group. No coefficients are supplied by default because they require a
+declared calibration. Runout modifies `soil__depth` in place and caches the
+source nodes, paths, proportions, per-source branch totals, and
+erosion/deposition arrays on the runout subcomponent.
 
 When `evolve_landscape=True`, the parent component also updates
 `topographic__elevation = bedrock__elevation + soil__depth`. Before the next
@@ -909,7 +922,9 @@ You can control simulation parameters via:
 | `enable_runout`        | Enable the optional multiflow runout subcomponent |
 | `update_soil`          | Allow runout to update source and endpoint soil depth |
 | `runout_source_mode`   | `"newmark"` or trigger-neutral `"selected"` sources |
-| `runout_distance`      | Selected-source mobility distance provider       |
+| `runout_distance_model` | `"prescribed"` or group-level `"empirical"` mobility |
+| `runout_distance`      | Prescribed selected-source distance provider       |
+| `runout_empirical_parameters` | Coefficients, log-space scatter, and distance bounds |
 | `evolve_landscape`     | Enforce rerouting/hydrology refresh between events |
 | `verbose`              | Print progress and info (default: False)        |
 
@@ -924,6 +939,9 @@ of being copied into grid fields. These include factor of safety, critical and
 driving acceleration, relative wetness, critical relative wetness, the unstable
 mask, each label stage, and optional Newmark displacement. This keeps large
 model grids lean while retaining all diagnostics for saving and analysis.
+Empirical runout additionally exposes and saves the group median and sampled
+distance, log residual, failed volume, and mean relative wetness as audit
+rasters; the same group-level quantities are added to the region table.
 
 When runout is enabled, its own state-changing output fields are also present:
 - `landslide__erosion` when runout is enabled

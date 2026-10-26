@@ -7,7 +7,7 @@ Grid-based simulation of coseismic shallow landslides
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -281,6 +281,8 @@ class ShallowLandslider(Component):
         update_soil: bool = False,
         runout_source_mode: str = "newmark",
         runout_distance: float | np.ndarray | str | Callable | None = None,
+        runout_distance_model: str = "prescribed",
+        runout_empirical_parameters: Mapping[str, float] | None = None,
         evolve_landscape: bool = False,
         g: float = 9.81,
         split_by_width_config: Optional[dict] = None,
@@ -342,11 +344,24 @@ class ShallowLandslider(Component):
             ``"selected"`` uses selected physically unstable nodes directly
             and does not require Newmark displacement.
         runout_distance : float, array-like, field name, callable, or None
-            Maximum runout distance in metres for ``runout_source_mode="selected"``.
-            A scalar applies to every source, an array must contain one value per
-            node, a string names a node field, and a callable receives
-            ``(grid, source_nodes)``. If None, the optional node field
-            ``landslide__runout_distance`` is used when present.
+            Maximum runout distance in metres for selected-source runout using
+            ``runout_distance_model="prescribed"``. A scalar applies to every
+            source, an array must contain one value per node, a string names a
+            node field, and a callable receives ``(grid, source_nodes)``. If
+            None, the optional node field ``landslide__runout_distance`` is
+            used when present.
+        runout_distance_model : {"prescribed", "empirical"}, optional
+            Mobility model used with ``runout_source_mode="selected"``.
+            ``"empirical"`` draws one distance per selected failure group from
+            a configurable log-linear volume/wetness relationship.
+        runout_empirical_parameters : mapping, optional
+            Parameters for the empirical relationship
+            ``ln(L / 1 m) = intercept + volume_exponent * ln(V / 1 m3) +
+            wetness_coefficient * mean_wetness + residual``, where
+            ``residual ~ Normal(0, sigma_ln)``. ``intercept`` and
+            ``volume_exponent`` are required. Optional keys are
+            ``wetness_coefficient`` (default 0), ``sigma_ln`` (default 0),
+            ``min_distance`` (default 0), and ``max_distance`` (default None).
         evolve_landscape : bool, optional
             Require landscape-changing runout and enforce an external-state
             refresh between events. After runout, soil depth and topographic
@@ -389,6 +404,11 @@ class ShallowLandslider(Component):
         self.update_soil = bool(update_soil)
         self.runout_source_mode = str(runout_source_mode)
         self.runout_distance = runout_distance
+        self.runout_distance_model = str(runout_distance_model)
+        self.runout_empirical_parameters = self._validate_empirical_parameters(
+            runout_empirical_parameters
+        )
+        self._runout_rng = np.random.default_rng(self.random_seed)
         self.evolve_landscape = bool(evolve_landscape)
         self.g = float(g)
         self.split_by_width_config = split_by_width_config
@@ -415,6 +435,10 @@ class ShallowLandslider(Component):
         self._high_disp_nodes = None
         self._input_soil_depth = None
         self._runout_distance_used = None
+        self._runout_distance_median = None
+        self._runout_log_residual = None
+        self._runout_source_volume = None
+        self._runout_group_wetness = None
         self._group_properties_df = None
         self._terrain_dirty = False
         self._terrain_revision = 0
@@ -433,6 +457,10 @@ class ShallowLandslider(Component):
             raise ValueError(
                 "runout_source_mode must be either 'newmark' or 'selected'"
             )
+        if self.runout_distance_model not in {"prescribed", "empirical"}:
+            raise ValueError(
+                "runout_distance_model must be either 'prescribed' or 'empirical'"
+            )
         if self.enable_runout and not self.update_soil:
             raise ValueError("enable_runout requires update_soil=True")
         if self.enable_runout and self.runout_source_mode == "newmark" and not self.compute_displacement:
@@ -446,12 +474,23 @@ class ShallowLandslider(Component):
         if (
             self.enable_runout
             and self.runout_source_mode == "selected"
+            and self.runout_distance_model == "prescribed"
             and self.runout_distance is None
             and "landslide__runout_distance" not in self.grid.at_node
         ):
             raise ValueError(
                 "runout_source_mode='selected' requires runout_distance or the "
                 "landslide__runout_distance node field"
+            )
+        if (
+            self.enable_runout
+            and self.runout_source_mode == "selected"
+            and self.runout_distance_model == "empirical"
+            and self.runout_empirical_parameters is None
+        ):
+            raise ValueError(
+                "runout_distance_model='empirical' requires "
+                "runout_empirical_parameters"
             )
 
         # Validate the configured wetness contract before creating optional
@@ -531,6 +570,11 @@ class ShallowLandslider(Component):
             "high_displacement_nodes": self._high_disp_nodes,
             "input_soil_depth": self._input_soil_depth,
             "runout_distance": self._runout_distance_used,
+            "runout_distance_median": self._runout_distance_median,
+            "runout_log_residual": self._runout_log_residual,
+            "runout_source_volume": self._runout_source_volume,
+            "runout_group_wetness": self._runout_group_wetness,
+            "runout_distance_model": self.runout_distance_model,
             "group_properties": self._group_properties_df,
             "runout": self._runout.results if self.enable_runout else None,
             "terrain_dirty": self._terrain_dirty,
@@ -619,6 +663,73 @@ class ShallowLandslider(Component):
             np.float32, copy=False
         )
 
+    @staticmethod
+    def _validate_empirical_parameters(parameters):
+        """Return a normalized empirical-runout parameter mapping."""
+        if parameters is None:
+            return None
+        if not isinstance(parameters, Mapping):
+            raise TypeError("runout_empirical_parameters must be a mapping")
+
+        allowed = {
+            "intercept",
+            "volume_exponent",
+            "wetness_coefficient",
+            "sigma_ln",
+            "min_distance",
+            "max_distance",
+        }
+        unknown = set(parameters) - allowed
+        if unknown:
+            raise ValueError(
+                "Unsupported runout_empirical_parameters: "
+                + ", ".join(sorted(unknown))
+            )
+        missing = {"intercept", "volume_exponent"} - set(parameters)
+        if missing:
+            raise ValueError(
+                "runout_empirical_parameters requires: "
+                + ", ".join(sorted(missing))
+            )
+
+        normalized = {
+            "intercept": float(parameters["intercept"]),
+            "volume_exponent": float(parameters["volume_exponent"]),
+            "wetness_coefficient": float(
+                parameters.get("wetness_coefficient", 0.0)
+            ),
+            "sigma_ln": float(parameters.get("sigma_ln", 0.0)),
+            "min_distance": float(parameters.get("min_distance", 0.0)),
+            "max_distance": (
+                None
+                if parameters.get("max_distance") is None
+                else float(parameters["max_distance"])
+            ),
+        }
+        finite = [
+            normalized["intercept"],
+            normalized["volume_exponent"],
+            normalized["wetness_coefficient"],
+            normalized["sigma_ln"],
+            normalized["min_distance"],
+        ]
+        if normalized["max_distance"] is not None:
+            finite.append(normalized["max_distance"])
+        if not np.all(np.isfinite(finite)):
+            raise ValueError("runout_empirical_parameters values must be finite")
+        if normalized["sigma_ln"] < 0.0:
+            raise ValueError("runout empirical sigma_ln cannot be negative")
+        if normalized["min_distance"] < 0.0:
+            raise ValueError("runout empirical min_distance cannot be negative")
+        if (
+            normalized["max_distance"] is not None
+            and normalized["max_distance"] < normalized["min_distance"]
+        ):
+            raise ValueError(
+                "runout empirical max_distance cannot be less than min_distance"
+            )
+        return normalized
+
     def _resolve_runout_distance(self, source_nodes: np.ndarray) -> np.ndarray:
         """Return a validated node-wise runout-distance array in metres."""
         specification = self.runout_distance
@@ -656,6 +767,115 @@ class ShallowLandslider(Component):
             raise ValueError("runout_distance cannot be negative at source nodes")
         return distances
 
+    def _resolve_empirical_runout_distance(
+        self, source_nodes: np.ndarray
+    ) -> np.ndarray:
+        """Draw one log-linear runout distance for each selected failure group."""
+        parameters = self.runout_empirical_parameters
+        if parameters is None:
+            raise RuntimeError("empirical runout parameters were not configured")
+
+        source_nodes = np.asarray(source_nodes, dtype=int)
+        labels = np.asarray(self._selected_labels, dtype=int)
+        soil_depth = np.asarray(self._input_soil_depth, dtype=float)
+        wetness = np.asarray(self._relative_wetness, dtype=float)
+        node_area = float(self.grid.dx * self.grid.dy)
+        node_count = self.grid.number_of_nodes
+
+        distances = np.zeros(node_count, dtype=float)
+        medians = np.full(node_count, np.nan, dtype=float)
+        residuals = np.full(node_count, np.nan, dtype=float)
+        volumes = np.full(node_count, np.nan, dtype=float)
+        group_wetness = np.full(node_count, np.nan, dtype=float)
+
+        group_records = {}
+        for label in np.unique(labels[source_nodes]):
+            if label <= 0:
+                continue
+            nodes = source_nodes[labels[source_nodes] == label]
+            volume = float(np.sum(soil_depth[nodes]) * node_area)
+            if not np.isfinite(volume) or volume <= 0.0:
+                raise ValueError(
+                    f"Empirical runout requires positive failed volume for group {label}"
+                )
+            mean_wetness = float(np.mean(wetness[nodes]))
+            if not np.isfinite(mean_wetness):
+                raise ValueError(
+                    f"Empirical runout requires finite wetness for group {label}"
+                )
+
+            log_median = (
+                parameters["intercept"]
+                + parameters["volume_exponent"] * np.log(volume)
+                + parameters["wetness_coefficient"] * mean_wetness
+            )
+            if not np.isfinite(log_median) or log_median > np.log(
+                np.finfo(float).max
+            ):
+                raise ValueError(
+                    f"Empirical runout median is not finite for group {label}"
+                )
+            median = float(np.exp(log_median))
+            residual = (
+                0.0
+                if parameters["sigma_ln"] == 0.0
+                else float(self._runout_rng.normal(0.0, parameters["sigma_ln"]))
+            )
+            log_sampled = log_median + residual
+            if parameters["min_distance"] > 0.0:
+                log_sampled = max(
+                    log_sampled, np.log(parameters["min_distance"])
+                )
+            if parameters["max_distance"] == 0.0:
+                sampled = 0.0
+            else:
+                if parameters["max_distance"] is not None:
+                    log_sampled = min(
+                        log_sampled, np.log(parameters["max_distance"])
+                    )
+                if not np.isfinite(log_sampled) or log_sampled > np.log(
+                    np.finfo(float).max
+                ):
+                    raise ValueError(
+                        f"Empirical runout draw is not finite for group {label}"
+                    )
+                sampled = float(np.exp(log_sampled))
+
+            distances[nodes] = sampled
+            medians[nodes] = median
+            residuals[nodes] = residual
+            volumes[nodes] = volume
+            group_wetness[nodes] = mean_wetness
+            group_records[int(label)] = {
+                "runout_source_volume_m3": volume,
+                "runout_mean_relative_wetness": mean_wetness,
+                "runout_distance_median_m": median,
+                "runout_log_residual": residual,
+                "runout_distance_sampled_m": sampled,
+            }
+
+        self._runout_distance_median = medians
+        self._runout_log_residual = residuals
+        self._runout_source_volume = volumes
+        self._runout_group_wetness = group_wetness
+
+        if self._group_properties_df is not None:
+            for column in (
+                "runout_source_volume_m3",
+                "runout_mean_relative_wetness",
+                "runout_distance_median_m",
+                "runout_log_residual",
+                "runout_distance_sampled_m",
+            ):
+                if column not in self._group_properties_df:
+                    self._group_properties_df[column] = np.nan
+            for label, record in group_records.items():
+                if label in self._group_properties_df.index:
+                    for column, value in record.items():
+                        self._group_properties_df.loc[label, column] = value
+
+        return distances
+
     def _run_runout(self) -> None:
         """Run transport using Newmark or directly selected unstable sources."""
         if self.runout_source_mode == "newmark":
@@ -668,7 +888,14 @@ class ShallowLandslider(Component):
             source_nodes = np.where(
                 (self._selected_labels > 0) & self._unstable_mask
             )[0]
-            distances = self._resolve_runout_distance(source_nodes)
+            if self.runout_distance_model == "empirical":
+                distances = self._resolve_empirical_runout_distance(source_nodes)
+            else:
+                distances = self._resolve_runout_distance(source_nodes)
+                self._runout_distance_median = None
+                self._runout_log_residual = None
+                self._runout_source_volume = None
+                self._runout_group_wetness = None
 
         self._runout_distance_used = np.full(
             self.grid.number_of_nodes, np.nan, dtype=float

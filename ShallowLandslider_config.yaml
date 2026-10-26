@@ -157,7 +157,22 @@ simulation:
   enable_runout: false
   update_soil: false
   runout_source_mode: "newmark" # newmark|selected
-  runout_distance: null # metres; required by the CLI for selected mode
+  # For selected sources, choose a prescribed distance or one stochastic draw
+  # per selected failure group from the empirical relationship below.
+  runout_distance_model: "prescribed" # prescribed|empirical
+  runout_distance: null # metres; required for selected + prescribed
+  # ln(L / 1 m) = intercept + volume_exponent * ln(V / 1 m3)
+  #               + wetness_coefficient * mean_wetness + N(0, sigma_ln)
+  # Coefficients are intentionally null: they must come from a declared
+  # regional/event calibration rather than an implicit literature default.
+  runout_empirical: null
+  # runout_empirical:
+  #   intercept: <calibrated value>
+  #   volume_exponent: <calibrated value>
+  #   wetness_coefficient: 0.0
+  #   sigma_ln: 0.0
+  #   min_distance: 0.0
+  #   max_distance: null
   # If true, update topography after runout and require rerouting before the
   # next event. This is intended for event sequences managed by a driver.
   evolve_landscape: false

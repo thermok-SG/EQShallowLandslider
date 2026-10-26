@@ -597,6 +597,15 @@ def prepare_config(
         raise ValueError(
             "simulation.runout_source_mode must be newmark or selected"
         )
+    distance_model = simulation.get("runout_distance_model", "prescribed")
+    if distance_model not in {"prescribed", "empirical"}:
+        raise ValueError(
+            "simulation.runout_distance_model must be prescribed or empirical"
+        )
+    if source_mode == "newmark" and distance_model != "prescribed":
+        raise ValueError(
+            "simulation.runout_distance_model only applies to selected runout"
+        )
     if trigger_mode == "hydrologic" and compute:
         raise ValueError(
             "Hydrologic-only runs cannot compute coseismic displacement"
@@ -604,6 +613,19 @@ def prepare_config(
     runout_distance = simulation.get("runout_distance")
     if runout_distance is not None and float(runout_distance) < 0:
         raise ValueError("simulation.runout_distance cannot be negative")
+    empirical = simulation.get("runout_empirical")
+    if empirical is not None and not isinstance(empirical, dict):
+        raise ValueError("simulation.runout_empirical must be a YAML mapping")
+    if distance_model == "empirical":
+        if empirical is None:
+            raise ValueError(
+                "simulation.runout_distance_model=empirical requires "
+                "simulation.runout_empirical"
+            )
+        try:
+            ShallowLandslider._validate_empirical_parameters(empirical)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid simulation.runout_empirical: {exc}") from exc
     if runout and not update_soil:
         raise ValueError(
             "simulation.enable_runout requires update_soil"
@@ -612,7 +634,12 @@ def prepare_config(
         raise ValueError(
             "simulation.runout_source_mode=newmark requires compute_displacement"
         )
-    if runout and source_mode == "selected" and runout_distance is None:
+    if (
+        runout
+        and source_mode == "selected"
+        and distance_model == "prescribed"
+        and runout_distance is None
+    ):
         raise ValueError(
             "simulation.runout_source_mode=selected requires runout_distance"
         )
@@ -987,6 +1014,12 @@ def main():
                 "runout_source_mode", "newmark"
             ),
             runout_distance=config["simulation"].get("runout_distance"),
+            runout_distance_model=config["simulation"].get(
+                "runout_distance_model", "prescribed"
+            ),
+            runout_empirical_parameters=config["simulation"].get(
+                "runout_empirical"
+            ),
             evolve_landscape=config["simulation"].get(
                 "evolve_landscape", False
             ),

@@ -57,6 +57,13 @@ every edited line.
 
 ### Trigger-independent runout foundation
 
+- Added `runout_distance_model="prescribed" | "empirical"` for selected-source
+  runout. The empirical option draws one reproducible lognormal distance per
+  selected failure group from declared volume and optional wetness
+  coefficients; no uncalibrated coefficient defaults are embedded.
+- Added empirical-runout audit rasters and region-table columns for source
+  volume, group wetness, median distance, sampled log residual, and sampled
+  distance.
 - Added deterministic `selection_method="all"` for integration tests and
   experiments where every geometrically processed candidate should be passed
   to transport.

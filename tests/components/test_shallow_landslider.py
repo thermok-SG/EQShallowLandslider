@@ -371,6 +371,95 @@ def test_selected_runout_distance_can_come_from_node_field():
     )
 
 
+def test_empirical_runout_draws_one_distance_per_selected_group():
+    mg = make_runout_grid()
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1.0,
+        angle_int_frict=10.0,
+        selection_method="all",
+        random_seed=17,
+        enable_runout=True,
+        update_soil=True,
+        runout_source_mode="selected",
+        runout_distance_model="empirical",
+        runout_empirical_parameters={
+            "intercept": 0.0,
+            "volume_exponent": 0.5,
+            "wetness_coefficient": 0.0,
+            "sigma_ln": 0.0,
+        },
+        split_by_width_config=None,
+    )
+
+    comp.run_one_step()
+
+    results = comp.results
+    sources = results["runout"]["source_nodes"]
+    labels = results["selected_labels"]
+    distances = results["runout_distance"]
+    medians = results["runout_distance_median"]
+    volumes = results["runout_source_volume"]
+    residuals = results["runout_log_residual"]
+    node_area = mg.dx * mg.dy
+
+    assert sources.size > 0
+    for label in np.unique(labels[sources]):
+        group_sources = sources[labels[sources] == label]
+        expected_volume = np.sum(results["input_soil_depth"][group_sources]) * node_area
+        expected_distance = np.sqrt(expected_volume)
+        np.testing.assert_allclose(volumes[group_sources], expected_volume)
+        np.testing.assert_allclose(medians[group_sources], expected_distance)
+        np.testing.assert_allclose(distances[group_sources], expected_distance)
+        np.testing.assert_allclose(residuals[group_sources], 0.0)
+
+        group = results["group_properties"].loc[label]
+        assert group["runout_source_volume_m3"] == pytest.approx(expected_volume)
+        assert group["runout_distance_median_m"] == pytest.approx(
+            expected_distance
+        )
+        assert group["runout_distance_sampled_m"] == pytest.approx(
+            expected_distance
+        )
+
+
+def test_empirical_runout_is_reproducible_and_group_constant():
+    def run(seed):
+        grid = make_runout_grid()
+        component = ShallowLandslider(
+            grid,
+            cohesion_eff=1.0,
+            angle_int_frict=10.0,
+            selection_method="all",
+            random_seed=seed,
+            enable_runout=True,
+            update_soil=True,
+            runout_source_mode="selected",
+            runout_distance_model="empirical",
+            runout_empirical_parameters={
+                "intercept": np.log(20.0),
+                "volume_exponent": 0.0,
+                "sigma_ln": 0.3,
+                "min_distance": 5.0,
+                "max_distance": 100.0,
+            },
+            split_by_width_config=None,
+        )
+        component.run_one_step()
+        return component.results
+
+    first = run(29)
+    second = run(29)
+    np.testing.assert_allclose(
+        first["runout_distance"], second["runout_distance"], equal_nan=True
+    )
+    sources = first["runout"]["source_nodes"]
+    labels = first["selected_labels"]
+    for label in np.unique(labels[sources]):
+        group_sources = sources[labels[sources] == label]
+        assert np.unique(first["runout_distance"][group_sources]).size == 1
+
+
 def test_selected_runout_requires_distance_provider():
     mg = make_runout_grid()
 
@@ -380,6 +469,28 @@ def test_selected_runout_requires_distance_provider():
             enable_runout=True,
             update_soil=True,
             runout_source_mode="selected",
+        )
+
+
+def test_empirical_runout_requires_valid_parameters():
+    mg = make_runout_grid()
+    with pytest.raises(ValueError, match="requires runout_empirical_parameters"):
+        ShallowLandslider(
+            mg,
+            enable_runout=True,
+            update_soil=True,
+            runout_source_mode="selected",
+            runout_distance_model="empirical",
+        )
+
+    with pytest.raises(ValueError, match="sigma_ln cannot be negative"):
+        ShallowLandslider(
+            mg,
+            runout_empirical_parameters={
+                "intercept": 0.0,
+                "volume_exponent": 0.2,
+                "sigma_ln": -0.1,
+            },
         )
 
 
