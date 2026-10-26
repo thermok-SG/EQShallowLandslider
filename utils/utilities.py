@@ -369,7 +369,7 @@ def apply_soil_depth(
     core_nodes = grid.core_nodes
 
     # Initialize soil depth field (zeros)
-    soil_depth = grid.add_zeros("node", soil_field, clobber=True)
+    soil_depth = grid.add_zeros(soil_field, at="node", clobber=True)
 
     if distribution == "uniform":
         soil_depth[core_nodes] = max_soil_depth
@@ -742,7 +742,7 @@ def calculate_terrain_attribute(grid, field_name, attrib, out_field=None):
     dem_rd.geotransform = [0, grid.dx, 0, 0, 0, -grid.dy]
 
     # Compute terrain attribute with richdem
-    result2d = rd.TerrainAttribute(dem_rd, attrib=attrib)
+    result2d = rd.terrain_attribute(dem_rd, attrib=attrib)
 
     # Flatten to Landlab node order
     result1d = np.asarray(result2d).ravel()
