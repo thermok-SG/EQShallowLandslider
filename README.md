@@ -317,10 +317,12 @@ ls = ShallowLandslider(
 )
 ```
 
-For current candidate nodes it min-max normalizes and inverts critical relative
-wetness, so candidates requiring less wetting receive greater weight. It then
-uses the existing group selection machinery. The field is an uncalibrated
-selection weight, not an observed rainfall-event probability.
+For each current candidate group it calculates mean critical relative wetness,
+then min-max normalizes and inverts those group means, so groups requiring less
+wetting receive greater weight. Every node in a group receives that common
+weight before the existing stochastic weighted group sampler is applied. The
+field is an uncalibrated selection weight, not an observed rainfall-event
+probability.
 
 At zero PGA, the existing equations satisfy
 `a_c = g sin(slope) (FoS - 1)`. Consequently, the existing acceleration-based

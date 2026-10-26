@@ -182,7 +182,7 @@ def test_hydrologic_selection_weight_inverts_candidate_critical_wetness():
         split_by_width_config=None,
     )
     labels = np.zeros(mg.shape, dtype=int)
-    labels[1, 1:4] = 1
+    labels[1, 1:4] = [1, 2, 3]
     critical = np.full(mg.number_of_nodes, np.nan)
     candidate_nodes = np.flatnonzero(labels.ravel() > 0)
     critical[candidate_nodes] = [0.2, 0.5, 0.8]
@@ -196,6 +196,37 @@ def test_hydrologic_selection_weight_inverts_candidate_critical_wetness():
     assert metadata["minimum_critical_wetness"] == pytest.approx(0.2)
     assert metadata["maximum_critical_wetness"] == pytest.approx(0.8)
     assert metadata["calibrated_probability"] is False
+    assert [item["label"] for item in metadata["group_details"]] == [1, 2, 3]
+
+
+def test_hydrologic_selection_uses_group_mean_critical_wetness():
+    mg = make_grid(add_soil=True)
+    comp = ShallowLandslider(mg, selection_method="hydrologic")
+    labels = np.zeros(mg.shape, dtype=int)
+    labels[1, 1:3] = 1
+    labels[2, 1:3] = 2
+    critical = np.full(mg.number_of_nodes, np.nan)
+    critical[np.flatnonzero(labels.ravel() == 1)] = [0.1, 0.5]
+    critical[np.flatnonzero(labels.ravel() == 2)] = [0.6, 0.8]
+
+    weights, metadata = comp._generate_hydrologic_selection_weight(
+        labels, critical
+    )
+
+    assert np.all(weights[labels == 1] == 1.0)
+    assert np.all(weights[labels == 2] == 0.0)
+    assert metadata["group_details"] == [
+        {
+            "label": 1,
+            "mean_critical_wetness": pytest.approx(0.3),
+            "selection_weight": 1.0,
+        },
+        {
+            "label": 2,
+            "mean_critical_wetness": pytest.approx(0.7),
+            "selection_weight": 0.0,
+        },
+    ]
 
 
 def test_hydrologic_selection_weight_uses_equal_weights_for_constant_range():
@@ -212,7 +243,7 @@ def test_hydrologic_selection_weight_uses_equal_weights_for_constant_range():
 
     assert np.all(weights[labels > 0] == 1.0)
     assert metadata["performed"] is False
-    assert "same critical wetness" in metadata["reason"]
+    assert "same mean critical wetness" in metadata["reason"]
 
 
 def test_hydrologic_selection_runs_at_zero_pga_and_exposes_weight():

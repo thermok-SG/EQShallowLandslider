@@ -2068,13 +2068,14 @@ class ShallowLandslider(Component):
         labeled_2d: np.ndarray,
         critical_wetness_1d: np.ndarray,
     ) -> Tuple[np.ndarray, dict]:
-        """Invert critical wetness over current candidate nodes.
+        """Invert group-mean critical wetness over current candidates.
 
         This is the hydrologic counterpart to ranking candidates by a critical
         forcing threshold in the coseismic path. Lower critical wetness means
         less hydrologic forcing is required for failure and therefore receives
-        greater weight. The result is an uncalibrated selection weight, not an
-        event-occurrence probability.
+        greater weight. As in the coseismic path, every node in a candidate
+        group receives the same group-level weight. The result is an
+        uncalibrated selection weight, not an event-occurrence probability.
         """
         labels = np.asarray(labeled_2d)
         if labels.shape != self.grid.shape:
@@ -2096,25 +2097,45 @@ class ShallowLandslider(Component):
         if not np.all(np.isfinite(critical[candidates])):
             raise ValueError("critical wetness must be finite at candidate nodes")
 
-        minimum = float(np.min(critical[candidates]))
-        maximum = float(np.max(critical[candidates]))
+        unique_labels = np.unique(labels[candidates])
+        group_critical = np.asarray(
+            _nd.mean(critical, labels=labels, index=unique_labels), dtype=float
+        )
+        if not np.all(np.isfinite(group_critical)):
+            raise ValueError("group-mean critical wetness must be finite")
+
+        minimum = float(np.min(group_critical))
+        maximum = float(np.max(group_critical))
         if maximum > minimum:
-            weights[candidates] = (
-                1.0
-                - (critical[candidates] - minimum) / (maximum - minimum)
-            ).astype(np.float32)
+            group_weights = 1.0 - (group_critical - minimum) / (
+                maximum - minimum
+            )
             performed = True
             reason = None
         else:
-            weights[candidates] = 1.0
+            group_weights = np.ones(unique_labels.size, dtype=float)
             performed = False
-            reason = "All candidate nodes have the same critical wetness"
+            reason = "All candidate groups have the same mean critical wetness"
+
+        lookup = np.zeros(int(labels.max()) + 1, dtype=np.float32)
+        lookup[unique_labels] = group_weights.astype(np.float32)
+        weights[:] = lookup[labels]
         np.clip(weights, 0.0, 1.0, out=weights)
         return weights, {
             "performed": performed,
             "reason": reason,
             "minimum_critical_wetness": minimum,
             "maximum_critical_wetness": maximum,
+            "group_details": [
+                {
+                    "label": int(label),
+                    "mean_critical_wetness": float(group_mean),
+                    "selection_weight": float(group_weight),
+                }
+                for label, group_mean, group_weight in zip(
+                    unique_labels, group_critical, group_weights
+                )
+            ],
             "calibrated_probability": False,
         }
 
