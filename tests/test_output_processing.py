@@ -62,6 +62,11 @@ def make_completed_run():
         "split_labels": labels,
         "selected_labels": selected,
         "selected_proportion": 0.5,
+        "selection_weight": np.linspace(0.0, 1.0, 16),
+        "relative_wetness": np.linspace(0.1, 0.9, 16),
+        "critical_relative_wetness": np.linspace(0.2, 1.2, 16),
+        "input_soil_depth": np.full(16, 0.75),
+        "runout_distance": np.where(selected > 0, 60.0, 0.0),
         "newmark": np.where(selected > 0, 0.25, np.nan),
         "runout": None,
     }
@@ -176,6 +181,50 @@ def test_save_model_run_includes_runout_diagnostics(tmp_path):
     assert loaded["summary"]["combined_affected_footprint_node_count"] == 16
     assert np.isclose(loaded["summary"]["runout_mass_balance_error_node_m"], 0.0)
     assert loaded["summary"]["negative_final_soil_depth_node_count"] == 0
+
+
+def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(
+    tmp_path,
+):
+    completed = make_completed_run()
+    completed.grid.add_field(
+        "aquifer__thickness", np.linspace(0.0, 0.5, 16), at="node"
+    )
+    config = make_config()
+    config["hydrology"] = {"enabled": True, "model": "gdp"}
+    config["simulation"]["trigger_mode"] = "hydrologic"
+
+    run_dir = save_model_run(
+        False,
+        completed,
+        config,
+        tmp_path,
+        logging.getLogger("hydrologic-output-test"),
+    )
+    rasters = load_run(run_dir, load_rasters=True)["rasters"]
+
+    for name in (
+        "relative_wetness",
+        "critical_relative_wetness",
+        "selection_weight",
+        "input_soil_depth",
+        "soil_depth",
+        "post_failure_soil_depth",
+        "runout_distance",
+        "aquifer_thickness",
+    ):
+        assert name in rasters
+    for name in (
+        "horizontal_pga",
+        "vertical_pga",
+        "critical_acceleration",
+        "driving_acceleration",
+        "driving_minus_critical_acceleration",
+        "newmark_displacement",
+    ):
+        assert name not in rasters
+    np.testing.assert_allclose(rasters["soil_depth"], 0.75)
+    np.testing.assert_allclose(rasters["post_failure_soil_depth"], 1.0)
 
 
 def test_analysis_loaders_and_plot(tmp_path):

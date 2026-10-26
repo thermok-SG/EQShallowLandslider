@@ -253,3 +253,80 @@ def test_forced_chunked_cli_writes_complete_acceleration_outputs(tmp_path, monke
     assert np.isfinite(critical[~nodata]).any()
     assert np.isfinite(driving[~nodata]).any()
     assert np.isnan(critical[nodata]).all()
+
+
+def test_full_grid_hydrologic_cli_writes_wetness_without_coseismic_rasters(
+    tmp_path, monkeypatch
+):
+    shape = (6, 7)
+    rows, cols = np.indices(shape)
+    elevation = 1000.0 + 3.0 * rows + 0.5 * cols
+    dem_path = tmp_path / "hydrologic.asc"
+    header = (
+        f"ncols {shape[1]}\n"
+        f"nrows {shape[0]}\n"
+        "xllcorner 0\n"
+        "yllcorner 0\n"
+        "cellsize 30\n"
+        "NODATA_value -9999\n"
+    )
+    dem_path.write_text(
+        header + "\n".join(" ".join(map(str, row)) for row in elevation),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "runs"
+    config = {
+        "dem_path": str(dem_path),
+        "dem_type": "SRTMGL1",
+        "output_dir": str(output_dir),
+        "random_seed": 11,
+        "flow_params": {"enable": False},
+        "chunking": {"mode": "never"},
+        "soil_params": {
+            "cohesion_eff": 1000,
+            "angle_int_frict": 25,
+            "max_soil_depth": 1.0,
+            "distribution": "uniform",
+        },
+        "hydrology": {
+            "enabled": True,
+            "model": "sinmap",
+            "duration_seconds": 0.0,
+            "parameters": {
+                "transmissivity": 1.0e-5,
+                "recharge_rate": 2.0e-7,
+                "specific_contributing_area": 100.0,
+            },
+        },
+        "simulation": {
+            "trigger_mode": "hydrologic",
+            "selection_method": "all",
+            "compute_displacement": False,
+            "enable_runout": False,
+            "update_soil": False,
+        },
+        "split_by_width": {"enabled": False},
+        "outputs": {
+            "write_parquet": False,
+            "write_zarr": False,
+            "write_npy_fallback": True,
+        },
+    }
+    config_path = tmp_path / "hydrologic.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv", ["run_landslide_model_cli.py", "--config", str(config_path)]
+    )
+
+    cli.main()
+
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    rasters = run_dir / "rasters"
+    wetness = np.load(rasters / "relative_wetness.npy")
+    critical_wetness = np.load(rasters / "critical_relative_wetness.npy")
+    assert wetness.shape == shape
+    assert np.any(wetness > 0.0)
+    assert critical_wetness.shape == shape
+    assert not (rasters / "horizontal_pga.npy").exists()
+    assert not (rasters / "critical_acceleration.npy").exists()
+    assert not (rasters / "newmark_displacement.npy").exists()

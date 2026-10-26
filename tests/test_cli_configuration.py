@@ -5,6 +5,7 @@ import pytest
 from landlab import RasterModelGrid
 
 from run_landslide_model_cli import (
+    configure_hydrology,
     configured_pga,
     load_pga_raster,
     load_config,
@@ -95,6 +96,109 @@ def test_hydrologic_selection_method_is_accepted():
     prepared = prepare_config(config)
 
     assert prepared["simulation"]["selection_method"] == "hydrologic"
+
+
+def test_enabled_hydrology_defaults_to_hydrologic_trigger_mode():
+    config = minimal_config()
+    config["hydrology"] = {
+        "enabled": True,
+        "model": "iverson",
+        "duration_seconds": 3600.0,
+        "parameters": {"infiltration_rate": 1.0e-6},
+    }
+
+    prepared = prepare_config(config)
+
+    assert prepared["simulation"]["trigger_mode"] == "hydrologic"
+
+
+def test_hydrology_model_cli_override_enables_selected_model():
+    config = minimal_config()
+
+    prepared = prepare_config(config, hydrology_model_override="sinmap")
+
+    assert prepared["hydrology"]["enabled"] is True
+    assert prepared["hydrology"]["model"] == "sinmap"
+    assert prepared["simulation"]["trigger_mode"] == "hydrologic"
+
+
+def test_hydrology_model_cli_override_preserves_combined_trigger():
+    config = minimal_config()
+    config["simulation"]["trigger_mode"] = "combined"
+
+    prepared = prepare_config(config, hydrology_model_override="gdp")
+
+    assert prepared["hydrology"]["model"] == "gdp"
+    assert prepared["simulation"]["trigger_mode"] == "combined"
+
+
+@pytest.mark.parametrize(
+    ("hydrology", "message"),
+    [
+        ({"enabled": True, "model": "bucket"}, "hydrology.model"),
+        ({"enabled": True, "parameters": []}, "hydrology.parameters"),
+        ({"enabled": True, "duration_seconds": -1.0}, "duration_seconds"),
+    ],
+)
+def test_invalid_hydrology_configuration_is_rejected(hydrology, message):
+    config = minimal_config()
+    config["hydrology"] = hydrology
+
+    with pytest.raises(ValueError, match=message):
+        prepare_config(config)
+
+
+def test_hydrologic_trigger_rejects_coseismic_displacement():
+    config = minimal_config()
+    config["hydrology"] = {"enabled": True, "model": "iverson"}
+    config["simulation"]["compute_displacement"] = True
+
+    with pytest.raises(ValueError, match="Hydrologic-only"):
+        prepare_config(config)
+
+
+def test_hydrology_is_rejected_in_chunked_execution():
+    config = minimal_config()
+    config["hydrology"] = {"enabled": True, "model": "iverson"}
+    prepared = prepare_config(config)
+
+    with pytest.raises(ValueError, match="Hydrology is not supported"):
+        validate_execution_mode(prepared, use_chunking=True)
+
+
+def test_configure_hydrology_constructs_and_advances_coupler(monkeypatch):
+    calls = {}
+
+    class Coupler:
+        def run_one_step(self, duration):
+            calls["duration"] = duration
+
+    def fake_create(grid, model, **parameters):
+        calls.update(grid=grid, model=model, parameters=parameters)
+        return Coupler()
+
+    monkeypatch.setattr(
+        "run_landslide_model_cli.create_wetness_coupler", fake_create
+    )
+    grid = object()
+
+    coupler = configure_hydrology(
+        grid,
+        {
+            "enabled": True,
+            "model": "sinmap",
+            "duration_seconds": 7200,
+            "parameters": {"recharge_rate": 2.0e-7},
+        },
+    )
+
+    assert isinstance(coupler, Coupler)
+    assert calls == {
+        "grid": grid,
+        "model": "sinmap",
+        "parameters": {"recharge_rate": 2.0e-7},
+        "duration": 7200.0,
+    }
 
 
 def test_selected_runout_requires_a_mobility_distance():

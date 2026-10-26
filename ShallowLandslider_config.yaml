@@ -101,6 +101,21 @@ soil_params:
   scale: 0.01                     # linear_std_global | linear_std_local
   window: 5                       # relationship: linear_std_local
 
+# Optional live hydrology. Enabling this block makes hydrologic the default
+# trigger mode and requires full-grid execution. Set simulation.trigger_mode to
+# "combined" to retain both hydrologic and earthquake forcing/diagnostics.
+hydrology:
+  enabled: false
+  model: "gdp"                    # gdp | sinmap | iverson
+  duration_seconds: 0.0           # 0 keeps the initialized/equilibrium state
+  parameters:
+    # Model-specific keyword arguments are passed to create_wetness_coupler.
+    # GDP examples:
+    hydraulic_conductivity: 1.0e-5
+    porosity: 0.2
+    recharge_rate: 0.0
+    initial_relative_wetness: 0.0
+
 pga:
   horizontal_max: 0.5
   vertical_max: 0.2
@@ -112,6 +127,9 @@ pga:
   seed: null                     # null uses the top-level random_seed
 
 simulation:
+  # Defaults to "hydrologic" when hydrology.enabled is true, otherwise
+  # "seismic". Use "combined" to apply both live wetness and PGA.
+  trigger_mode: null # null auto-selects; or seismic | hydrologic | combined
   selection_method: "probabilistic"
   proportion_method: "conservative" # empirical|statistical|risk_profile|adaptive|conservative
   # A non-null value overrides proportion_method and must be in (0, 1].

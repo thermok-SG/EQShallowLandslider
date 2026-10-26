@@ -413,6 +413,8 @@ class ShallowLandslider(Component):
         self._selection_metadata = None
         self._newmark = None
         self._high_disp_nodes = None
+        self._input_soil_depth = None
+        self._runout_distance_used = None
         self._group_properties_df = None
         self._terrain_dirty = False
         self._terrain_revision = 0
@@ -527,6 +529,8 @@ class ShallowLandslider(Component):
             "selection_method": self.selection_method,
             "newmark": self._newmark,
             "high_displacement_nodes": self._high_disp_nodes,
+            "input_soil_depth": self._input_soil_depth,
+            "runout_distance": self._runout_distance_used,
             "group_properties": self._group_properties_df,
             "runout": self._runout.results if self.enable_runout else None,
             "terrain_dirty": self._terrain_dirty,
@@ -580,6 +584,7 @@ class ShallowLandslider(Component):
         
         if kde_input is not None:
             self.split_by_width_config = kde_input
+        self._input_soil_depth = self.grid.at_node["soil__depth"].copy()
         self._compute_stability()
         self._identify_regions()
         self._fill_region_holes()
@@ -664,6 +669,13 @@ class ShallowLandslider(Component):
                 (self._selected_labels > 0) & self._unstable_mask
             )[0]
             distances = self._resolve_runout_distance(source_nodes)
+
+        self._runout_distance_used = np.full(
+            self.grid.number_of_nodes, np.nan, dtype=float
+        )
+        self._runout_distance_used[source_nodes] = np.asarray(
+            distances, dtype=float
+        )[source_nodes]
 
         # Run even for an empty source set so runout-owned outputs from the
         # preceding event are cleared.

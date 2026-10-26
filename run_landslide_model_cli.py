@@ -20,6 +20,7 @@ from landlab.io import esri_ascii
 from scipy.ndimage import distance_transform_edt
 from scipy.ndimage import label as cc_label
 
+from components.hydrology import create_wetness_coupler
 from components.shallow_landslider import ShallowLandslider
 from utils import (
     apply_soil_depth,
@@ -117,6 +118,28 @@ def apply_configured_soil_depth(grid, soil_cfg, raster_values=None):
     params.setdefault("h_no_ss", 0.0)
     params["plot"] = False
     return apply_soil_depth(grid, **params)
+
+
+def configure_hydrology(grid, hydrology_cfg):
+    """Create and advance the configured wetness model on *grid*.
+
+    The coupler owns ``soil__relative_wetness``. A zero duration retains the
+    model's initialized/equilibrium state; a positive duration applies the
+    configured recharge or infiltration for that many seconds before slope
+    stability is evaluated.
+    """
+    if not hydrology_cfg.get("enabled", False):
+        return None
+
+    coupler = create_wetness_coupler(
+        grid,
+        hydrology_cfg.get("model", "gdp"),
+        **hydrology_cfg.get("parameters", {}),
+    )
+    duration = float(hydrology_cfg.get("duration_seconds", 0.0))
+    if duration > 0.0:
+        coupler.run_one_step(duration)
+    return coupler
 
 
 def load_soil_depth_raster(path, model_grid, nodata_mask=None):
@@ -281,6 +304,15 @@ def parse_args():
         help="Override chunking.mode from the YAML file.",
     )
     p.add_argument(
+        "--hydrology-model",
+        choices=("gdp", "sinmap", "iverson"),
+        help=(
+            "Enable hydrology with this model, overriding hydrology.model in "
+            "the YAML. The trigger defaults to hydrologic unless the YAML "
+            "explicitly requests combined forcing."
+        ),
+    )
+    p.add_argument(
         "--validate-only",
         action="store_true",
         help="Validate the YAML configuration and exit without loading the DEM.",
@@ -296,13 +328,16 @@ def load_config(path):
     return config
 
 
-def prepare_config(config, chunking_override=None):
+def prepare_config(
+    config, chunking_override=None, hydrology_model_override=None
+):
     """Apply CLI defaults and validate supported option combinations."""
     config = copy.deepcopy(config)
     if "flow_params" not in config and "flow_router" in config:
         config["flow_params"] = copy.deepcopy(config["flow_router"])
     defaults = {
         "soil_params": {},
+        "hydrology": {},
         "pga": {},
         "simulation": {},
         "flow_params": {},
@@ -314,6 +349,12 @@ def prepare_config(config, chunking_override=None):
         value = config.setdefault(section, default)
         if not isinstance(value, dict):
             raise ValueError(f"{section} must be a YAML mapping")
+
+    if hydrology_model_override is not None:
+        config["hydrology"]["enabled"] = True
+        config["hydrology"]["model"] = hydrology_model_override
+        if config["simulation"].get("trigger_mode") != "combined":
+            config["simulation"]["trigger_mode"] = "hydrologic"
 
     if not config.get("dem_path"):
         raise ValueError("dem_path is required")
@@ -396,6 +437,28 @@ def prepare_config(config, chunking_override=None):
         raise ValueError("Unsupported soil_params.drainage_relationship")
     required_curvature_overlap(soil)
 
+    hydrology = config["hydrology"]
+    if not isinstance(hydrology.get("enabled", False), bool):
+        raise ValueError("hydrology.enabled must be true or false")
+    if hydrology.get("model", "gdp") not in {"gdp", "sinmap", "iverson"}:
+        raise ValueError("hydrology.model must be gdp, sinmap, or iverson")
+    parameters = hydrology.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise ValueError("hydrology.parameters must be a YAML mapping")
+    duration = float(hydrology.get("duration_seconds", 0.0))
+    if not np.isfinite(duration) or duration < 0.0:
+        raise ValueError("hydrology.duration_seconds must be finite and non-negative")
+    if (
+        hydrology.get("enabled", False)
+        and hydrology.get("model", "gdp") == "sinmap"
+        and parameters.get("specific_contributing_area") is None
+        and not config["flow_params"].get("enable", True)
+    ):
+        raise ValueError(
+            "SINMAP hydrology requires flow_params.enable: true unless "
+            "hydrology.parameters.specific_contributing_area is supplied"
+        )
+
     pga = config["pga"]
     if pga.get("distribution", "uniform") not in {
         "uniform", "circular", "square", "diamond", "exponential", "raster"
@@ -463,6 +526,26 @@ def prepare_config(config, chunking_override=None):
         raise ValueError("pga.seed must be null or an integer")
 
     simulation = config["simulation"]
+    trigger_mode = simulation.get("trigger_mode")
+    if trigger_mode is None:
+        trigger_mode = (
+            "hydrologic" if hydrology.get("enabled", False) else "seismic"
+        )
+        simulation["trigger_mode"] = trigger_mode
+    if trigger_mode not in {"seismic", "hydrologic", "combined"}:
+        raise ValueError(
+            "simulation.trigger_mode must be seismic, hydrologic, or combined"
+        )
+    if trigger_mode in {"hydrologic", "combined"} and not hydrology.get(
+        "enabled", False
+    ):
+        raise ValueError(
+            f"simulation.trigger_mode={trigger_mode} requires hydrology.enabled: true"
+        )
+    if trigger_mode == "seismic" and hydrology.get("enabled", False):
+        raise ValueError(
+            "Enabled hydrology requires trigger_mode hydrologic or combined"
+        )
     if simulation.get("selection_method", "probabilistic") not in {
         "all", "probabilistic", "hydrologic", "pga_weighted"
     }:
@@ -495,6 +578,10 @@ def prepare_config(config, chunking_override=None):
     if source_mode not in {"newmark", "selected"}:
         raise ValueError(
             "simulation.runout_source_mode must be newmark or selected"
+        )
+    if trigger_mode == "hydrologic" and compute:
+        raise ValueError(
+            "Hydrologic-only runs cannot compute coseismic displacement"
         )
     runout_distance = simulation.get("runout_distance")
     if runout_distance is not None and float(runout_distance) < 0:
@@ -570,6 +657,10 @@ def validate_execution_mode(config, use_chunking):
 
     if config["simulation"].get("enable_runout", False):
         raise ValueError("Runout is not supported in chunked mode; use chunking.mode: never")
+    if config["hydrology"].get("enabled", False):
+        raise ValueError(
+            "Hydrology is not supported in chunked mode; use chunking.mode: never"
+        )
     if config["soil_params"].get("distribution") == "drainage_area":
         raise ValueError(
             "drainage_area soil depth is not supported in chunked mode because flow "
@@ -658,7 +749,11 @@ def heartbeat(logger, msg, last_time, interval=300):
 
 def main():
     args = parse_args()
-    config = prepare_config(load_config(args.config), args.chunking)
+    config = prepare_config(
+        load_config(args.config),
+        args.chunking,
+        args.hydrology_model,
+    )
 
     if args.validate_only:
         print(f"Configuration is valid: {args.config}")
@@ -764,6 +859,7 @@ def main():
         kde_transform = kde_bundle["kde_transform"]
         
     soil_cfg = config.get("soil_params", {})
+    hydrology_cfg = config.get("hydrology", {})
     eq_cfg = config.get("pga", {})
     soil_raster_2d = None
     if soil_cfg.get("distribution") == "raster":
@@ -823,8 +919,21 @@ def main():
             mg_full.at_node["topographic__elevation"] - mg_full.at_node["soil__depth"]
         )
 
+        # Hydrology publishes the live relative-wetness field consumed below.
+        hydrology = configure_hydrology(mg_full, hydrology_cfg)
+        if hydrology is not None:
+            logger.info(
+                "Hydrology prepared: model=%s, duration=%g s",
+                hydrology_cfg.get("model", "gdp"),
+                float(hydrology_cfg.get("duration_seconds", 0.0)),
+            )
+
         # PGA
-        pga_h, pga_v = configured_pga(mg_full, eq_cfg, seed)
+        if config["simulation"]["trigger_mode"] == "hydrologic":
+            pga_h = pga_v = None
+            logger.info("Skipping PGA generation for hydrologic-only run")
+        else:
+            pga_h, pga_v = configured_pga(mg_full, eq_cfg, seed)
 
         # Full-grid landslider
         ls = ShallowLandslider(
@@ -832,6 +941,9 @@ def main():
             cohesion_eff=soil_cfg.get("cohesion_eff", 15e3),
             angle_int_frict=soil_cfg.get("angle_int_frict", 30),
             submerged_soil_proportion=soil_cfg.get("submerged_soil_proportion", 0.5),
+            wetness_source=(
+                "field" if hydrology_cfg.get("enabled", False) else "constant"
+            ),
             pga_h=pga_h,
             pga_v=pga_v,
             aspect_interval=config["simulation"].get("aspect_interval", 20),

@@ -351,6 +351,35 @@ does not calculate lateral flow. All three options supply hydrology only and
 continue to use the unchanged ShallowLandslider factor-of-safety, coseismic,
 candidate-selection, and runout calculations.
 
+The YAML CLI can construct and advance the same couplers before stability is
+evaluated:
+
+```yaml
+hydrology:
+  enabled: true
+  model: iverson
+  duration_seconds: 86400
+  parameters:
+    hydraulic_diffusivity: 1.0e-4
+    vertical_hydraulic_conductivity: 1.0e-5
+    infiltration_rate: 5.0e-6
+
+simulation:
+  trigger_mode: hydrologic  # use combined to retain earthquake forcing too
+```
+
+Hydrology-enabled CLI runs currently require `chunking.mode: never`.
+Hydrologic-only mode skips PGA generation and omits coseismic acceleration,
+PGA, and Newmark rasters. Combined mode saves both forcing families.
+The model choice can be overridden from the command line; this also enables
+hydrology and defaults to hydrologic-only forcing unless the YAML explicitly
+sets `trigger_mode: combined`:
+
+```bash
+python run_landslide_model_cli.py --config ShallowLandslider_config.yaml \
+  --hydrology-model iverson
+```
+
 Iverson inputs are surface infiltration, vertical saturated conductivity,
 hydraulic diffusivity, initial water-table depth, and the steady background
 pressure profile. Infiltration is not raw rainfall. The component retains raw

@@ -276,6 +276,14 @@ def test_hydrologic_runout_updates_landscape_and_requires_external_refresh():
     np.testing.assert_array_equal(
         comp.results["runout"]["source_nodes"], expected_sources
     )
+    assert np.all(comp.results["runout_distance"][expected_sources] == 20.0)
+    assert np.all(
+        np.isnan(
+            comp.results["runout_distance"][
+                ~np.isin(np.arange(mg.number_of_nodes), expected_sources)
+            ]
+        )
+    )
     assert np.isclose(
         np.sum(comp.results["runout"]["erosion"]),
         np.sum(comp.results["runout"]["deposition"]),

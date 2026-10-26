@@ -1464,14 +1464,16 @@ def _build_region_output(ls, config, run_id):
     return regions
 
 
-def _collect_raster_arrays(ls):
+def _collect_raster_arrays(ls, config=None):
     """Collect available node arrays under stable v1.2 output names."""
     results = ls.results
+    trigger_mode = (config or {}).get("simulation", {}).get(
+        "trigger_mode", "seismic"
+    )
     arrays = {
+        "input_soil_depth": results.get("input_soil_depth"),
         "factor_of_safety": results.get("factor_of_safety"),
-        "critical_acceleration": results.get("a_transient"),
-        "driving_acceleration": results.get("a_driving"),
-        "driving_minus_critical_acceleration": results.get("a_diff"),
+        "selection_weight": results.get("selection_weight"),
         "unstable_mask": results.get("unstable_mask"),
         "region_labels": results.get("labels"),
         "filled_region_labels": results.get("filled_labels"),
@@ -1479,21 +1481,63 @@ def _collect_raster_arrays(ls):
         "aspect_labels": results.get("aspect_labels"),
         "split_labels": results.get("split_labels"),
         "selected_labels": results.get("selected_labels"),
-        "newmark_displacement": results.get("newmark"),
+        "runout_distance": results.get("runout_distance"),
     }
+    if trigger_mode in {"hydrologic", "combined"}:
+        arrays.update(
+            {
+                "relative_wetness": results.get("relative_wetness"),
+                "critical_relative_wetness": results.get(
+                    "critical_relative_wetness"
+                ),
+            }
+        )
+    if trigger_mode in {"seismic", "combined"}:
+        arrays.update(
+            {
+                "critical_acceleration": results.get("a_transient"),
+                "driving_acceleration": results.get("a_driving"),
+                "driving_minus_critical_acceleration": results.get("a_diff"),
+                "newmark_displacement": results.get("newmark"),
+            }
+        )
     grid_fields = {
         "topographic_elevation": "topographic__elevation",
-        "soil_depth": "soil__depth",
+        "post_failure_soil_depth": "soil__depth",
         "nodata_mask": "nodata__mask",
-        "horizontal_pga": "earthquake__horizontal_pga",
-        "vertical_pga": "earthquake__vertical_pga",
         "runout_erosion": "landslide__erosion",
         "runout_deposition": "landslide__deposition",
         "runout_soil_depth_change": "landslide__soil_depth_change",
     }
+    if trigger_mode in {"seismic", "combined"}:
+        grid_fields.update(
+            {
+                "horizontal_pga": "earthquake__horizontal_pga",
+                "vertical_pga": "earthquake__vertical_pga",
+            }
+        )
+    if trigger_mode in {"hydrologic", "combined"}:
+        grid_fields.update(
+            {
+                "aquifer_thickness": "aquifer__thickness",
+                "water_table_elevation": "water_table__elevation",
+                "soil_pressure_head": "soil__pressure_head",
+                "soil_pressure_head_raw": "soil__pressure_head_raw",
+                "surface_water_specific_discharge": (
+                    "average_surface_water__specific_discharge"
+                ),
+                "geomorphic_water_excess_depth": (
+                    "hydrology__geomorphic_water_excess_depth"
+                ),
+            }
+        )
     for output_name, field_name in grid_fields.items():
         if field_name in ls.grid.at_node:
             arrays[output_name] = ls.grid.at_node[field_name]
+    if arrays.get("input_soil_depth") is None:
+        arrays["input_soil_depth"] = ls.grid.at_node["soil__depth"]
+    # Stable plotting name: ``soil_depth`` always means the model input state.
+    arrays["soil_depth"] = arrays["input_soil_depth"]
     selected_labels = arrays.get("selected_labels")
     if selected_labels is not None:
         selected_footprint = np.asarray(selected_labels) > 0
@@ -1512,11 +1556,19 @@ def _collect_raster_arrays(ls):
                     | selected_footprint,
                 }
             )
+        runout_results = results.get("runout") or {}
+        if results.get("runout") is not None:
+            source_nodes = np.asarray(
+                runout_results.get("source_nodes", []), dtype=int
+            )
+            source_footprint = np.zeros(selected_footprint.shape, dtype=bool)
+            source_footprint[source_nodes] = True
+            arrays["runout_source_footprint"] = source_footprint
     return {name: np.asarray(value) for name, value in arrays.items() if value is not None}
 
 
-def _write_rasters(run_dir, ls, run_id, output_cfg, logger):
-    arrays = _collect_raster_arrays(ls)
+def _write_rasters(run_dir, ls, run_id, output_cfg, logger, config=None):
+    arrays = _collect_raster_arrays(ls, config=config)
     shape = tuple(int(value) for value in ls.grid.shape)
     outputs = []
     write_zarr = bool(output_cfg.get("write_zarr", True))
@@ -1732,12 +1784,14 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
     with open(run_dir / "summary.json", "w", encoding="utf-8") as stream:
         json.dump(_json_safe(summary), stream, indent=2)
     output_files.append("summary.json")
-    output_files.extend(_write_rasters(run_dir, ls, run_id, output_cfg, logger))
+    output_files.extend(
+        _write_rasters(run_dir, ls, run_id, output_cfg, logger, config=config)
+    )
 
     if save_pickle:
         bundle = {
             "selected_group_props": regions,
-            "grid_arrays": _collect_raster_arrays(ls),
+            "grid_arrays": _collect_raster_arrays(ls, config=config),
             "config": config,
             "run_id": run_id,
             "model_version": __version__,
