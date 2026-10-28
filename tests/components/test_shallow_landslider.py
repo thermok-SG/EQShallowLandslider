@@ -637,6 +637,39 @@ def test_runout_accepts_trigger_neutral_sources_and_source_distances():
     )
 
 
+def test_aggregated_runout_matches_exhaustive_endpoint_transport():
+    aggregated_grid = make_runout_grid()
+    exhaustive_grid = make_runout_grid()
+    aggregated = ShallowLandslideRunout(aggregated_grid)
+    exhaustive = ShallowLandslideRunout(exhaustive_grid)
+    sources = np.array([27, 28])
+    distances = np.array([120.0, 150.0])
+
+    aggregated.run_one_step(
+        source_nodes=sources,
+        runout_distance=distances,
+    )
+    exhaustive.run_one_step(
+        source_nodes=sources,
+        runout_distance=distances,
+        return_paths=True,
+    )
+
+    np.testing.assert_allclose(
+        aggregated.results["erosion"], exhaustive.results["erosion"]
+    )
+    np.testing.assert_allclose(
+        aggregated.results["deposition"], exhaustive.results["deposition"]
+    )
+    np.testing.assert_allclose(
+        aggregated_grid.at_node["soil__depth"],
+        exhaustive_grid.at_node["soil__depth"],
+    )
+    assert sum(aggregated.results["source_path_counts"].values()) == len(
+        exhaustive.results["paths"]
+    )
+
+
 def test_runout_retains_failed_nodes_keyword_as_alias():
     mg = make_runout_grid()
     runout = ShallowLandslideRunout(mg)

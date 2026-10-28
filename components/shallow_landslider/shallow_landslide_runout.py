@@ -162,7 +162,10 @@ class ShallowLandslideRunout(Component):
             Maximum travel distance in metres. Supply one value for all
             sources, one value per source, or one value per grid node.
         return_paths : bool, optional
-            If true, return the detailed multiflow paths grouped by source.
+            If true, retain and return every detailed multiflow path grouped by
+            source. The default aggregates paths that reconverge at the same
+            node and travel distance, which preserves endpoint transport while
+            avoiding exponential branch enumeration.
         failed_nodes : array-like of int, optional
             Compatibility alias for ``source_nodes``. Do not supply both.
 
@@ -171,6 +174,12 @@ class ShallowLandslideRunout(Component):
         This method changes ``soil__depth`` and the three runout diagnostic
         fields. The calling model is responsible for updating surface
         elevation and rerunning flow routing before its next event.
+
+        Unless ``return_paths`` is true, ``results["paths"]`` contains one
+        representative path per source/end-node pair. The corresponding
+        proportions are the combined endpoint weights, while
+        ``source_path_counts`` retains the number of unaggregated terminated
+        Quinn branches represented by those paths.
         """
 
         if source_nodes is not None and failed_nodes is not None:
@@ -203,9 +212,15 @@ class ShallowLandslideRunout(Component):
             self._last_deposition = deposition_field.copy()
             return None
 
-        paths, proportions, details = self._trace_paths_landslides(
-            source_nodes, distances
-        )
+        if return_paths:
+            paths, proportions, details = self._trace_paths_landslides(
+                source_nodes, distances
+            )
+            branch_counts = None
+        else:
+            paths, proportions, details, branch_counts = (
+                self._trace_aggregated_landslide_endpoints(source_nodes, distances)
+            )
         self._last_paths = paths
         self._last_path_proportions = np.asarray(proportions, dtype=float)
         self._last_path_details = details
@@ -219,6 +234,8 @@ class ShallowLandslideRunout(Component):
             self._last_source_path_counts[source] = (
                 self._last_source_path_counts.get(source, 0) + 1
             )
+        if branch_counts is not None:
+            self._last_source_path_counts = branch_counts
 
         soil, erosion, deposition = self._update_soil_depth(
             paths,
@@ -361,6 +378,116 @@ class ShallowLandslideRunout(Component):
                         heapq.heappush(stack, (new_dist, r, new_prop, new_path))
 
         return final_paths, final_proportions, path_details
+
+    def _trace_aggregated_landslide_endpoints(
+        self,
+        source_nodes,
+        runout_distances,
+    ):
+        """Route source mass without enumerating equivalent Quinn branches.
+
+        Paths that arrive at the same node after the same raster travel
+        distance have identical downstream behaviour. Combining their weights
+        preserves endpoint mass exactly while avoiding exponential duplication
+        after flow paths reconverge. One representative path is retained per
+        source/end-node pair for diagnostics; ``branch_counts`` records the
+        number of terminated unaggregated branches represented by those paths.
+        """
+        grid = self._grid
+        receiver_nodes = grid.at_node["hill_flow__receiver_node"]
+        receiver_props = grid.at_node["hill_flow__receiver_proportions"]
+        elevation = grid.at_node["topographic__elevation"]
+        boundary_nodes = set(grid.boundary_nodes)
+
+        final_paths = []
+        final_proportions = []
+        path_details = {}
+        branch_counts = {}
+
+        for source in source_nodes:
+            source = int(source)
+            max_dist = float(runout_distances[source])
+            start = (source, 0.0)
+            stack = [(0.0, source)]
+            pending_weights = {start: 1.0}
+            pending_counts = {start: 1}
+            parents = {start: None}
+            endpoint_weights = {}
+            endpoint_counts = {}
+            endpoint_states = {}
+
+            def terminate(state, weight, count):
+                endpoint = int(state[0])
+                endpoint_weights[endpoint] = (
+                    endpoint_weights.get(endpoint, 0.0) + float(weight)
+                )
+                endpoint_counts[endpoint] = endpoint_counts.get(endpoint, 0) + count
+                endpoint_states.setdefault(endpoint, state)
+
+            while stack:
+                dist, current = heapq.heappop(stack)
+                state = (int(current), round(float(dist), 9))
+                prop = pending_weights.pop(state)
+                count = pending_counts.pop(state)
+
+                if dist >= max_dist:
+                    terminate(state, prop, count)
+                    continue
+
+                recs = receiver_nodes[current]
+                props = receiver_props[current]
+                positive = props > 0
+                valid_receivers = positive & (recs >= 0) & (recs != current)
+                stopped_proportion = float(
+                    np.sum(props[positive & ((recs < 0) | (recs == current))])
+                )
+
+                if stopped_proportion > 0:
+                    terminate(state, prop * stopped_proportion, count)
+
+                if not np.any(valid_receivers):
+                    if stopped_proportion <= 0:
+                        terminate(state, prop, count)
+                    continue
+
+                for receiver, receiver_prop in zip(
+                    recs[valid_receivers], props[valid_receivers]
+                ):
+                    receiver = int(receiver)
+                    new_prop = prop * float(receiver_prop)
+                    if receiver in boundary_nodes or np.isnan(elevation[receiver]):
+                        terminate(state, new_prop, count)
+                        continue
+
+                    new_dist = dist + self._calculate_node_distance(
+                        current, receiver
+                    )
+                    new_state = (receiver, round(float(new_dist), 9))
+                    if new_state in pending_weights:
+                        pending_weights[new_state] += new_prop
+                        pending_counts[new_state] += count
+                    else:
+                        pending_weights[new_state] = new_prop
+                        pending_counts[new_state] = count
+                        parents[new_state] = state
+                        heapq.heappush(stack, (new_dist, receiver))
+
+            source_details = []
+            for endpoint, weight in endpoint_weights.items():
+                state = endpoint_states[endpoint]
+                path = []
+                while state is not None:
+                    path.append(int(state[0]))
+                    state = parents[state]
+                path.reverse()
+                final_paths.append(tuple(path))
+                final_proportions.append(weight)
+                source_details.append((path, weight))
+
+            path_details[source] = source_details
+            branch_counts[source] = int(sum(endpoint_counts.values()))
+
+        return final_paths, final_proportions, path_details, branch_counts
 
     def _update_soil_depth(
         self,
