@@ -107,10 +107,10 @@ stability and selection stages have decided which material is mobile.
 - In `runout_source_mode="selected"`, every unstable selected node is a runout
   source. With `runout_distance_model="prescribed"`, `runout_distance` supplies
   travel distance as a scalar, node array, node-field name, or callable. With
-  `runout_distance_model="empirical"`, one lognormal distance is drawn per
-  selected failure group from user-supplied volume/wetness coefficients and is
-  shared by that group's physically unstable source nodes. Neither option
-  requires shaking or a Newmark calculation.
+  `runout_distance_model="claessens"`, a deterministic distance is calculated
+  per selected failure group using the Claessens et al. (2007) elevation-loss
+  criterion and is shared by that group's physically unstable source nodes.
+  Neither option requires shaking or a Newmark calculation.
 - Every runout source independently starts its own Quinn branch tree. A node is
   not treated as one bulk source merely because it belongs to a selected
   region.
@@ -133,19 +133,35 @@ In the YAML CLI config, this means using `chunking.mode: never`, keeping
 `simulation.enable_runout` and `simulation.update_soil` to true. Set
 `simulation.runout_source_mode` to `newmark` or `selected`. For selected
 sources, choose `simulation.runout_distance_model: prescribed` and supply a
-scalar `simulation.runout_distance`, or choose `empirical` and supply
-`simulation.runout_empirical` coefficients. The empirical model is
+scalar `simulation.runout_distance`, or choose `claessens`. The implemented
+distance criterion is
 
 ```text
-ln(L / 1 m) = intercept + volume_exponent * ln(V / 1 m3)
-              + wetness_coefficient * mean_wetness + Normal(0, sigma_ln)
+R = fraction * (head elevation - deposition-start elevation)
+L = steepest-descent distance to deposition start + R
 ```
 
-where volume is computed before erosion over the unstable source nodes in each
-selected group. No coefficients are supplied by default because they require a
-declared calibration. Runout modifies `soil__depth` in place and caches the
+Deposition starts at the first node on the reference steepest-descent path
+whose local slope is below `minimum_movement_slope`. Defaults reproduce the
+published example values `fraction: 0.4` and
+`minimum_movement_slope: 10.0`. These values are not calibrated for Nepal.
+If the reference path reaches the model boundary without crossing the slope
+threshold, no in-domain deposition onset or `R` is inferred; the audit marks
+that case and transport stops at the last reachable interior point.
+The current transport kernel uses the resulting group distance as an endpoint
+cutoff on Quinn branches; it does not yet reproduce Claessens' progressive
+deposition equations. Runout modifies `soil__depth` in place and caches the
 source nodes, paths, proportions, per-source branch totals, and
 erosion/deposition arrays on the runout subcomponent.
+
+Claessens is the hydrologic counterpart to Newmark at the runout interface,
+not at the level of mechanics. Both provide a finite distance in metres to the
+same transport kernel. Newmark is a node-level dynamic displacement derived
+from shaking and critical acceleration; Claessens is a deterministic,
+group-level empirical reach derived from terrain and a slope threshold. For
+comparisons, use total Claessens distance `erosional_path_distance +
+deposition_reach` against the Newmark distance supplied to transport, while
+reporting the two Claessens terms separately.
 
 When `evolve_landscape=True`, the parent component also updates
 `topographic__elevation = bedrock__elevation + soil__depth`. Before the next
@@ -922,9 +938,9 @@ You can control simulation parameters via:
 | `enable_runout`        | Enable the optional multiflow runout subcomponent |
 | `update_soil`          | Allow runout to update source and endpoint soil depth |
 | `runout_source_mode`   | `"newmark"` or trigger-neutral `"selected"` sources |
-| `runout_distance_model` | `"prescribed"` or group-level `"empirical"` mobility |
+| `runout_distance_model` | `"prescribed"` or group-level `"claessens"` distance criterion |
 | `runout_distance`      | Prescribed selected-source distance provider       |
-| `runout_empirical_parameters` | Coefficients, log-space scatter, and distance bounds |
+| `runout_claessens_parameters` | Fraction and minimum movement slope |
 | `evolve_landscape`     | Enforce rerouting/hydrology refresh between events |
 | `verbose`              | Print progress and info (default: False)        |
 

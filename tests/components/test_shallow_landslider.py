@@ -371,7 +371,7 @@ def test_selected_runout_distance_can_come_from_node_field():
     )
 
 
-def test_empirical_runout_draws_one_distance_per_selected_group():
+def test_claessens_runout_calculates_one_distance_per_selected_group():
     mg = make_runout_grid()
     comp = ShallowLandslider(
         mg,
@@ -382,12 +382,10 @@ def test_empirical_runout_draws_one_distance_per_selected_group():
         enable_runout=True,
         update_soil=True,
         runout_source_mode="selected",
-        runout_distance_model="empirical",
-        runout_empirical_parameters={
-            "intercept": 0.0,
-            "volume_exponent": 0.5,
-            "wetness_coefficient": 0.0,
-            "sigma_ln": 0.0,
+        runout_distance_model="claessens",
+        runout_claessens_parameters={
+            "fraction": 0.4,
+            "minimum_movement_slope": 10.0,
         },
         split_by_width_config=None,
     )
@@ -398,66 +396,123 @@ def test_empirical_runout_draws_one_distance_per_selected_group():
     sources = results["runout"]["source_nodes"]
     labels = results["selected_labels"]
     distances = results["runout_distance"]
-    medians = results["runout_distance_median"]
-    volumes = results["runout_source_volume"]
-    residuals = results["runout_log_residual"]
-    node_area = mg.dx * mg.dy
+    head_elevations = results["runout_head_elevation"]
+    start_found = results["runout_deposition_start_found"]
+    start_nodes = results["runout_deposition_start_node"]
+    start_elevations = results["runout_deposition_start_elevation"]
+    erosional_distances = results["runout_erosional_path_distance"]
+    vertical_drops = results["runout_vertical_drop"]
+    deposition_reaches = results["runout_deposition_reach"]
+    elevation = (
+        mg.at_node["bedrock__elevation"] + results["input_soil_depth"]
+    )
 
     assert sources.size > 0
     for label in np.unique(labels[sources]):
         group_sources = sources[labels[sources] == label]
-        expected_volume = np.sum(results["input_soil_depth"][group_sources]) * node_area
-        expected_distance = np.sqrt(expected_volume)
-        np.testing.assert_allclose(volumes[group_sources], expected_volume)
-        np.testing.assert_allclose(medians[group_sources], expected_distance)
+        head_elevation = head_elevations[group_sources[0]]
+        found = bool(start_found[group_sources[0]])
+        if found:
+            start_node = int(start_nodes[group_sources[0]])
+            start_elevation = start_elevations[group_sources[0]]
+            expected_drop = max(head_elevation - start_elevation, 0.0)
+            expected_reach = 0.4 * expected_drop
+            expected_distance = (
+                erosional_distances[group_sources[0]] + expected_reach
+            )
+        else:
+            start_node = np.nan
+            start_elevation = np.nan
+            expected_drop = np.nan
+            expected_reach = np.nan
+            expected_distance = erosional_distances[group_sources[0]]
+
+        np.testing.assert_allclose(
+            head_elevations[group_sources], np.max(elevation[group_sources])
+        )
+        np.testing.assert_allclose(start_found[group_sources], float(found))
+        np.testing.assert_allclose(start_nodes[group_sources], start_node)
+        np.testing.assert_allclose(start_elevations[group_sources], start_elevation)
+        np.testing.assert_allclose(vertical_drops[group_sources], expected_drop)
+        np.testing.assert_allclose(
+            deposition_reaches[group_sources], expected_reach
+        )
         np.testing.assert_allclose(distances[group_sources], expected_distance)
-        np.testing.assert_allclose(residuals[group_sources], 0.0)
 
         group = results["group_properties"].loc[label]
-        assert group["runout_source_volume_m3"] == pytest.approx(expected_volume)
-        assert group["runout_distance_median_m"] == pytest.approx(
-            expected_distance
-        )
-        assert group["runout_distance_sampled_m"] == pytest.approx(
-            expected_distance
-        )
+        assert group["runout_head_elevation_m"] == pytest.approx(head_elevation)
+        assert bool(group["runout_deposition_start_found"]) is found
+        if found:
+            assert group["runout_deposition_start_node"] == start_node
+            assert group["runout_deposition_start_elevation_m"] == pytest.approx(
+                start_elevation
+            )
+            assert group["runout_vertical_drop_m"] == pytest.approx(expected_drop)
+            assert group["runout_deposition_reach_m"] == pytest.approx(
+                expected_reach
+            )
+        else:
+            assert np.isnan(group["runout_deposition_start_node"])
+            assert np.isnan(group["runout_deposition_start_elevation_m"])
+            assert np.isnan(group["runout_vertical_drop_m"])
+            assert np.isnan(group["runout_deposition_reach_m"])
+        assert group["runout_distance_m"] == pytest.approx(expected_distance)
 
 
-def test_empirical_runout_is_reproducible_and_group_constant():
-    def run(seed):
-        grid = make_runout_grid()
-        component = ShallowLandslider(
-            grid,
-            cohesion_eff=1.0,
-            angle_int_frict=10.0,
-            selection_method="all",
-            random_seed=seed,
-            enable_runout=True,
-            update_soil=True,
-            runout_source_mode="selected",
-            runout_distance_model="empirical",
-            runout_empirical_parameters={
-                "intercept": np.log(20.0),
-                "volume_exponent": 0.0,
-                "sigma_ln": 0.3,
-                "min_distance": 5.0,
-                "max_distance": 100.0,
-            },
-            split_by_width_config=None,
-        )
-        component.run_one_step()
-        return component.results
-
-    first = run(29)
-    second = run(29)
-    np.testing.assert_allclose(
-        first["runout_distance"], second["runout_distance"], equal_nan=True
+def test_claessens_distance_uses_vertical_drop_at_slope_threshold():
+    mg = make_runout_grid()
+    comp = ShallowLandslider(
+        mg,
+        runout_distance_model="claessens",
+        runout_claessens_parameters={
+            "fraction": 0.4,
+            "minimum_movement_slope": 10.0,
+        },
     )
-    sources = first["runout"]["source_nodes"]
-    labels = first["selected_labels"]
-    for label in np.unique(labels[sources]):
-        group_sources = sources[labels[sources] == label]
-        assert np.unique(first["runout_distance"][group_sources]).size == 1
+    head_node = int(mg.nodes.reshape(mg.shape)[2, 3])
+    path = [head_node]
+    for _ in range(2):
+        receiver = comp._steepest_descent_receiver(path[-1])
+        assert receiver is not None
+        path.append(receiver)
+
+    comp._slope_deg32[:] = 45.0
+    comp._slope_deg32[path[-1]] = 5.0
+    labels = np.zeros(mg.number_of_nodes, dtype=int)
+    labels[head_node] = 1
+    comp._selected_labels = labels
+
+    distances = comp._resolve_claessens_runout_distance(
+        np.array([head_node], dtype=int)
+    )
+    erosional_distance = sum(
+        np.hypot(
+            mg.node_x[second] - mg.node_x[first],
+            mg.node_y[second] - mg.node_y[first],
+        )
+        for first, second in zip(path[:-1], path[1:])
+    )
+    vertical_drop = (
+        mg.at_node["topographic__elevation"][head_node]
+        - mg.at_node["topographic__elevation"][path[-1]]
+    )
+
+    assert comp._runout_deposition_start_found[head_node] == 1.0
+    assert comp._runout_deposition_start_node[head_node] == path[-1]
+    assert comp._runout_vertical_drop[head_node] == pytest.approx(vertical_drop)
+    assert comp._runout_deposition_reach[head_node] == pytest.approx(
+        0.4 * vertical_drop
+    )
+    assert distances[head_node] == pytest.approx(
+        erosional_distance + 0.4 * vertical_drop
+    )
+
+
+def test_claessens_default_parameters_are_published_values():
+    assert ShallowLandslider._validate_claessens_parameters(None) == {
+        "fraction": 0.4,
+        "minimum_movement_slope": 10.0,
+    }
 
 
 def test_selected_runout_requires_distance_provider():
@@ -472,25 +527,17 @@ def test_selected_runout_requires_distance_provider():
         )
 
 
-def test_empirical_runout_requires_valid_parameters():
+def test_claessens_runout_requires_valid_parameters():
     mg = make_runout_grid()
-    with pytest.raises(ValueError, match="requires runout_empirical_parameters"):
+    with pytest.raises(ValueError, match="fraction cannot be negative"):
         ShallowLandslider(
-            mg,
-            enable_runout=True,
-            update_soil=True,
-            runout_source_mode="selected",
-            runout_distance_model="empirical",
+            mg, runout_claessens_parameters={"fraction": -0.1}
         )
 
-    with pytest.raises(ValueError, match="sigma_ln cannot be negative"):
+    with pytest.raises(ValueError, match=r"must be in \[0, 90\)"):
         ShallowLandslider(
             mg,
-            runout_empirical_parameters={
-                "intercept": 0.0,
-                "volume_exponent": 0.2,
-                "sigma_ln": -0.1,
-            },
+            runout_claessens_parameters={"minimum_movement_slope": 90.0},
         )
 
 

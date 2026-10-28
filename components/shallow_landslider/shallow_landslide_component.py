@@ -282,7 +282,7 @@ class ShallowLandslider(Component):
         runout_source_mode: str = "newmark",
         runout_distance: float | np.ndarray | str | Callable | None = None,
         runout_distance_model: str = "prescribed",
-        runout_empirical_parameters: Mapping[str, float] | None = None,
+        runout_claessens_parameters: Mapping[str, float] | None = None,
         evolve_landscape: bool = False,
         g: float = 9.81,
         split_by_width_config: Optional[dict] = None,
@@ -350,18 +350,17 @@ class ShallowLandslider(Component):
             node field, and a callable receives ``(grid, source_nodes)``. If
             None, the optional node field ``landslide__runout_distance`` is
             used when present.
-        runout_distance_model : {"prescribed", "empirical"}, optional
+        runout_distance_model : {"prescribed", "claessens"}, optional
             Mobility model used with ``runout_source_mode="selected"``.
-            ``"empirical"`` draws one distance per selected failure group from
-            a configurable log-linear volume/wetness relationship.
-        runout_empirical_parameters : mapping, optional
-            Parameters for the empirical relationship
-            ``ln(L / 1 m) = intercept + volume_exponent * ln(V / 1 m3) +
-            wetness_coefficient * mean_wetness + residual``, where
-            ``residual ~ Normal(0, sigma_ln)``. ``intercept`` and
-            ``volume_exponent`` are required. Optional keys are
-            ``wetness_coefficient`` (default 0), ``sigma_ln`` (default 0),
-            ``min_distance`` (default 0), and ``max_distance`` (default None).
+            ``"claessens"`` applies the group-level distance criterion from
+            Claessens et al. (2007): steepest-descent routing continues to the
+            first node below a minimum movement slope, then the depositional
+            reach is a fraction of the elevation lost from the group head.
+        runout_claessens_parameters : mapping, optional
+            Parameters for the Claessens distance criterion. ``fraction`` is
+            the dimensionless multiplier in ``R = fraction * vertical_drop``
+            (default 0.4), and ``minimum_movement_slope`` is the local slope in
+            degrees below which deposition begins (default 10).
         evolve_landscape : bool, optional
             Require landscape-changing runout and enforce an external-state
             refresh between events. After runout, soil depth and topographic
@@ -405,10 +404,9 @@ class ShallowLandslider(Component):
         self.runout_source_mode = str(runout_source_mode)
         self.runout_distance = runout_distance
         self.runout_distance_model = str(runout_distance_model)
-        self.runout_empirical_parameters = self._validate_empirical_parameters(
-            runout_empirical_parameters
+        self.runout_claessens_parameters = self._validate_claessens_parameters(
+            runout_claessens_parameters
         )
-        self._runout_rng = np.random.default_rng(self.random_seed)
         self.evolve_landscape = bool(evolve_landscape)
         self.g = float(g)
         self.split_by_width_config = split_by_width_config
@@ -435,10 +433,13 @@ class ShallowLandslider(Component):
         self._high_disp_nodes = None
         self._input_soil_depth = None
         self._runout_distance_used = None
-        self._runout_distance_median = None
-        self._runout_log_residual = None
-        self._runout_source_volume = None
-        self._runout_group_wetness = None
+        self._runout_head_elevation = None
+        self._runout_deposition_start_found = None
+        self._runout_deposition_start_node = None
+        self._runout_deposition_start_elevation = None
+        self._runout_erosional_path_distance = None
+        self._runout_vertical_drop = None
+        self._runout_deposition_reach = None
         self._group_properties_df = None
         self._terrain_dirty = False
         self._terrain_revision = 0
@@ -457,9 +458,9 @@ class ShallowLandslider(Component):
             raise ValueError(
                 "runout_source_mode must be either 'newmark' or 'selected'"
             )
-        if self.runout_distance_model not in {"prescribed", "empirical"}:
+        if self.runout_distance_model not in {"prescribed", "claessens"}:
             raise ValueError(
-                "runout_distance_model must be either 'prescribed' or 'empirical'"
+                "runout_distance_model must be either 'prescribed' or 'claessens'"
             )
         if self.enable_runout and not self.update_soil:
             raise ValueError("enable_runout requires update_soil=True")
@@ -482,17 +483,6 @@ class ShallowLandslider(Component):
                 "runout_source_mode='selected' requires runout_distance or the "
                 "landslide__runout_distance node field"
             )
-        if (
-            self.enable_runout
-            and self.runout_source_mode == "selected"
-            and self.runout_distance_model == "empirical"
-            and self.runout_empirical_parameters is None
-        ):
-            raise ValueError(
-                "runout_distance_model='empirical' requires "
-                "runout_empirical_parameters"
-            )
-
         # Validate the configured wetness contract before creating optional
         # bedrock or PGA fields. Field mode is checked again before every
         # stability calculation because an external hydrology component may
@@ -570,10 +560,19 @@ class ShallowLandslider(Component):
             "high_displacement_nodes": self._high_disp_nodes,
             "input_soil_depth": self._input_soil_depth,
             "runout_distance": self._runout_distance_used,
-            "runout_distance_median": self._runout_distance_median,
-            "runout_log_residual": self._runout_log_residual,
-            "runout_source_volume": self._runout_source_volume,
-            "runout_group_wetness": self._runout_group_wetness,
+            "runout_head_elevation": self._runout_head_elevation,
+            "runout_deposition_start_found": (
+                self._runout_deposition_start_found
+            ),
+            "runout_deposition_start_node": self._runout_deposition_start_node,
+            "runout_deposition_start_elevation": (
+                self._runout_deposition_start_elevation
+            ),
+            "runout_erosional_path_distance": (
+                self._runout_erosional_path_distance
+            ),
+            "runout_vertical_drop": self._runout_vertical_drop,
+            "runout_deposition_reach": self._runout_deposition_reach,
             "runout_distance_model": self.runout_distance_model,
             "group_properties": self._group_properties_df,
             "runout": self._runout.results if self.enable_runout else None,
@@ -664,69 +663,33 @@ class ShallowLandslider(Component):
         )
 
     @staticmethod
-    def _validate_empirical_parameters(parameters):
-        """Return a normalized empirical-runout parameter mapping."""
+    def _validate_claessens_parameters(parameters):
+        """Return normalized parameters for the Claessens distance law."""
         if parameters is None:
-            return None
+            parameters = {}
         if not isinstance(parameters, Mapping):
-            raise TypeError("runout_empirical_parameters must be a mapping")
-
-        allowed = {
-            "intercept",
-            "volume_exponent",
-            "wetness_coefficient",
-            "sigma_ln",
-            "min_distance",
-            "max_distance",
-        }
+            raise TypeError("runout_claessens_parameters must be a mapping")
+        allowed = {"fraction", "minimum_movement_slope"}
         unknown = set(parameters) - allowed
         if unknown:
             raise ValueError(
-                "Unsupported runout_empirical_parameters: "
+                "Unsupported runout_claessens_parameters: "
                 + ", ".join(sorted(unknown))
-            )
-        missing = {"intercept", "volume_exponent"} - set(parameters)
-        if missing:
-            raise ValueError(
-                "runout_empirical_parameters requires: "
-                + ", ".join(sorted(missing))
             )
 
         normalized = {
-            "intercept": float(parameters["intercept"]),
-            "volume_exponent": float(parameters["volume_exponent"]),
-            "wetness_coefficient": float(
-                parameters.get("wetness_coefficient", 0.0)
-            ),
-            "sigma_ln": float(parameters.get("sigma_ln", 0.0)),
-            "min_distance": float(parameters.get("min_distance", 0.0)),
-            "max_distance": (
-                None
-                if parameters.get("max_distance") is None
-                else float(parameters["max_distance"])
+            "fraction": float(parameters.get("fraction", 0.4)),
+            "minimum_movement_slope": float(
+                parameters.get("minimum_movement_slope", 10.0)
             ),
         }
-        finite = [
-            normalized["intercept"],
-            normalized["volume_exponent"],
-            normalized["wetness_coefficient"],
-            normalized["sigma_ln"],
-            normalized["min_distance"],
-        ]
-        if normalized["max_distance"] is not None:
-            finite.append(normalized["max_distance"])
-        if not np.all(np.isfinite(finite)):
-            raise ValueError("runout_empirical_parameters values must be finite")
-        if normalized["sigma_ln"] < 0.0:
-            raise ValueError("runout empirical sigma_ln cannot be negative")
-        if normalized["min_distance"] < 0.0:
-            raise ValueError("runout empirical min_distance cannot be negative")
-        if (
-            normalized["max_distance"] is not None
-            and normalized["max_distance"] < normalized["min_distance"]
-        ):
+        if not np.all(np.isfinite(list(normalized.values()))):
+            raise ValueError("runout_claessens_parameters values must be finite")
+        if normalized["fraction"] < 0.0:
+            raise ValueError("runout Claessens fraction cannot be negative")
+        if not 0.0 <= normalized["minimum_movement_slope"] < 90.0:
             raise ValueError(
-                "runout empirical max_distance cannot be less than min_distance"
+                "runout Claessens minimum_movement_slope must be in [0, 90)"
             )
         return normalized
 
@@ -767,105 +730,142 @@ class ShallowLandslider(Component):
             raise ValueError("runout_distance cannot be negative at source nodes")
         return distances
 
-    def _resolve_empirical_runout_distance(
+    def _steepest_descent_receiver(self, node: int) -> int | None:
+        """Return the valid hill receiver with the steepest elevation drop."""
+        receivers = np.asarray(
+            self.grid.at_node["hill_flow__receiver_node"][node], dtype=int
+        )
+        proportions = np.asarray(
+            self.grid.at_node["hill_flow__receiver_proportions"][node],
+            dtype=float,
+        )
+        z = np.asarray(self.grid.at_node["topographic__elevation"], dtype=float)
+        valid = (proportions > 0.0) & (receivers >= 0) & (receivers != node)
+        if not np.any(valid):
+            return None
+
+        candidates = receivers[valid]
+        distances = np.hypot(
+            self.grid.node_x[candidates] - self.grid.node_x[node],
+            self.grid.node_y[candidates] - self.grid.node_y[node],
+        )
+        gradients = (z[node] - z[candidates]) / distances
+        downhill = np.isfinite(gradients) & (gradients > 0.0)
+        if not np.any(downhill):
+            return None
+        candidates = candidates[downhill]
+        gradients = gradients[downhill]
+        return int(candidates[np.argmax(gradients)])
+
+    def _claessens_deposition_start(
+        self, head_node: int
+    ) -> tuple[int | None, float]:
+        """Trace to the first sub-threshold node, if one exists in-domain."""
+        threshold = self.runout_claessens_parameters["minimum_movement_slope"]
+        boundary = set(np.asarray(self.grid.boundary_nodes, dtype=int))
+        current = int(head_node)
+        distance = 0.0
+        visited = {current}
+
+        while True:
+            if (
+                np.isfinite(self._slope_deg32[current])
+                and self._slope_deg32[current] < threshold
+            ):
+                return current, distance
+            receiver = self._steepest_descent_receiver(current)
+            if receiver is None or receiver in boundary or receiver in visited:
+                return None, distance
+            distance += float(
+                np.hypot(
+                    self.grid.node_x[receiver] - self.grid.node_x[current],
+                    self.grid.node_y[receiver] - self.grid.node_y[current],
+                )
+            )
+            current = receiver
+            visited.add(current)
+
+    def _resolve_claessens_runout_distance(
         self, source_nodes: np.ndarray
     ) -> np.ndarray:
-        """Draw one log-linear runout distance for each selected failure group."""
-        parameters = self.runout_empirical_parameters
-        if parameters is None:
-            raise RuntimeError("empirical runout parameters were not configured")
-
+        """Calculate one Claessens distance criterion per selected group."""
         source_nodes = np.asarray(source_nodes, dtype=int)
         labels = np.asarray(self._selected_labels, dtype=int)
-        soil_depth = np.asarray(self._input_soil_depth, dtype=float)
-        wetness = np.asarray(self._relative_wetness, dtype=float)
-        node_area = float(self.grid.dx * self.grid.dy)
+        elevation = np.asarray(
+            self.grid.at_node["topographic__elevation"], dtype=float
+        )
         node_count = self.grid.number_of_nodes
 
         distances = np.zeros(node_count, dtype=float)
-        medians = np.full(node_count, np.nan, dtype=float)
-        residuals = np.full(node_count, np.nan, dtype=float)
-        volumes = np.full(node_count, np.nan, dtype=float)
-        group_wetness = np.full(node_count, np.nan, dtype=float)
+        head_elevations = np.full(node_count, np.nan, dtype=float)
+        start_found = np.full(node_count, np.nan, dtype=float)
+        start_nodes = np.full(node_count, np.nan, dtype=float)
+        start_elevations = np.full(node_count, np.nan, dtype=float)
+        erosional_distances = np.full(node_count, np.nan, dtype=float)
+        vertical_drops = np.full(node_count, np.nan, dtype=float)
+        deposition_reaches = np.full(node_count, np.nan, dtype=float)
 
         group_records = {}
         for label in np.unique(labels[source_nodes]):
             if label <= 0:
                 continue
             nodes = source_nodes[labels[source_nodes] == label]
-            volume = float(np.sum(soil_depth[nodes]) * node_area)
-            if not np.isfinite(volume) or volume <= 0.0:
-                raise ValueError(
-                    f"Empirical runout requires positive failed volume for group {label}"
-                )
-            mean_wetness = float(np.mean(wetness[nodes]))
-            if not np.isfinite(mean_wetness):
-                raise ValueError(
-                    f"Empirical runout requires finite wetness for group {label}"
-                )
-
-            log_median = (
-                parameters["intercept"]
-                + parameters["volume_exponent"] * np.log(volume)
-                + parameters["wetness_coefficient"] * mean_wetness
+            head_node = int(nodes[np.argmax(elevation[nodes])])
+            head_elevation = float(elevation[head_node])
+            start_node, erosional_distance = self._claessens_deposition_start(
+                head_node
             )
-            if not np.isfinite(log_median) or log_median > np.log(
-                np.finfo(float).max
-            ):
-                raise ValueError(
-                    f"Empirical runout median is not finite for group {label}"
-                )
-            median = float(np.exp(log_median))
-            residual = (
-                0.0
-                if parameters["sigma_ln"] == 0.0
-                else float(self._runout_rng.normal(0.0, parameters["sigma_ln"]))
-            )
-            log_sampled = log_median + residual
-            if parameters["min_distance"] > 0.0:
-                log_sampled = max(
-                    log_sampled, np.log(parameters["min_distance"])
-                )
-            if parameters["max_distance"] == 0.0:
-                sampled = 0.0
+            if start_node is None:
+                start_node_value = np.nan
+                start_elevation = np.nan
+                vertical_drop = np.nan
+                deposition_reach = np.nan
+                total_distance = erosional_distance
             else:
-                if parameters["max_distance"] is not None:
-                    log_sampled = min(
-                        log_sampled, np.log(parameters["max_distance"])
-                    )
-                if not np.isfinite(log_sampled) or log_sampled > np.log(
-                    np.finfo(float).max
-                ):
-                    raise ValueError(
-                        f"Empirical runout draw is not finite for group {label}"
-                    )
-                sampled = float(np.exp(log_sampled))
-
-            distances[nodes] = sampled
-            medians[nodes] = median
-            residuals[nodes] = residual
-            volumes[nodes] = volume
-            group_wetness[nodes] = mean_wetness
+                start_node_value = float(start_node)
+                start_elevation = float(elevation[start_node])
+                vertical_drop = max(head_elevation - start_elevation, 0.0)
+                deposition_reach = float(
+                    self.runout_claessens_parameters["fraction"] * vertical_drop
+                )
+                total_distance = erosional_distance + deposition_reach
+            distances[nodes] = total_distance
+            head_elevations[nodes] = head_elevation
+            start_found[nodes] = float(start_node is not None)
+            start_nodes[nodes] = start_node_value
+            start_elevations[nodes] = start_elevation
+            erosional_distances[nodes] = erosional_distance
+            vertical_drops[nodes] = vertical_drop
+            deposition_reaches[nodes] = deposition_reach
             group_records[int(label)] = {
-                "runout_source_volume_m3": volume,
-                "runout_mean_relative_wetness": mean_wetness,
-                "runout_distance_median_m": median,
-                "runout_log_residual": residual,
-                "runout_distance_sampled_m": sampled,
+                "runout_head_elevation_m": head_elevation,
+                "runout_deposition_start_found": float(start_node is not None),
+                "runout_deposition_start_node": start_node_value,
+                "runout_deposition_start_elevation_m": start_elevation,
+                "runout_erosional_path_distance_m": erosional_distance,
+                "runout_vertical_drop_m": vertical_drop,
+                "runout_deposition_reach_m": deposition_reach,
+                "runout_distance_m": total_distance,
             }
 
-        self._runout_distance_median = medians
-        self._runout_log_residual = residuals
-        self._runout_source_volume = volumes
-        self._runout_group_wetness = group_wetness
+        self._runout_head_elevation = head_elevations
+        self._runout_deposition_start_found = start_found
+        self._runout_deposition_start_node = start_nodes
+        self._runout_deposition_start_elevation = start_elevations
+        self._runout_erosional_path_distance = erosional_distances
+        self._runout_vertical_drop = vertical_drops
+        self._runout_deposition_reach = deposition_reaches
 
         if self._group_properties_df is not None:
             for column in (
-                "runout_source_volume_m3",
-                "runout_mean_relative_wetness",
-                "runout_distance_median_m",
-                "runout_log_residual",
-                "runout_distance_sampled_m",
+                "runout_head_elevation_m",
+                "runout_deposition_start_found",
+                "runout_deposition_start_node",
+                "runout_deposition_start_elevation_m",
+                "runout_erosional_path_distance_m",
+                "runout_vertical_drop_m",
+                "runout_deposition_reach_m",
+                "runout_distance_m",
             ):
                 if column not in self._group_properties_df:
                     self._group_properties_df[column] = np.nan
@@ -888,14 +888,17 @@ class ShallowLandslider(Component):
             source_nodes = np.where(
                 (self._selected_labels > 0) & self._unstable_mask
             )[0]
-            if self.runout_distance_model == "empirical":
-                distances = self._resolve_empirical_runout_distance(source_nodes)
+            if self.runout_distance_model == "claessens":
+                distances = self._resolve_claessens_runout_distance(source_nodes)
             else:
                 distances = self._resolve_runout_distance(source_nodes)
-                self._runout_distance_median = None
-                self._runout_log_residual = None
-                self._runout_source_volume = None
-                self._runout_group_wetness = None
+                self._runout_head_elevation = None
+                self._runout_deposition_start_found = None
+                self._runout_deposition_start_node = None
+                self._runout_deposition_start_elevation = None
+                self._runout_erosional_path_distance = None
+                self._runout_vertical_drop = None
+                self._runout_deposition_reach = None
 
         self._runout_distance_used = np.full(
             self.grid.number_of_nodes, np.nan, dtype=float

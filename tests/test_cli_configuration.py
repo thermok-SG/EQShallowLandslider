@@ -89,18 +89,17 @@ def test_selected_runout_does_not_require_newmark_displacement():
     assert prepared["simulation"]["selection_method"] == "all"
 
 
-def test_selected_empirical_runout_does_not_require_prescribed_distance():
+def test_selected_claessens_runout_does_not_require_prescribed_distance():
     config = minimal_config()
     config["simulation"].update(
         {
             "enable_runout": True,
             "update_soil": True,
             "runout_source_mode": "selected",
-            "runout_distance_model": "empirical",
-            "runout_empirical": {
-                "intercept": 1.5,
-                "volume_exponent": 0.2,
-                "sigma_ln": 0.4,
+            "runout_distance_model": "claessens",
+            "runout_claessens": {
+                "fraction": 0.4,
+                "minimum_movement_slope": 10.0,
             },
         }
     )
@@ -108,27 +107,24 @@ def test_selected_empirical_runout_does_not_require_prescribed_distance():
     prepared = prepare_config(config)
 
     assert prepared["simulation"].get("runout_distance") is None
-    assert prepared["simulation"]["runout_distance_model"] == "empirical"
+    assert prepared["simulation"]["runout_distance_model"] == "claessens"
 
 
 @pytest.mark.parametrize(
-    ("empirical", "message"),
+    ("claessens", "message"),
     [
-        (None, "requires simulation.runout_empirical"),
-        ({"intercept": 1.0}, "volume_exponent"),
-        (
-            {"intercept": 1.0, "volume_exponent": 0.2, "sigma_ln": -1.0},
-            "sigma_ln",
-        ),
+        ({"fraction": -0.1}, "fraction"),
+        ({"minimum_movement_slope": 90.0}, "minimum_movement_slope"),
+        ({"unknown": 1.0}, "Unsupported"),
     ],
 )
-def test_invalid_empirical_runout_configuration_is_rejected(empirical, message):
+def test_invalid_claessens_runout_configuration_is_rejected(claessens, message):
     config = minimal_config()
     config["simulation"].update(
         {
             "runout_source_mode": "selected",
-            "runout_distance_model": "empirical",
-            "runout_empirical": empirical,
+            "runout_distance_model": "claessens",
+            "runout_claessens": claessens,
         }
     )
 

@@ -187,21 +187,41 @@ def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(
     tmp_path,
 ):
     completed = make_completed_run()
-    empirical_sources = completed.results["selected_labels"] > 0
+    claessens_sources = completed.results["selected_labels"] > 0
     completed.results.update(
         {
-            "runout_distance_median": np.where(empirical_sources, 50.0, np.nan),
-            "runout_log_residual": np.where(empirical_sources, 0.1, np.nan),
-            "runout_source_volume": np.where(empirical_sources, 2250.0, np.nan),
-            "runout_group_wetness": np.where(empirical_sources, 0.7, np.nan),
+            "runout_head_elevation": np.where(
+                claessens_sources, 1200.0, np.nan
+            ),
+            "runout_deposition_start_found": np.where(
+                claessens_sources, 1.0, np.nan
+            ),
+            "runout_deposition_start_node": np.where(
+                claessens_sources, 14.0, np.nan
+            ),
+            "runout_deposition_start_elevation": np.where(
+                claessens_sources, 1100.0, np.nan
+            ),
+            "runout_erosional_path_distance": np.where(
+                claessens_sources, 100.0, np.nan
+            ),
+            "runout_vertical_drop": np.where(
+                claessens_sources, 100.0, np.nan
+            ),
+            "runout_deposition_reach": np.where(
+                claessens_sources, 40.0, np.nan
+            ),
         }
     )
     properties = completed.results["group_properties"]
-    properties["runout_source_volume_m3"] = [np.nan, 2250.0]
-    properties["runout_mean_relative_wetness"] = [np.nan, 0.7]
-    properties["runout_distance_median_m"] = [np.nan, 50.0]
-    properties["runout_log_residual"] = [np.nan, 0.1]
-    properties["runout_distance_sampled_m"] = [np.nan, 60.0]
+    properties["runout_head_elevation_m"] = [np.nan, 1200.0]
+    properties["runout_deposition_start_found"] = [False, True]
+    properties["runout_deposition_start_node"] = [np.nan, 14.0]
+    properties["runout_deposition_start_elevation_m"] = [np.nan, 1100.0]
+    properties["runout_erosional_path_distance_m"] = [np.nan, 100.0]
+    properties["runout_vertical_drop_m"] = [np.nan, 100.0]
+    properties["runout_deposition_reach_m"] = [np.nan, 40.0]
+    properties["runout_distance_m"] = [np.nan, 140.0]
     completed.grid.add_field(
         "aquifer__thickness", np.linspace(0.0, 0.5, 16), at="node"
     )
@@ -226,10 +246,13 @@ def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(
         "soil_depth",
         "post_failure_soil_depth",
         "runout_distance",
-        "runout_distance_median",
-        "runout_log_residual",
-        "runout_source_volume",
-        "runout_group_wetness",
+        "runout_head_elevation",
+        "runout_deposition_start_found",
+        "runout_deposition_start_node",
+        "runout_deposition_start_elevation",
+        "runout_erosional_path_distance",
+        "runout_vertical_drop",
+        "runout_deposition_reach",
         "aquifer_thickness",
     ):
         assert name in rasters
@@ -246,8 +269,9 @@ def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(
     np.testing.assert_allclose(rasters["post_failure_soil_depth"], 1.0)
     regions = pd.read_csv(run_dir / "regions.csv")
     selected = regions.loc[regions["selected"]].iloc[0]
-    assert selected["runout_source_volume_m3"] == 2250.0
-    assert selected["runout_distance_sampled_m"] == 60.0
+    assert selected["runout_vertical_drop_m"] == 100.0
+    assert selected["runout_deposition_reach_m"] == 40.0
+    assert selected["runout_distance_m"] == 140.0
 
 
 def test_analysis_loaders_and_plot(tmp_path):
