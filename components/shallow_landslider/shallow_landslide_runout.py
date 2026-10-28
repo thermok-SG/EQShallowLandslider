@@ -296,6 +296,7 @@ class ShallowLandslideRunout(Component):
 
         receiver_nodes = grid.at_node["hill_flow__receiver_node"]
         receiver_props = grid.at_node["hill_flow__receiver_proportions"]
+        elevation = grid.at_node["topographic__elevation"]
         boundary_nodes = set(grid.boundary_nodes)
 
         final_paths = []
@@ -348,9 +349,7 @@ class ShallowLandslideRunout(Component):
                     new_prop = prop * p
                     new_path = path + [r]
 
-                    if r in boundary_nodes or np.isnan(
-                        grid.at_node["topographic__elevation"][r]
-                    ):
+                    if r in boundary_nodes or np.isnan(elevation[r]):
                         # This receiver branch terminates at the current node.
                         # Retain its own multiflow weight; using the parent's
                         # weight here would duplicate mass when several
