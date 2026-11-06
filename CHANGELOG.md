@@ -107,9 +107,10 @@ every edited line.
   PGA explicitly. Existing CLI paths already construct and pass their PGA
   arrays.
 - This remains a 2.0 foundation rather than the complete temporal
-  rainfall/earthquake model. Trigger-independent, landscape-consistent runout
-  is now available; probabilistic hydrologic selection, hydrology adapters,
-  automatic rerouting, and event sequencing remain planned work.
+  rainfall/earthquake model. Trigger-independent, landscape-consistent runout,
+  probabilistic hydrologic selection, and interchangeable hydrology adapters
+  are now available; automatic rerouting and event sequencing remain planned
+  work.
 
 ## Unreleased working tree - multiflow runout and notebook integration
 

@@ -66,9 +66,9 @@ def pressure_response(normalized_time: Any) -> np.ndarray:
     response = np.zeros_like(time, dtype=float)
     positive = time > 0.0
     scaled = time[positive]
-    response[positive] = np.sqrt(scaled / np.pi) * np.exp(
-        -1.0 / scaled
-    ) - erfc(1.0 / np.sqrt(scaled))
+    response[positive] = np.sqrt(scaled / np.pi) * np.exp(-1.0 / scaled) - erfc(
+        1.0 / np.sqrt(scaled)
+    )
     return response
 
 
@@ -174,9 +174,7 @@ class IversonWetnessCoupler:
         self.pressure_head = self._field("soil__pressure_head")
         self._equivalent_thickness = self._field("aquifer__thickness")
         self._water_table = self._field("water_table__elevation")
-        self._surface_runoff = self._field(
-            "average_surface_water__specific_discharge"
-        )
+        self._surface_runoff = self._field("average_surface_water__specific_discharge")
         self._update_pressure()
         self._remember_geometry()
 
@@ -207,9 +205,7 @@ class IversonWetnessCoupler:
 
     def set_infiltration_rate(self, infiltration_rate) -> None:
         """Set the constant infiltration flux for the next interval (m/s)."""
-        requested = _node_array(
-            self.grid, infiltration_rate, name="infiltration_rate"
-        )
+        requested = _node_array(self.grid, infiltration_rate, name="infiltration_rate")
         if np.any(requested < 0.0):
             raise ValueError("infiltration_rate cannot be negative")
         self._requested_infiltration = requested
@@ -284,9 +280,7 @@ class IversonWetnessCoupler:
         return self.relative_wetness
 
     def _depth(self) -> np.ndarray:
-        depth = _node_array(
-            self.grid, self._failure_depth_source, name="failure_depth"
-        )
+        depth = _node_array(self.grid, self._failure_depth_source, name="failure_depth")
         if np.any(depth < 0.0):
             raise ValueError("failure_depth cannot be negative")
         return depth
@@ -386,9 +380,13 @@ class IversonWetnessCoupler:
             end_star = np.zeros_like(depth)
             start_star[active] = age_at_start * d_hat[active] / depth[active] ** 2
             end_star[active] = age_at_end * d_hat[active] / depth[active] ** 2
-            transient[active] += depth[active] * pulse.ratio[active] * (
-                pressure_response(start_star[active])
-                - pressure_response(end_star[active])
+            transient[active] += (
+                depth[active]
+                * pulse.ratio[active]
+                * (
+                    pressure_response(start_star[active])
+                    - pressure_response(end_star[active])
+                )
             )
 
         raw += transient
@@ -399,9 +397,7 @@ class IversonWetnessCoupler:
 
         self.raw_pressure_head[:] = raw
         self.pressure_head[:] = capped
-        stability_depth = np.asarray(
-            self.grid.at_node["soil__depth"], dtype=float
-        )
+        stability_depth = np.asarray(self.grid.at_node["soil__depth"], dtype=float)
         stability_active = stability_depth > 0.0
         self.relative_wetness[:] = 0.0
         self.relative_wetness[stability_active] = np.clip(
@@ -436,17 +432,14 @@ class IversonWetnessCoupler:
         self._beta_snapshot = beta
 
     def _geometry_changed(self) -> bool:
-        unchanged = (
-            np.array_equal(
-                self._surface_snapshot,
-                self.grid.at_node["topographic__elevation"],
-                equal_nan=True,
-            )
-            and np.array_equal(
-                self._soil_snapshot,
-                self.grid.at_node["soil__depth"],
-                equal_nan=True,
-            )
+        unchanged = np.array_equal(
+            self._surface_snapshot,
+            self.grid.at_node["topographic__elevation"],
+            equal_nan=True,
+        ) and np.array_equal(
+            self._soil_snapshot,
+            self.grid.at_node["soil__depth"],
+            equal_nan=True,
         )
         if not unchanged:
             return True
