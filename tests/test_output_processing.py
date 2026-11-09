@@ -132,6 +132,18 @@ def test_save_model_run_writes_v12_analysis_bundle(tmp_path):
 
 def test_save_model_run_includes_runout_diagnostics(tmp_path):
     completed = make_completed_run()
+    failed_fraction = np.linspace(0.0, 0.75, 16)
+    effective_cohesion = 15_000.0 * (1.0 - failed_fraction) + 3_000.0 * (
+        failed_fraction
+    )
+    completed.results["failed_material_fraction"] = failed_fraction
+    completed.results["effective_cohesion"] = effective_cohesion
+    completed.grid.add_field(
+        "soil__failed_material_fraction", failed_fraction, at="node"
+    )
+    completed.grid.add_field(
+        "soil__effective_cohesion", effective_cohesion, at="node"
+    )
     completed.results["runout"] = {
         "failed_nodes": np.array([9, 10, 13]),
         "paths": [(9, 5), (9, 6), (10, 6), (13, 9)],
@@ -151,10 +163,12 @@ def test_save_model_run_includes_runout_diagnostics(tmp_path):
         at="node",
     )
 
+    config = make_config()
+    config["soil_params"]["failed_material_cohesion"] = 3_000.0
     run_dir = save_model_run(
         False,
         completed,
-        make_config(),
+        config,
         tmp_path,
         logging.getLogger("runout-output-test"),
     )
@@ -163,6 +177,8 @@ def test_save_model_run_includes_runout_diagnostics(tmp_path):
     assert "runout_erosion" in loaded["rasters"]
     assert "runout_deposition" in loaded["rasters"]
     assert "runout_soil_depth_change" in loaded["rasters"]
+    assert "failed_material_fraction" in loaded["rasters"]
+    assert "effective_cohesion" in loaded["rasters"]
     assert "selected_footprint" in loaded["rasters"]
     assert "runout_affected_footprint" in loaded["rasters"]
     assert "runout_only_footprint" in loaded["rasters"]
@@ -181,6 +197,9 @@ def test_save_model_run_includes_runout_diagnostics(tmp_path):
     assert loaded["summary"]["combined_affected_footprint_node_count"] == 16
     assert np.isclose(loaded["summary"]["runout_mass_balance_error_node_m"], 0.0)
     assert loaded["summary"]["negative_final_soil_depth_node_count"] == 0
+    assert loaded["summary"]["failed_material_node_count"] == 15
+    assert loaded["summary"]["effective_cohesion_min_pa"] == 6_000.0
+    assert loaded["summary"]["effective_cohesion_max_pa"] == 15_000.0
 
 
 def test_hydrologic_outputs_include_audit_state_and_omit_coseismic_rasters(

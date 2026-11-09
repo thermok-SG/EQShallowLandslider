@@ -9,6 +9,20 @@ every edited line.
 
 ## Unreleased - ShallowLandslider 2.0 development
 
+### Experimental post-failure cohesion memory
+
+- Added optional `failed_material_cohesion` and persistent
+  `soil__failed_material_fraction` state. Runout deposits are marked as failed
+  material, while erosion removes the existing failed fraction in proportion
+  to eroded thickness.
+- Added depth-weighted `soil__effective_cohesion`, which is reread by all
+  factor-of-safety, critical-wetness, and transient-acceleration calculations
+  on every event. The default leaves the established scalar-cohesion behavior
+  unchanged.
+- Exposed strength-memory rasters and summary diagnostics, configuration
+  validation, and conservation/integration tests. The mixing rule is an
+  explicit experimental closure rather than a calibrated constitutive law.
+
 ### Iverson transient-infiltration hydrology
 
 - Added `IversonWetnessCoupler`, implementing the pressure-head response in

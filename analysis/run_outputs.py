@@ -127,6 +127,7 @@ def _parameter_label(path):
     """Return a compact plot label for a dotted configuration path."""
     labels = {
         "cohesion_eff": "Effective cohesion (Pa)",
+        "failed_material_cohesion": "Failed-material cohesion (Pa)",
         "angle_int_frict": "Internal friction angle (degrees)",
         "max_soil_depth": "Maximum soil depth (m)",
         "horizontal_max": "Maximum horizontal PGA (g)",
@@ -140,6 +141,7 @@ def _parameter_name(path):
     """Return a short parameter name suitable for figure headings."""
     labels = {
         "cohesion_eff": "effective cohesion",
+        "failed_material_cohesion": "failed-material cohesion",
         "angle_int_frict": "internal friction angle",
         "submerged_soil_proportion": "submerged soil proportion",
         "max_soil_depth": "maximum soil depth",
@@ -163,6 +165,7 @@ def _format_parameter_value(path, value):
         value_text = str(value)
     units = {
         "cohesion_eff": " Pa",
+        "failed_material_cohesion": " Pa",
         "angle_int_frict": "°",
         "max_soil_depth": " m",
         "horizontal_max": " g",

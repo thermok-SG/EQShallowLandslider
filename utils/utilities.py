@@ -1455,6 +1455,7 @@ def _build_region_output(ls, config, run_id):
     simulation = config.get("simulation", {})
     regions.insert(0, "run_id", run_id)
     regions["cohesion_eff"] = soil.get("cohesion_eff")
+    regions["failed_material_cohesion"] = soil.get("failed_material_cohesion")
     regions["angle_int_frict"] = soil.get("angle_int_frict")
     regions["submerged_soil_proportion"] = soil.get("submerged_soil_proportion")
     regions["soil_distribution"] = soil.get("distribution")
@@ -1472,6 +1473,8 @@ def _collect_raster_arrays(ls, config=None):
     )
     arrays = {
         "input_soil_depth": results.get("input_soil_depth"),
+        "failed_material_fraction": results.get("failed_material_fraction"),
+        "effective_cohesion": results.get("effective_cohesion"),
         "factor_of_safety": results.get("factor_of_safety"),
         "selection_weight": results.get("selection_weight"),
         "unstable_mask": results.get("unstable_mask"),
@@ -1794,6 +1797,29 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
                 ),
             }
         )
+        if "soil__failed_material_fraction" in ls.grid.at_node:
+            failed_fraction = np.asarray(
+                ls.grid.at_node["soil__failed_material_fraction"], dtype=float
+            )
+            effective_cohesion = np.asarray(
+                ls.grid.at_node["soil__effective_cohesion"], dtype=float
+            )
+            summary.update(
+                {
+                    "failed_material_node_count": int(
+                        np.count_nonzero(failed_fraction > 0.0)
+                    ),
+                    "failed_material_total_node_m": float(
+                        np.sum(failed_fraction * final_soil_depth)
+                    ),
+                    "effective_cohesion_min_pa": float(
+                        np.min(effective_cohesion)
+                    ),
+                    "effective_cohesion_max_pa": float(
+                        np.max(effective_cohesion)
+                    ),
+                }
+            )
     else:
         summary["runout_enabled"] = False
     with open(run_dir / "summary.json", "w", encoding="utf-8") as stream:

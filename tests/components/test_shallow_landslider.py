@@ -94,6 +94,83 @@ def test_initialization_only_creates_public_output_field():
     assert set(mg.at_node) - fields_before == {"landslide__selected_labels"}
 
 
+def test_variable_cohesion_initializes_depth_weighted_strength_fields():
+    mg = make_grid(add_soil=True)
+    fraction = mg.add_zeros("soil__failed_material_fraction", at="node")
+    fraction[mg.core_nodes] = np.linspace(0.0, 1.0, mg.core_nodes.size)
+
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=100.0,
+        failed_material_cohesion=20.0,
+    )
+
+    expected = 100.0 * (1.0 - fraction) + 20.0 * fraction
+    np.testing.assert_allclose(mg.at_node["soil__effective_cohesion"], expected)
+    assert comp.results["failed_material_fraction"] is fraction
+    assert comp.results["effective_cohesion"] is mg.at_node[
+        "soil__effective_cohesion"
+    ]
+
+
+@pytest.mark.parametrize("failed_cohesion", [-1.0, 101.0, np.nan])
+def test_variable_cohesion_rejects_invalid_failed_strength(failed_cohesion):
+    mg = make_grid(add_soil=True)
+
+    with pytest.raises(ValueError, match="failed_material_cohesion"):
+        ShallowLandslider(
+            mg,
+            cohesion_eff=100.0,
+            failed_material_cohesion=failed_cohesion,
+        )
+
+
+def test_variable_cohesion_rejects_invalid_material_fraction():
+    mg = make_grid(add_soil=True)
+    fraction = mg.add_zeros("soil__failed_material_fraction", at="node")
+    fraction[mg.core_nodes[0]] = 1.1
+
+    with pytest.raises(ValueError, match="between zero and one"):
+        ShallowLandslider(
+            mg,
+            cohesion_eff=100.0,
+            failed_material_cohesion=20.0,
+        )
+
+
+def test_stability_rereads_failed_fraction_and_uses_reduced_cohesion():
+    mg = make_grid(add_soil=True)
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1_000.0,
+        failed_material_cohesion=100.0,
+        angle_int_frict=30.0,
+    )
+    comp._compute_stability()
+    fos_intact = comp.results["factor_of_safety"].copy()
+    critical_wetness_intact = comp.results["critical_relative_wetness"].copy()
+    critical_acceleration_intact = comp.results["a_transient"].copy()
+
+    mg.at_node["soil__failed_material_fraction"][mg.core_nodes] = 1.0
+    comp._compute_stability()
+
+    assert np.all(
+        mg.at_node["soil__effective_cohesion"][mg.core_nodes] == 100.0
+    )
+    assert np.all(
+        comp.results["factor_of_safety"][mg.core_nodes]
+        < fos_intact[mg.core_nodes]
+    )
+    assert np.all(
+        comp.results["critical_relative_wetness"][mg.core_nodes]
+        < critical_wetness_intact[mg.core_nodes]
+    )
+    assert np.all(
+        comp.results["a_transient"][mg.core_nodes]
+        < critical_acceleration_intact[mg.core_nodes]
+    )
+
+
 def test_regionprops_matches_expected_geometry():
     labels = np.zeros((5, 6), dtype=int)
     labels[1:3, 2:5] = 2
@@ -244,6 +321,52 @@ def test_hydrologic_selection_weight_uses_equal_weights_for_constant_range():
     assert np.all(weights[labels > 0] == 1.0)
     assert metadata["performed"] is False
     assert "same mean critical wetness" in metadata["reason"]
+
+
+def test_newmark_logistic_probability_increases_with_candidate_displacement():
+    mg = make_grid(add_soil=True)
+    comp = ShallowLandslider(
+        mg,
+        selection_method="newmark_logistic",
+        time_shaking=2.0,
+        random_seed=5000,
+    )
+    labels = np.zeros(mg.shape, dtype=int)
+    labels[1, 1:3] = 1
+    labels[2, 1:3] = 2
+    comp._pga_h[:] = 0.5
+    comp._a_transient = np.zeros(mg.number_of_nodes, dtype=float)
+    critical = comp._a_transient.reshape(mg.shape)
+    critical[1, 1:3] = 0.4 * 0.5 * comp.g
+    critical[2, 1:3] = 0.1 * 0.5 * comp.g
+
+    probabilities, metadata = comp._generate_newmark_logistic_probability(labels)
+
+    low = probabilities[labels == 1][0]
+    high = probabilities[labels == 2][0]
+    assert 0.0 < low < high <= comp.newmark_logistic_max_probability
+    assert np.all(probabilities[labels == 0] == 0.0)
+    assert metadata["displacement_model"] == (
+        "jibson_2007_critical_acceleration_ratio"
+    )
+    assert metadata["displacement_aggregation"] == "candidate_mean"
+    assert metadata["calibrated_probability"] is False
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value"),
+    [
+        ("newmark_logistic_intercept", np.nan),
+        ("newmark_logistic_slope", 0.0),
+        ("newmark_logistic_reference_displacement", 0.0),
+        ("newmark_logistic_max_probability", 1.1),
+    ],
+)
+def test_newmark_logistic_rejects_invalid_parameters(keyword, value):
+    mg = make_grid(add_soil=True)
+
+    with pytest.raises(ValueError, match=keyword):
+        ShallowLandslider(mg, **{keyword: value})
 
 
 def test_hydrologic_selection_runs_at_zero_pga_and_exposes_weight():
@@ -591,6 +714,59 @@ def test_runout_updates_soil_depth_when_enabled():
     )
     assert len(runout_results["paths"]) == len(
         runout_results["path_proportions"]
+    )
+
+
+def test_runout_marks_deposits_as_failed_material_and_reduces_cohesion():
+    mg = make_runout_grid()
+    soil_before = mg.at_node["soil__depth"].copy()
+    intact_cohesion = 100.0
+    failed_cohesion = 20.0
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=intact_cohesion,
+        failed_material_cohesion=failed_cohesion,
+        angle_int_frict=10.0,
+        selection_method="all",
+        enable_runout=True,
+        update_soil=True,
+        runout_source_mode="selected",
+        runout_distance=20.0,
+        split_by_width_config=None,
+    )
+
+    comp.run_one_step()
+
+    deposition = mg.at_node["landslide__deposition"]
+    erosion = mg.at_node["landslide__erosion"]
+    final_depth = mg.at_node["soil__depth"]
+    fraction = mg.at_node["soil__failed_material_fraction"]
+    expected_fraction = np.zeros_like(final_depth)
+    np.divide(
+        deposition,
+        final_depth,
+        out=expected_fraction,
+        where=final_depth > 0.0,
+    )
+
+    assert np.any(deposition > 0.0)
+    np.testing.assert_allclose(fraction, expected_fraction)
+    np.testing.assert_allclose(
+        fraction * final_depth,
+        deposition,
+        atol=1.0e-12,
+    )
+    np.testing.assert_allclose(
+        final_depth,
+        soil_before - erosion + deposition,
+    )
+    np.testing.assert_allclose(
+        mg.at_node["soil__effective_cohesion"],
+        intact_cohesion * (1.0 - fraction) + failed_cohesion * fraction,
+    )
+    assert np.all(
+        mg.at_node["soil__effective_cohesion"][deposition > 0.0]
+        < intact_cohesion
     )
 
 

@@ -411,8 +411,22 @@ def prepare_config(
         )
     if float(soil.get("max_soil_depth", 1.5)) <= 0:
         raise ValueError("soil_params.max_soil_depth must be positive")
-    if float(soil.get("cohesion_eff", 15_000)) < 0:
+    intact_cohesion = float(soil.get("cohesion_eff", 15_000))
+    if not np.isfinite(intact_cohesion) or intact_cohesion < 0:
         raise ValueError("soil_params.cohesion_eff cannot be negative")
+    failed_cohesion = soil.get("failed_material_cohesion")
+    if failed_cohesion is not None:
+        failed_cohesion = float(failed_cohesion)
+        if not np.isfinite(failed_cohesion) or failed_cohesion < 0:
+            raise ValueError(
+                "soil_params.failed_material_cohesion must be finite and "
+                "non-negative"
+            )
+        if failed_cohesion > intact_cohesion:
+            raise ValueError(
+                "soil_params.failed_material_cohesion cannot exceed "
+                "soil_params.cohesion_eff"
+            )
     friction = float(soil.get("angle_int_frict", 30))
     if not 0 < friction < 90:
         raise ValueError("soil_params.angle_int_frict must be between 0 and 90 degrees")
@@ -979,6 +993,7 @@ def main():
         ls = ShallowLandslider(
             mg_full,
             cohesion_eff=soil_cfg.get("cohesion_eff", 15e3),
+            failed_material_cohesion=soil_cfg.get("failed_material_cohesion"),
             angle_int_frict=soil_cfg.get("angle_int_frict", 30),
             submerged_soil_proportion=soil_cfg.get("submerged_soil_proportion", 0.5),
             wetness_source=(
@@ -1113,6 +1128,7 @@ def main():
         ls_tile = ShallowLandslider(
             mg_tile,
             cohesion_eff=soil_cfg.get("cohesion_eff", 15e3),
+            failed_material_cohesion=soil_cfg.get("failed_material_cohesion"),
             angle_int_frict=soil_cfg.get("angle_int_frict", 30),
             submerged_soil_proportion=soil_cfg.get(
                 "submerged_soil_proportion", 0.5
@@ -1193,6 +1209,7 @@ def main():
     ls_global = ShallowLandslider(
         mg_global,
         cohesion_eff=soil_cfg.get("cohesion_eff", 15e3),
+        failed_material_cohesion=soil_cfg.get("failed_material_cohesion"),
         angle_int_frict=soil_cfg.get("angle_int_frict", 30),
         submerged_soil_proportion=soil_cfg.get(
             "submerged_soil_proportion", 0.5

@@ -62,6 +62,11 @@ chunking:
 
 soil_params:
   cohesion_eff: 15000
+  # Optional post-failure strength-memory experiment. When non-null, runout
+  # deposits are tracked as failed material and mixed by soil thickness with
+  # intact regolith. Must be between zero and cohesion_eff. This parameter is
+  # not calibrated; use sensitivity ensembles rather than a single best value.
+  failed_material_cohesion: null
   angle_int_frict: 30
   submerged_soil_proportion: 0.5
   max_soil_depth: 1.5

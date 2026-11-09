@@ -59,6 +59,34 @@ def test_invalid_options_fail_during_validation(section, key, value, message):
         prepare_config(config)
 
 
+@pytest.mark.parametrize("failed_cohesion", [-1.0, 15_001.0, np.nan])
+def test_invalid_failed_material_cohesion_is_rejected(failed_cohesion):
+    config = minimal_config()
+    config["soil_params"].update(
+        {
+            "cohesion_eff": 15_000.0,
+            "failed_material_cohesion": failed_cohesion,
+        }
+    )
+
+    with pytest.raises(ValueError, match="failed_material_cohesion"):
+        prepare_config(config)
+
+
+def test_failed_material_cohesion_is_accepted_when_weaker_than_intact_soil():
+    config = minimal_config()
+    config["soil_params"].update(
+        {
+            "cohesion_eff": 15_000.0,
+            "failed_material_cohesion": 3_000.0,
+        }
+    )
+
+    prepared = prepare_config(config)
+
+    assert prepared["soil_params"]["failed_material_cohesion"] == 3_000.0
+
+
 def test_runout_flag_dependencies_are_validated():
     config = minimal_config()
     config["simulation"]["enable_runout"] = True

@@ -220,6 +220,29 @@ class ShallowLandslider(Component):
                 "nodes must be finite and between zero and one."
             ),
         },
+        "soil__failed_material_fraction": {
+            "intent": "inout",
+            "mapping": "node",
+            "dtype": float,
+            "units": "-",
+            "optional": True,
+            "doc": (
+                "Thickness fraction of the soil column composed of previously "
+                "failed and redeposited material. Used when "
+                "failed_material_cohesion is configured."
+            ),
+        },
+        "soil__effective_cohesion": {
+            "intent": "out",
+            "mapping": "node",
+            "dtype": float,
+            "units": "Pa",
+            "optional": True,
+            "doc": (
+                "Depth-averaged effective cohesion calculated from intact and "
+                "failed-material fractions."
+            ),
+        },
         "earthquake__horizontal_pga": {
             "intent": "in",
             "mapping": "node",
@@ -288,6 +311,11 @@ class ShallowLandslider(Component):
         split_by_width_config: Optional[dict] = None,
         verbose: bool = False,
         n_jobs: int = 1,
+        failed_material_cohesion: float | None = None,
+        newmark_logistic_intercept: float = -3.05,
+        newmark_logistic_slope: float = 1.21,
+        newmark_logistic_reference_displacement: float = 0.01,
+        newmark_logistic_max_probability: float = 0.335,
     ):
         """
         Initialize the ShallowLandslider component.
@@ -297,7 +325,15 @@ class ShallowLandslider(Component):
         grid : landlab.ModelGrid
             Landlab grid on which the component operates.
         cohesion_eff : float
-            Effective cohesion (Pa). Scalar; array not required.
+            Effective cohesion of intact regolith (Pa).
+        failed_material_cohesion : float, optional
+            Effective cohesion (Pa) assigned to material after it has failed,
+            moved, and been redeposited by runout. When supplied, the component
+            maintains ``soil__failed_material_fraction`` and calculates a
+            depth-averaged ``soil__effective_cohesion`` between this value and
+            ``cohesion_eff``. It must not exceed ``cohesion_eff``. The default
+            ``None`` disables material-strength memory and preserves the
+            scalar-cohesion behavior.
         angle_int_frict : float
             Angle of internal friction **in degrees**.
         submerged_soil_proportion : float, optional
@@ -316,10 +352,13 @@ class ShallowLandslider(Component):
             supplied explicitly.
         aspect_interval : int, optional
             Degrees per aspect zone for subgrouping. Default 20.
-        selection_method : {"all", "probabilistic", "hydrologic", "pga_weighted"}
+        selection_method : {"all", "probabilistic", "newmark_logistic", "hydrologic", "pga_weighted"}
             Candidate selection strategy. ``"hydrologic"`` min-max inverts
             critical relative wetness over candidate nodes and uses the result
-            as an uncalibrated selection weight. Default "probabilistic".
+            as an uncalibrated selection weight. ``"newmark_logistic"`` uses
+            candidate-mean potential Newmark displacement in a capped logistic
+            occurrence curve and samples every candidate independently. Default
+            ``"probabilistic"``.
         proportion_method : str, optional
             Proportion rule for probabilistic selection (e.g., "conservative").
         random_seed : int, optional
@@ -381,6 +420,25 @@ class ShallowLandslider(Component):
         super().__init__(grid)
         self._initialize_required_output_fields()
         self.cohesion_eff = float(cohesion_eff)
+        self.failed_material_cohesion = (
+            None
+            if failed_material_cohesion is None
+            else float(failed_material_cohesion)
+        )
+        if not np.isfinite(self.cohesion_eff) or self.cohesion_eff < 0.0:
+            raise ValueError("cohesion_eff must be finite and non-negative")
+        if self.failed_material_cohesion is not None:
+            if (
+                not np.isfinite(self.failed_material_cohesion)
+                or self.failed_material_cohesion < 0.0
+            ):
+                raise ValueError(
+                    "failed_material_cohesion must be finite and non-negative"
+                )
+            if self.failed_material_cohesion > self.cohesion_eff:
+                raise ValueError(
+                    "failed_material_cohesion cannot exceed cohesion_eff"
+                )
         self.angle_int_frict = float(np.radians(angle_int_frict))
         self.submerged_soil_proportion = float(submerged_soil_proportion)
         self.wetness_source = str(wetness_source)
@@ -390,10 +448,20 @@ class ShallowLandslider(Component):
                 f"{self.wetness_source!r}"
             )
         self._relative_wetness = None
+        self._failed_material_fraction = None
+        self._effective_cohesion = None
         self.aspect_interval = int(aspect_interval)
         self.selection_method = str(selection_method)
         self.proportion_method = str(proportion_method)
         self.custom_proportion = custom_proportion
+        self.newmark_logistic_intercept = float(newmark_logistic_intercept)
+        self.newmark_logistic_slope = float(newmark_logistic_slope)
+        self.newmark_logistic_reference_displacement = float(
+            newmark_logistic_reference_displacement
+        )
+        self.newmark_logistic_max_probability = float(
+            newmark_logistic_max_probability
+        )
         self.handle_small = str(handle_small)
         self.random_seed = random_seed
         self.time_shaking = float(time_shaking)
@@ -447,12 +515,31 @@ class ShallowLandslider(Component):
         if self.selection_method not in {
             "all",
             "probabilistic",
+            "newmark_logistic",
             "hydrologic",
             "pga_weighted",
         }:
             raise ValueError(
                 "selection_method must be 'all', 'probabilistic', "
-                "'hydrologic', or 'pga_weighted'"
+                "'newmark_logistic', 'hydrologic', or 'pga_weighted'"
+            )
+        if not np.isfinite(self.newmark_logistic_intercept):
+            raise ValueError("newmark_logistic_intercept must be finite")
+        if not np.isfinite(self.newmark_logistic_slope) or self.newmark_logistic_slope <= 0.0:
+            raise ValueError("newmark_logistic_slope must be finite and positive")
+        if (
+            not np.isfinite(self.newmark_logistic_reference_displacement)
+            or self.newmark_logistic_reference_displacement <= 0.0
+        ):
+            raise ValueError(
+                "newmark_logistic_reference_displacement must be finite and positive"
+            )
+        if (
+            not np.isfinite(self.newmark_logistic_max_probability)
+            or not 0.0 < self.newmark_logistic_max_probability <= 1.0
+        ):
+            raise ValueError(
+                "newmark_logistic_max_probability must lie within (0, 1]"
             )
         if self.runout_source_mode not in {"newmark", "selected"}:
             raise ValueError(
@@ -483,6 +570,7 @@ class ShallowLandslider(Component):
                 "runout_source_mode='selected' requires runout_distance or the "
                 "landslide__runout_distance node field"
             )
+        self._initialize_variable_cohesion_fields()
         # Validate the configured wetness contract before creating optional
         # bedrock or PGA fields. Field mode is checked again before every
         # stability calculation because an external hydrology component may
@@ -514,6 +602,96 @@ class ShallowLandslider(Component):
             
             self._runout = ShallowLandslideRunout(grid)
 
+    def _initialize_variable_cohesion_fields(self) -> None:
+        """Create and validate persistent strength-memory fields when enabled."""
+        if self.failed_material_cohesion is None:
+            return
+
+        fraction_name = "soil__failed_material_fraction"
+        if fraction_name not in self.grid.at_node:
+            self.grid.add_zeros(fraction_name, at="node", dtype=float)
+        self._failed_material_fraction = self.grid.at_node[fraction_name]
+
+        cohesion_name = "soil__effective_cohesion"
+        if cohesion_name not in self.grid.at_node:
+            self.grid.add_zeros(cohesion_name, at="node", dtype=float)
+        self._effective_cohesion = self.grid.at_node[cohesion_name]
+        self._update_effective_cohesion()
+
+    def _update_effective_cohesion(self) -> np.ndarray | float:
+        """Refresh and return cohesion used by the stability equations."""
+        if self.failed_material_cohesion is None:
+            return self.cohesion_eff
+
+        fraction = np.asarray(self._failed_material_fraction, dtype=float)
+        expected = (self.grid.number_of_nodes,)
+        if fraction.shape != expected:
+            raise ValueError(
+                "soil__failed_material_fraction must have shape "
+                f"{expected}, got {fraction.shape}"
+            )
+        if not np.all(np.isfinite(fraction)):
+            raise ValueError("soil__failed_material_fraction must be finite")
+        if np.any((fraction < 0.0) | (fraction > 1.0)):
+            raise ValueError(
+                "soil__failed_material_fraction must be between zero and one"
+            )
+
+        self._effective_cohesion[:] = (
+            self.cohesion_eff * (1.0 - fraction)
+            + self.failed_material_cohesion * fraction
+        )
+        return self._effective_cohesion
+
+    def update_failed_material_after_runout(
+        self,
+        soil_depth_before: np.ndarray,
+        erosion: np.ndarray | None = None,
+        deposition: np.ndarray | None = None,
+    ) -> None:
+        """Conservatively mix newly failed deposits into the soil column.
+
+        Existing failed material is assumed vertically mixed, so erosion removes
+        it in proportion to the eroded thickness. Every transported deposit is
+        marked as failed material, including intact regolith mobilized during
+        the current event. This is a one-layer closure rather than a stratigraphic
+        model. External sequence drivers that run ``ShallowLandslideRunout``
+        directly should call this method after each transport step; omitted
+        erosion and deposition arrays are read from the grid's runout fields.
+        """
+        if self.failed_material_cohesion is None:
+            return
+
+        soil_depth_before = np.asarray(soil_depth_before, dtype=float)
+        if erosion is None:
+            erosion = self.grid.at_node["landslide__erosion"]
+        if deposition is None:
+            deposition = self.grid.at_node["landslide__deposition"]
+        erosion = np.asarray(erosion, dtype=float)
+        deposition = np.asarray(deposition, dtype=float)
+        fraction_before = np.asarray(
+            self._failed_material_fraction, dtype=float
+        ).copy()
+        remaining_depth = np.maximum(soil_depth_before - erosion, 0.0)
+        failed_depth_after = fraction_before * remaining_depth + deposition
+        soil_depth_after = np.asarray(self.grid.at_node["soil__depth"], dtype=float)
+
+        fraction_after = np.zeros_like(soil_depth_after)
+        np.divide(
+            failed_depth_after,
+            soil_depth_after,
+            out=fraction_after,
+            where=soil_depth_after > 0.0,
+        )
+        tolerance = 1.0e-12
+        if np.any(failed_depth_after > soil_depth_after + tolerance):
+            raise RuntimeError(
+                "failed-material bookkeeping exceeds the available soil depth"
+            )
+        np.clip(fraction_after, 0.0, 1.0, out=fraction_after)
+        self._failed_material_fraction[:] = fraction_after
+        self._update_effective_cohesion()
+
     def _initialize_required_output_fields(self):
         """Create required output fields for Landlab component metadata checks."""
         for name, meta in self._info.items():
@@ -540,6 +718,8 @@ class ShallowLandslider(Component):
         """
         return {
             "relative_wetness": self._relative_wetness,
+            "failed_material_fraction": self._failed_material_fraction,
+            "effective_cohesion": self._effective_cohesion,
             "critical_relative_wetness": self._critical_wetness,
             "factor_of_safety": self._fos,
             "a_transient": self._a_transient,
@@ -907,11 +1087,19 @@ class ShallowLandslider(Component):
             distances, dtype=float
         )[source_nodes]
 
+        soil_depth_before = self.grid.at_node["soil__depth"].copy()
+
         # Run even for an empty source set so runout-owned outputs from the
         # preceding event are cleared.
         self._runout.run_one_step(
             source_nodes=source_nodes,
             runout_distance=distances,
+        )
+
+        self.update_failed_material_after_runout(
+            soil_depth_before,
+            self.grid.at_node["landslide__erosion"],
+            self.grid.at_node["landslide__deposition"],
         )
 
         changed = np.any(
@@ -1022,10 +1210,15 @@ class ShallowLandslider(Component):
         with _log_stage("_compute_stability"):
             n_nodes = self.grid.number_of_nodes
             relative_wetness = self._get_relative_wetness()
+            cohesion = self._update_effective_cohesion()
             self._relative_wetness = relative_wetness
             core_wetness = relative_wetness[self.grid.core_nodes]
+            core_cohesion = np.broadcast_to(cohesion, (n_nodes,))[
+                self.grid.core_nodes
+            ]
             logger.debug(
-                f"  cohesion_eff={self.cohesion_eff:.1f} Pa | "
+                f"  cohesion_eff={float(np.min(core_cohesion)):.1f}–"
+                f"{float(np.max(core_cohesion)):.1f} Pa | "
                 f"phi={np.degrees(self.angle_int_frict):.1f}° | "
                 f"wetness_source={self.wetness_source} | "
                 f"m_min={float(np.min(core_wetness)):.3f} | "
@@ -1034,13 +1227,13 @@ class ShallowLandslider(Component):
 
             self._fos = self._factor_of_safety(
                 self.grid,
-                self.cohesion_eff,
+                cohesion,
                 self.angle_int_frict,
                 submerged_soil_proportion=relative_wetness,
             )
             self._critical_wetness = self._critical_relative_wetness(
                 self.grid,
-                self.cohesion_eff,
+                cohesion,
                 self.angle_int_frict,
             )
             fos_valid = self._fos[np.isfinite(self._fos)]
@@ -1060,7 +1253,7 @@ class ShallowLandslider(Component):
 
             a_c, a_s, a_diff = self._critical_transient_acceleration(
                 self.grid,
-                self.cohesion_eff,
+                cohesion,
                 self.angle_int_frict,
                 submerged_soil_proportion=relative_wetness,
                 a_h=self._pga_h * self.g,
@@ -1340,6 +1533,64 @@ class ShallowLandslider(Component):
                     f"proportion={self._selected_proportion:.4f}"
                 )
 
+            elif self.selection_method == "newmark_logistic":
+                probabilities, generation = (
+                    self._generate_newmark_logistic_probability(
+                        subgroup_array.reshape(self.grid.shape)
+                    )
+                )
+                unique_labels = np.unique(subgroup_array)
+                unique_labels = unique_labels[unique_labels > 0]
+                group_probabilities = np.asarray(
+                    _nd.mean(
+                        probabilities,
+                        labels=subgroup_array.reshape(self.grid.shape),
+                        index=unique_labels,
+                    ),
+                    dtype=float,
+                )
+                rng = np.random.default_rng(self.random_seed)
+                selected = unique_labels[
+                    rng.random(unique_labels.size) < group_probabilities
+                ]
+                lookup = np.zeros(int(subgroup_array.max()) + 1, dtype=bool)
+                lookup[selected] = True
+                selected_groups = np.where(
+                    lookup[subgroup_array], subgroup_array, 0
+                )
+                self._selected_labels = selected_groups.reshape(
+                    self.grid.number_of_nodes
+                )
+                self._selected_proportion = (
+                    float(selected.size / unique_labels.size)
+                    if unique_labels.size
+                    else 0.0
+                )
+                self._selection_weight = probabilities.reshape(
+                    self.grid.number_of_nodes
+                )
+                self._selection_metadata = {
+                    "weight_type": "newmark_logistic_occurrence_probability",
+                    "calibrated_probability": False,
+                    "generation": generation,
+                    "selection": {
+                        "method_used": "independent_bernoulli",
+                        "num_groups_total": int(unique_labels.size),
+                        "expected_groups_selected": float(
+                            np.sum(group_probabilities)
+                        ),
+                        "num_groups_selected": int(selected.size),
+                        "selected_labels": selected.tolist(),
+                    },
+                }
+                logger.info(
+                    "  Newmark-logistic selection retained %s / %s groups "
+                    "(expected %.1f)",
+                    f"{selected.size:,}",
+                    f"{unique_labels.size:,}",
+                    float(np.sum(group_probabilities)),
+                )
+
             elif self.selection_method == "hydrologic":
                 weights, weight_meta = self._generate_hydrologic_selection_weight(
                     labeled_2d=subgroup_array.reshape(self.grid.shape),
@@ -1471,7 +1722,7 @@ class ShallowLandslider(Component):
     def _factor_of_safety(
         self,
         grid,
-        cohesion_eff: float,
+        cohesion_eff: float | np.ndarray,
         angle_int_frict_rad: float,
         submerged_soil_proportion: float | np.ndarray = 0.5,
         soil_unit_weight: float = 15e3,
@@ -1512,7 +1763,7 @@ class ShallowLandslider(Component):
     def _critical_relative_wetness(
         self,
         grid,
-        cohesion_eff: float,
+        cohesion_eff: float | np.ndarray,
         angle_int_frict_rad: float,
         soil_unit_weight: float = 15e3,
         water_unit_weight: float = 9.8e3,
@@ -1562,7 +1813,7 @@ class ShallowLandslider(Component):
     def _critical_transient_acceleration(
         self,
         grid,
-        cohesion_eff: float,
+        cohesion_eff: float | np.ndarray,
         angle_int_frict: float,
         submerged_soil_proportion: float | np.ndarray,
         a_h: np.ndarray | float = 0.0,
@@ -1578,7 +1829,7 @@ class ShallowLandslider(Component):
         Parameters
         ----------
         grid : landlab.ModelGrid
-        cohesion_eff : float
+        cohesion_eff : float or array-like
         angle_int_frict : float
         submerged_soil_proportion : float or array-like
             Relative wetness as a scalar or one value per node.
@@ -2293,6 +2544,103 @@ class ShallowLandslider(Component):
     # ---------------------------------------------------------------------
     # SELECTION (inlined from selection.py)
     # ---------------------------------------------------------------------
+    def _generate_newmark_logistic_probability(
+        self, labeled_2d: np.ndarray
+    ) -> Tuple[np.ndarray, dict]:
+        """Return candidate occurrence probabilities from empirical displacement.
+
+        Candidate-node displacement is estimated with the Jibson (2007)
+        critical-acceleration-ratio regression, in centimetres, then averaged
+        by candidate. Probabilities use a capped logistic curve in
+        log-displacement space. The defaults approximate the Jibson et al.
+        occurrence curve and are an external prior, not a Nepal calibration.
+        """
+        labels = np.asarray(labeled_2d)
+        if labels.shape != self.grid.shape:
+            raise ValueError("labeled_2d must match the grid shape")
+        unique_labels = np.unique(labels)
+        unique_labels = unique_labels[unique_labels > 0]
+        probabilities = np.zeros(self.grid.shape, dtype=np.float32)
+        if unique_labels.size == 0:
+            return probabilities, {
+                "performed": False,
+                "reason": "No candidate groups",
+                "calibrated_probability": False,
+            }
+
+        critical_acceleration = np.maximum(
+            np.asarray(self._a_transient, dtype=float), 0.0
+        ).reshape(self.grid.shape)
+        horizontal_pga = np.maximum(
+            np.asarray(self._pga_h, dtype=float) * self.g, 0.0
+        ).reshape(self.grid.shape)
+        ratio = np.ones(self.grid.shape, dtype=float)
+        np.divide(
+            critical_acceleration,
+            horizontal_pga,
+            out=ratio,
+            where=horizontal_pga > 0.0,
+        )
+        valid = (horizontal_pga > 0.0) & (ratio > 0.0) & (ratio < 1.0)
+        empirical_displacement_cm = np.zeros(self.grid.shape, dtype=float)
+        empirical_displacement_cm[valid] = (
+            10.0**0.215
+            * (1.0 - ratio[valid]) ** 2.341
+            * ratio[valid] ** -1.438
+        )
+        empirical_displacement_m = empirical_displacement_cm / 100.0
+        group_displacement = np.asarray(
+            _nd.mean(
+                empirical_displacement_m,
+                labels=labels,
+                index=unique_labels,
+            ),
+            dtype=float,
+        )
+        group_probability = np.zeros(unique_labels.size, dtype=float)
+        positive = group_displacement > 0.0
+        log_ratio = np.log(
+            group_displacement[positive]
+            / self.newmark_logistic_reference_displacement
+        )
+        group_probability[positive] = self.newmark_logistic_max_probability * (
+            _expit(
+                self.newmark_logistic_intercept
+                + self.newmark_logistic_slope * log_ratio
+            )
+        )
+        lookup = np.zeros(int(labels.max()) + 1, dtype=np.float32)
+        lookup[unique_labels] = group_probability.astype(np.float32)
+        probabilities[:] = lookup[labels]
+        return probabilities, {
+            "performed": True,
+            "calibrated_probability": False,
+            "displacement_model": "jibson_2007_critical_acceleration_ratio",
+            "displacement_aggregation": "candidate_mean",
+            "displacement_units": "m",
+            "intercept": self.newmark_logistic_intercept,
+            "slope": self.newmark_logistic_slope,
+            "reference_displacement_m": (
+                self.newmark_logistic_reference_displacement
+            ),
+            "maximum_probability": self.newmark_logistic_max_probability,
+            "expected_groups_selected": float(np.sum(group_probability)),
+            "candidate_displacement_quantiles_m": {
+                str(quantile): float(np.quantile(group_displacement, quantile))
+                for quantile in (0.0, 0.1, 0.5, 0.9, 1.0)
+            },
+            "group_details": [
+                {
+                    "label": int(label),
+                    "mean_empirical_displacement_m": float(displacement),
+                    "occurrence_probability": float(probability),
+                }
+                for label, displacement, probability in zip(
+                    unique_labels, group_displacement, group_probability
+                )
+            ],
+        }
+
     def _generate_hydrologic_selection_weight(
         self,
         labeled_2d: np.ndarray,

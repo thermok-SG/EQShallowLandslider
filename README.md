@@ -168,6 +168,28 @@ When `evolve_landscape=True`, the parent component also updates
 event, the driver must rerun flow routing and any hydrology tied to the changed
 terrain, then call `acknowledge_external_state_updated()`.
 
+### Experimental post-failure cohesion memory
+
+Set `failed_material_cohesion` to a value no greater than `cohesion_eff` to
+track weaker material after runout. The component creates the persistent node
+field `soil__failed_material_fraction`. Newly transported deposits are marked
+as failed material; erosion removes the pre-existing failed fraction in
+proportion to the eroded soil thickness. Effective node cohesion is then
+
+```text
+C_eff = (1 - f_failed) * C_intact + f_failed * C_failed
+```
+
+and is exposed as `soil__effective_cohesion`. Both fields persist between
+events, so deposited material can remain more susceptible after hydrologic or
+seismic forcing has relaxed. The default `failed_material_cohesion=None`
+disables this experiment and exactly preserves scalar cohesion.
+
+This is a depth-averaged one-layer closure, not a layered failure-plane or
+strength-recovery model. The failed cohesion must be calibrated or sampled in
+a sensitivity analysis. Remoulding may also alter friction, density,
+permeability, and water retention; those effects are not represented here.
+
 The latest runout diagnostics are available at `ls.results["runout"]`:
 
 | Key | Meaning |
@@ -926,6 +948,7 @@ You can control simulation parameters via:
 | Parameter                | Description                                      |
 |-------------------------|--------------------------------------------------|
 | `cohesion_eff`         | Soil effective cohesion (Pa)                     |
+| `failed_material_cohesion` | Optional cohesion of failed and redeposited material (Pa) |
 | `angle_int_frict`      | Internal friction angle (degrees)               |
 | `submerged_soil_proportion` | Fraction of soil saturated                   |
 | `wetness_source`       | `"constant"` or live `"field"` relative wetness |
@@ -964,6 +987,8 @@ When runout is enabled, its own state-changing output fields are also present:
 - `landslide__deposition` when runout is enabled
 - `landslide__soil_depth_change` when runout is enabled
 - updated `soil__depth` when runout is enabled
+- `soil__failed_material_fraction` when post-failure cohesion memory is enabled
+- `soil__effective_cohesion` when post-failure cohesion memory is enabled
 - `ls.results["group_properties"]` (DataFrame with region metrics)
 - `ls.results["runout"]` (multiflow sources, paths, proportions, and mass-change diagnostics)
 
