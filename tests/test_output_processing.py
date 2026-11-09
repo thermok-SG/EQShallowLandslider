@@ -115,6 +115,11 @@ def test_save_model_run_writes_v12_analysis_bundle(tmp_path):
     assert manifest["model"]["version"] == "1.2.0"
     assert manifest["runtime"]["execution_mode"] == "chunked"
     assert manifest["grid"]["shape"] == [4, 4]
+    with open(run_dir / "parameters.json", encoding="utf-8") as stream:
+        parameters = json.load(stream)
+    assert parameters["configured"] == make_config()
+    assert parameters["resolved"]["soil"]["cohesion_eff_pa"] == 15000
+    assert parameters["resolved"]["runout"]["deposition_model"] == "endpoint"
     assert (run_dir / "rasters" / "selected_labels.npy").exists()
     assert (run_dir / "rasters" / "filled_region_labels.npy").exists()
     assert (run_dir / "rasters" / "hole_fill_mask.npy").exists()
@@ -196,6 +201,9 @@ def test_save_model_run_includes_runout_diagnostics(tmp_path):
     assert loaded["summary"]["selected_and_runout_overlap_node_count"] == 3
     assert loaded["summary"]["combined_affected_footprint_node_count"] == 16
     assert np.isclose(loaded["summary"]["runout_mass_balance_error_node_m"], 0.0)
+    assert np.isclose(loaded["summary"]["runout_mass_balance_error_m3"], 0.0)
+    assert loaded["summary"]["runout_max_source_mass_balance_error_node_m"] == 0.0
+    assert loaded["summary"]["runout_deposition_model"] == "endpoint"
     assert loaded["summary"]["negative_final_soil_depth_node_count"] == 0
     assert loaded["summary"]["failed_material_node_count"] == 15
     assert loaded["summary"]["effective_cohesion_min_pa"] == 6_000.0

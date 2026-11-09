@@ -635,6 +635,23 @@ def prepare_config(
             ShallowLandslider._validate_claessens_parameters(claessens)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid simulation.runout_claessens: {exc}") from exc
+    deposition_model = simulation.get("runout_deposition_model", "endpoint")
+    if deposition_model not in {"endpoint", "bedrock"}:
+        raise ValueError(
+            "simulation.runout_deposition_model must be endpoint or bedrock"
+        )
+    deposition = simulation.get("runout_deposition")
+    if deposition is not None and not isinstance(deposition, dict):
+        raise ValueError("simulation.runout_deposition must be a YAML mapping")
+    try:
+        ShallowLandslider._validate_runout_deposition_parameters(
+            deposition,
+            default_critical_slope=float(
+                config["soil_params"].get("angle_int_frict", 30.0)
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid simulation.runout_deposition: {exc}") from exc
     if runout and not update_soil:
         raise ValueError(
             "simulation.enable_runout requires update_soil"
@@ -1029,6 +1046,12 @@ def main():
             ),
             runout_claessens_parameters=config["simulation"].get(
                 "runout_claessens"
+            ),
+            runout_deposition_model=config["simulation"].get(
+                "runout_deposition_model", "endpoint"
+            ),
+            runout_deposition_parameters=config["simulation"].get(
+                "runout_deposition"
             ),
             evolve_landscape=config["simulation"].get(
                 "evolve_landscape", False

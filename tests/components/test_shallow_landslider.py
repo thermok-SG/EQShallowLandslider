@@ -42,6 +42,29 @@ def make_runout_grid(ny=8, nx=8, spacing=10.0):
     return mg
 
 
+def make_linear_runout_grid():
+    """Return a hand-routed row for exact progressive-deposition tests."""
+    mg = RasterModelGrid((3, 7), xy_spacing=10.0)
+    elevation = mg.add_zeros("topographic__elevation", at="node")
+    soil = mg.add_zeros("soil__depth", at="node")
+    receivers = mg.add_field(
+        "hill_flow__receiver_node",
+        np.repeat(np.arange(mg.number_of_nodes)[:, None], 2, axis=1),
+        at="node",
+    )
+    proportions = mg.add_field(
+        "hill_flow__receiver_proportions",
+        np.zeros((mg.number_of_nodes, 2)),
+        at="node",
+    )
+    proportions[:, 0] = 1.0
+
+    path = np.array([8, 9, 10, 11, 12])
+    receivers[path[:-1], 0] = path[1:]
+    soil[path[0]] = 1.0
+    return mg, path, elevation
+
+
 def test_initialization_creates_optional_fields():
     mg = make_grid()
     assert "soil__depth" not in mg.at_node
@@ -638,6 +661,56 @@ def test_claessens_default_parameters_are_published_values():
     }
 
 
+def test_claessens_auto_threshold_uses_bounded_landscape_percentile():
+    mg = make_runout_grid()
+    comp = ShallowLandslider(
+        mg,
+        runout_distance_model="claessens",
+        runout_claessens_parameters={
+            "minimum_movement_slope": "auto",
+            "landscape_slope_percentile": 50.0,
+            "landscape_slope_bounds": [8.0, 18.0],
+        },
+    )
+    comp._slope_deg32[mg.core_nodes] = np.linspace(2.0, 42.0, mg.core_nodes.size)
+
+    expected = np.clip(
+        np.percentile(comp._slope_deg32[mg.core_nodes], 50.0), 8.0, 18.0
+    )
+
+    assert comp._resolve_claessens_slope_threshold() == pytest.approx(expected)
+    assert comp.results["runout_claessens_slope_threshold"] == pytest.approx(
+        expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"minimum_movement_slope": "regional"}, "number or 'auto'"),
+        (
+            {
+                "minimum_movement_slope": "auto",
+                "landscape_slope_percentile": 101.0,
+            },
+            "percentile",
+        ),
+        (
+            {
+                "minimum_movement_slope": "auto",
+                "landscape_slope_bounds": [30.0, 5.0],
+            },
+            "bounds",
+        ),
+    ],
+)
+def test_claessens_auto_threshold_rejects_invalid_configuration(
+    parameters, message
+):
+    with pytest.raises(ValueError, match=message):
+        ShallowLandslider._validate_claessens_parameters(parameters)
+
+
 def test_selected_runout_requires_distance_provider():
     mg = make_runout_grid()
 
@@ -794,6 +867,143 @@ def test_runout_restores_source_to_endpoint_transport():
     assert updated[13] == 1.5
     assert updated[25] == 1.5
     assert np.sum(erosion) == np.sum(deposition) == 1.0
+
+
+def test_bedrock_deposition_is_nonlinear_along_the_distance_limited_path():
+    mg, path, elevation = make_linear_runout_grid()
+    # Incoming material first reaches node 9. Its local gradient is 0.5, then
+    # node 10 has gradient 0.25. With Sc=1, deposited fractions are 0.75 and
+    # 0.9375 of the remaining mass, respectively. The flat node 11 traps the
+    # residual.
+    elevation[path] = [40.0, 30.0, 25.0, 22.5, 22.5]
+    runout = ShallowLandslideRunout(mg)
+
+    runout.run_one_step(
+        source_nodes=np.array([path[0]]),
+        runout_distance=100.0,
+        deposition_model="bedrock",
+        deposition_critical_slope=1.0,
+    )
+
+    deposition = runout.results["deposition"]
+    assert deposition[path[1]] == pytest.approx(0.75)
+    assert deposition[path[2]] == pytest.approx(0.25 * 0.9375)
+    assert deposition[path[3]] == pytest.approx(0.25 * 0.0625)
+    assert np.sum(runout.results["erosion"]) == pytest.approx(1.0)
+    assert np.sum(deposition) == pytest.approx(1.0)
+    assert runout.results["deposition_model"] == "bedrock"
+    assert runout.results["deposition_critical_slope"] == 1.0
+    assert runout.results["mass_balance_error"] == pytest.approx(0.0)
+    assert all(
+        error == pytest.approx(0.0)
+        for error in runout.results["source_mass_balance_errors"].values()
+    )
+
+
+def test_bedrock_deposition_retains_residual_at_hard_distance_limit():
+    mg, path, elevation = make_linear_runout_grid()
+    elevation[path] = [50.0, 40.0, 30.0, 20.0, 10.0]
+    runout = ShallowLandslideRunout(mg)
+
+    runout.run_one_step(
+        source_nodes=np.array([path[0]]),
+        runout_distance=20.0,
+        deposition_model="bedrock",
+        deposition_critical_slope=0.5,
+    )
+
+    deposition = runout.results["deposition"]
+    assert deposition[path[1]] == 0.0
+    assert deposition[path[2]] == pytest.approx(1.0)
+    assert np.sum(deposition) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("critical_slope", [None, 0.0, np.nan])
+def test_bedrock_deposition_requires_positive_critical_slope(critical_slope):
+    mg, path, _ = make_linear_runout_grid()
+    runout = ShallowLandslideRunout(mg)
+
+    with pytest.raises(ValueError, match="deposition_critical_slope"):
+        runout.run_one_step(
+            source_nodes=np.array([path[0]]),
+            runout_distance=20.0,
+            deposition_model="bedrock",
+            deposition_critical_slope=critical_slope,
+        )
+
+
+def test_component_converts_bedrock_critical_slope_from_degrees():
+    mg = make_runout_grid()
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=1.0,
+        angle_int_frict=30.0,
+        selection_method="all",
+        enable_runout=True,
+        update_soil=True,
+        runout_source_mode="selected",
+        runout_distance=30.0,
+        runout_deposition_model="bedrock",
+        runout_deposition_parameters={"critical_slope": 45.0},
+        split_by_width_config=None,
+    )
+
+    comp.run_one_step()
+
+    assert comp.results["runout"]["deposition_model"] == "bedrock"
+    assert comp.results["runout"]["deposition_critical_slope"] == pytest.approx(
+        1.0
+    )
+    np.testing.assert_allclose(
+        np.sum(comp.results["runout"]["erosion"]),
+        np.sum(comp.results["runout"]["deposition"]),
+    )
+
+
+def test_progressive_deposits_conserve_failed_material_and_update_cohesion():
+    mg, path, elevation = make_linear_runout_grid()
+    elevation[path] = [40.0, 30.0, 25.0, 22.5, 22.5]
+    mg.at_node["soil__depth"][path[1:]] = 1.0
+    failed_fraction = mg.add_zeros(
+        "soil__failed_material_fraction", at="node"
+    )
+    failed_fraction[path[1]] = 0.2
+    comp = ShallowLandslider(
+        mg,
+        cohesion_eff=100.0,
+        failed_material_cohesion=20.0,
+    )
+    runout = ShallowLandslideRunout(mg)
+    soil_before = mg.at_node["soil__depth"].copy()
+    fraction_before = failed_fraction.copy()
+
+    runout.run_one_step(
+        source_nodes=np.array([path[0]]),
+        runout_distance=100.0,
+        deposition_model="bedrock",
+        deposition_critical_slope=1.0,
+    )
+    comp.update_failed_material_after_runout(
+        soil_before,
+        runout.results["erosion"],
+        runout.results["deposition"],
+    )
+
+    erosion = runout.results["erosion"]
+    deposition = runout.results["deposition"]
+    final_soil = mg.at_node["soil__depth"]
+    expected_failed_depth = (
+        fraction_before * (soil_before - erosion) + deposition
+    )
+    np.testing.assert_allclose(failed_fraction * final_soil, expected_failed_depth)
+    np.testing.assert_allclose(
+        mg.at_node["soil__effective_cohesion"],
+        100.0 * (1.0 - failed_fraction) + 20.0 * failed_fraction,
+    )
+    assert comp.results["failed_material_mass_balance_error"] == pytest.approx(
+        0.0
+    )
+    assert np.sum(erosion) == pytest.approx(np.sum(deposition))
 
 
 def test_runout_accepts_trigger_neutral_sources_and_source_distances():

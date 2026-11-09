@@ -71,6 +71,19 @@ every edited line.
 
 ### Trigger-independent runout foundation
 
+- Added an opt-in, distance-limited `bedrock` deposition rule. Incoming
+  material deposits nonlinearly along aggregated Quinn paths as
+  `1 - (S / Sc)^2` below a critical slope, while residual material remains
+  bounded by the existing Newmark, Claessens, or prescribed travel distance.
+  Endpoint deposition remains the default.
+- Added landscape-adaptive Claessens movement thresholds using a configurable,
+  bounded percentile of positive core-node slopes. Fixed 10-degree behavior is
+  retained as the component default, and the resolved threshold is audited.
+- Added runtime per-source and domain mass-conservation checks, explicit mass
+  error diagnostics, and failed-material conservation checks so progressive
+  deposits remain consistent with variable-cohesion mixing.
+- Added `parameters.json` to every CLI run bundle, recording the complete input
+  configuration alongside resolved component and runout parameters.
 - Added `runout_distance_model="prescribed" | "claessens"` for selected-source
   runout. The Claessens option uses the published group-head elevation-loss
   criterion with explicit movement-slope and runout-fraction parameters.

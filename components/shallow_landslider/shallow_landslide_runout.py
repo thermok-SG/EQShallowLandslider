@@ -95,6 +95,12 @@ class ShallowLandslideRunout(Component):
         self._last_source_path_counts = {}
         self._last_erosion = np.zeros(grid.number_of_nodes, dtype=float)
         self._last_deposition = np.zeros(grid.number_of_nodes, dtype=float)
+        self._last_deposition_model = "endpoint"
+        self._last_deposition_critical_slope = None
+        self._last_source_eroded_depths = {}
+        self._last_source_deposited_depths = {}
+        self._last_source_mass_balance_errors = {}
+        self._last_mass_balance_error = 0.0
 
         required = (
             "hill_flow__receiver_node",
@@ -140,6 +146,12 @@ class ShallowLandslideRunout(Component):
             "erosion": self._last_erosion,
             "deposition": self._last_deposition,
             "soil_depth_change": self._grid.at_node["landslide__soil_depth_change"],
+            "deposition_model": self._last_deposition_model,
+            "deposition_critical_slope": self._last_deposition_critical_slope,
+            "source_eroded_depths": self._last_source_eroded_depths,
+            "source_deposited_depths": self._last_source_deposited_depths,
+            "source_mass_balance_errors": self._last_source_mass_balance_errors,
+            "mass_balance_error": self._last_mass_balance_error,
         }
 
     def run_one_step(
@@ -147,6 +159,8 @@ class ShallowLandslideRunout(Component):
         source_nodes: np.ndarray | None = None,
         runout_distance: float | np.ndarray | None = None,
         return_paths: bool = False,
+        deposition_model: str = "endpoint",
+        deposition_critical_slope: float | None = None,
         *,
         failed_nodes: np.ndarray | None = None,
     ):
@@ -166,6 +180,16 @@ class ShallowLandslideRunout(Component):
             source. The default aggregates paths that reconverge at the same
             node and travel distance, which preserves endpoint transport while
             avoiding exponential branch enumeration.
+        deposition_model : {"endpoint", "bedrock"}, optional
+            ``"endpoint"`` deposits all material where a branch terminates.
+            ``"bedrock"`` progressively deposits material along the route
+            using the nonlinear transport-length relation implemented by
+            Landlab's BedrockLandslider, while retaining ``runout_distance`` as
+            a hard travel limit.
+        deposition_critical_slope : float, optional
+            Critical slope as a dimensionless gradient (m/m) for ``"bedrock"``
+            deposition. It must be finite and positive. Not used by endpoint
+            deposition.
         failed_nodes : array-like of int, optional
             Compatibility alias for ``source_nodes``. Do not supply both.
 
@@ -191,6 +215,30 @@ class ShallowLandslideRunout(Component):
         if runout_distance is None:
             raise TypeError("runout_distance is required")
 
+        deposition_model = str(deposition_model).lower()
+        if deposition_model not in {"endpoint", "bedrock"}:
+            raise ValueError("deposition_model must be 'endpoint' or 'bedrock'")
+        if deposition_model == "bedrock":
+            if deposition_critical_slope is None:
+                raise ValueError(
+                    "deposition_critical_slope is required for bedrock deposition"
+                )
+            deposition_critical_slope = float(deposition_critical_slope)
+            if (
+                not np.isfinite(deposition_critical_slope)
+                or deposition_critical_slope <= 0.0
+            ):
+                raise ValueError(
+                    "deposition_critical_slope must be finite and positive"
+                )
+            if return_paths:
+                raise ValueError(
+                    "return_paths=True is not supported with progressive "
+                    "bedrock deposition"
+                )
+        else:
+            deposition_critical_slope = None
+
         source_nodes = self._validate_source_nodes(source_nodes)
         distances = self._normalize_runout_distance(runout_distance, source_nodes)
 
@@ -206,6 +254,12 @@ class ShallowLandslideRunout(Component):
         self._last_path_details = {}
         self._last_source_proportion_sums = {}
         self._last_source_path_counts = {}
+        self._last_deposition_model = deposition_model
+        self._last_deposition_critical_slope = deposition_critical_slope
+        self._last_source_eroded_depths = {}
+        self._last_source_deposited_depths = {}
+        self._last_source_mass_balance_errors = {}
+        self._last_mass_balance_error = 0.0
 
         if source_nodes.size == 0:
             self._last_erosion = erosion_field.copy()
@@ -219,7 +273,12 @@ class ShallowLandslideRunout(Component):
             branch_counts = None
         else:
             paths, proportions, details, branch_counts = (
-                self._trace_aggregated_landslide_endpoints(source_nodes, distances)
+                self._trace_aggregated_landslide_endpoints(
+                    source_nodes,
+                    distances,
+                    deposition_model=deposition_model,
+                    deposition_critical_slope=deposition_critical_slope,
+                )
             )
         self._last_paths = paths
         self._last_path_proportions = np.asarray(proportions, dtype=float)
@@ -236,6 +295,17 @@ class ShallowLandslideRunout(Component):
             )
         if branch_counts is not None:
             self._last_source_path_counts = branch_counts
+
+        invalid_source_sums = {
+            source: total
+            for source, total in self._last_source_proportion_sums.items()
+            if not np.isclose(total, 1.0, rtol=1.0e-12, atol=1.0e-12)
+        }
+        if invalid_source_sums:
+            raise RuntimeError(
+                "runout routing failed to conserve one or more source proportions: "
+                f"{invalid_source_sums}"
+            )
 
         soil, erosion, deposition = self._update_soil_depth(
             paths,
@@ -383,15 +453,19 @@ class ShallowLandslideRunout(Component):
         self,
         source_nodes,
         runout_distances,
+        deposition_model="endpoint",
+        deposition_critical_slope=None,
     ):
         """Route source mass without enumerating equivalent Quinn branches.
 
         Paths that arrive at the same node after the same raster travel
         distance have identical downstream behaviour. Combining their weights
-        preserves endpoint mass exactly while avoiding exponential duplication
-        after flow paths reconverge. One representative path is retained per
-        source/end-node pair for diagnostics; ``branch_counts`` records the
-        number of terminated unaggregated branches represented by those paths.
+        preserves transported mass exactly while avoiding exponential
+        duplication after flow paths reconverge. With progressive deposition,
+        moving mass is reduced at each state before its remainder is split
+        among receivers. One representative path is retained per
+        source/deposition-node pair for diagnostics; ``branch_counts`` records
+        the number of unaggregated branch contributions represented by them.
         """
         grid = self._grid
         receiver_nodes = grid.at_node["hill_flow__receiver_node"]
@@ -429,6 +503,23 @@ class ShallowLandslideRunout(Component):
                 state = (int(current), round(float(dist), 9))
                 prop = pending_weights.pop(state)
                 count = pending_counts.pop(state)
+
+                if deposition_model == "bedrock" and current != source:
+                    deposited_fraction = self._bedrock_deposition_fraction(
+                        current,
+                        receiver_nodes,
+                        receiver_props,
+                        elevation,
+                        deposition_critical_slope,
+                    )
+                    deposited_weight = prop * deposited_fraction
+                    if deposited_weight > 0.0:
+                        terminate(state, deposited_weight, count)
+                        prop -= deposited_weight
+                    if prop <= np.finfo(float).eps:
+                        if prop > 0.0:
+                            terminate(state, prop, count)
+                        continue
 
                 if dist >= max_dist:
                     terminate(state, prop, count)
@@ -489,6 +580,41 @@ class ShallowLandslideRunout(Component):
 
         return final_paths, final_proportions, path_details, branch_counts
 
+    def _bedrock_deposition_fraction(
+        self,
+        node,
+        receiver_nodes,
+        receiver_props,
+        elevation,
+        critical_slope,
+    ):
+        """Return the nonlinear fraction deposited from incoming material.
+
+        BedrockLandslider defines a transport length
+        ``L = dx / (1 - (S / Sc)**2)`` below the critical slope ``Sc``.
+        Its raster update therefore deposits the fraction ``dx / L`` at a
+        node. Here ``S`` is the steepest valid downhill hillslope-receiver
+        gradient, matching that component while leaving routing and the hard
+        runout-distance limit unchanged.
+        """
+        recs = np.asarray(receiver_nodes[node], dtype=int)
+        props = np.asarray(receiver_props[node], dtype=float)
+        valid = (props > 0.0) & (recs >= 0) & (recs != node)
+        if not np.any(valid):
+            return 1.0
+
+        receivers = recs[valid]
+        distances = np.hypot(
+            self._grid.node_x[receivers] - self._grid.node_x[node],
+            self._grid.node_y[receivers] - self._grid.node_y[node],
+        )
+        slopes = (elevation[node] - elevation[receivers]) / distances
+        downhill = slopes[np.isfinite(slopes) & (slopes > 0.0)]
+        local_slope = float(np.max(downhill)) if downhill.size else 0.0
+        if local_slope >= critical_slope:
+            return 0.0
+        return float(np.clip(1.0 - (local_slope / critical_slope) ** 2, 0.0, 1.0))
+
     def _update_soil_depth(
         self,
         paths,
@@ -504,6 +630,10 @@ class ShallowLandslideRunout(Component):
         soil = soil_depth.copy()
         erosion = np.zeros_like(soil)
         deposition = np.zeros_like(soil)
+        self._last_source_eroded_depths = {}
+        self._last_source_deposited_depths = {}
+        self._last_source_mass_balance_errors = {}
+        self._last_mass_balance_error = 0.0
 
         paths_by_source = {}
         for path, prop in zip(paths, proportions):
@@ -519,9 +649,13 @@ class ShallowLandslideRunout(Component):
             total_weight = sum(weight for _, weight, _ in endpoints)
             has_moving_path = any(moved for _, _, moved in endpoints)
             if available <= 0 or total_weight <= 0 or not has_moving_path:
+                self._last_source_eroded_depths[src] = 0.0
+                self._last_source_deposited_depths[src] = 0.0
+                self._last_source_mass_balance_errors[src] = 0.0
                 continue
 
             remaining = available
+            deposited = 0.0
             for index, (dst, weight, _) in enumerate(endpoints):
                 moved = (
                     remaining
@@ -531,9 +665,33 @@ class ShallowLandslideRunout(Component):
                 moved = min(max(moved, 0.0), remaining)
                 remaining -= moved
                 deposition[dst] += moved
-            erosion[src] = available - remaining
+                deposited += moved
+            eroded = available - remaining
+            erosion[src] = eroded
+            self._last_source_eroded_depths[src] = eroded
+            self._last_source_deposited_depths[src] = deposited
+            self._last_source_mass_balance_errors[src] = deposited - eroded
 
         soil -= erosion
         soil += deposition
+
+        self._last_mass_balance_error = float(
+            np.sum(deposition, dtype=float) - np.sum(erosion, dtype=float)
+        )
+        tolerance = 1.0e-12 * max(
+            1.0,
+            float(np.sum(np.abs(erosion), dtype=float)),
+            float(np.sum(np.abs(deposition), dtype=float)),
+        )
+        if any(
+            abs(error) > tolerance
+            for error in self._last_source_mass_balance_errors.values()
+        ) or abs(self._last_mass_balance_error) > tolerance:
+            raise RuntimeError(
+                "runout deposition failed source or domain mass conservation"
+            )
+        if np.any(soil < -tolerance):
+            raise RuntimeError("runout transport produced a negative soil depth")
+        soil[soil < 0.0] = 0.0
 
         return soil, erosion, deposition

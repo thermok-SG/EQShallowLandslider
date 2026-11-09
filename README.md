@@ -116,8 +116,10 @@ stability and selection stages have decided which material is mobile.
   region.
 - The source's original soil column is divided among its terminated branch
   proportions and excavated exactly once.
-- Material is deposited only at branch endpoints. An intermediate routing node
-  is not eroded or deposited upon merely because another path crosses it; it
+- With `runout_deposition_model="endpoint"` (the backward-compatible default),
+  material is deposited only at branch endpoints. With `"bedrock"`, material
+  deposits progressively at traversed nodes and only the remainder continues.
+  A routing node is never excavated merely because another path crosses it; it
   can nevertheless be excavated independently if it is also a runout source.
 - A source with no valid moving path is retained rather than artificially
   excavated.
@@ -142,17 +144,37 @@ L = steepest-descent distance to deposition start + R
 ```
 
 Deposition starts at the first node on the reference steepest-descent path
-whose local slope is below `minimum_movement_slope`. Defaults reproduce the
-published example values `fraction: 0.4` and
-`minimum_movement_slope: 10.0`. These values are not calibrated for Nepal.
+whose local slope is below `minimum_movement_slope`. The component default
+reproduces the published example values `fraction: 0.4` and
+`minimum_movement_slope: 10.0`. Alternatively, set the slope to `"auto"`.
+The auto rule takes `landscape_slope_percentile` (default 25) of finite,
+positive core-node slopes and clips it to `landscape_slope_bounds` (default
+5–30 degrees). This makes the onset terrain-responsive and reproducible, but
+it is a landscape statistic rather than a calibrated material property; retain
+the percentile, bounds, and resolved threshold in experiment comparisons.
 If the reference path reaches the model boundary without crossing the slope
 threshold, no in-domain deposition onset or `R` is inferred; the audit marks
 that case and transport stops at the last reachable interior point.
-The current transport kernel uses the resulting group distance as an endpoint
-cutoff on Quinn branches; it does not yet reproduce Claessens' progressive
-deposition equations. Runout modifies `soil__depth` in place and caches the
-source nodes, paths, proportions, per-source branch totals, and
-erosion/deposition arrays on the runout subcomponent.
+The transport kernel uses the resulting group distance as a cutoff on Quinn
+branches. It does not reproduce Claessens' progressive-deposition equations.
+Instead, the optional `runout_deposition_model="bedrock"` adds the nonlinear
+transport-length rule used by Landlab's BedrockLandslider while preserving the
+chosen distance provider:
+
+```text
+f_deposit = 1 - (S / Sc)^2,  when S < Sc
+f_deposit = 0,               when S >= Sc
+```
+
+Here `S` is the node's steepest valid downhill receiver gradient and `Sc` is
+`runout_deposition.critical_slope` (degrees, defaulting to the internal
+friction angle). The fraction is deposited from incoming material, the
+remainder follows Quinn proportions, and all residual material deposits at the
+distance cutoff or an internal termination. This is the discrete
+BedrockLandslider transport-length fraction, without its evolving deposition
+surface cap or full routing implementation (Carretier et al., 2016; Campforts
+et al., 2020). Per-source and domain-wide conservation errors are checked at
+runtime and written to outputs.
 
 Claessens is the hydrologic counterpart to Newmark at the runout interface,
 not at the level of mechanics. Both provide a finite distance in metres to the
@@ -538,6 +560,7 @@ Each CLI execution writes a unique, self-describing directory beneath
 ```text
 runs/<timestamp>_<parameter-name>/
 ├── manifest.json
+├── parameters.json
 ├── summary.json
 ├── regions.csv
 ├── regions.parquet       # when pyarrow is available
@@ -545,10 +568,15 @@ runs/<timestamp>_<parameter-name>/
 └── rasters/              # .npy fallback when Zarr is unavailable
 ```
 
-The manifest records the complete configuration, Git revision, package versions,
-grid metadata, execution mode, and an output inventory. The region table keeps
-the model label as an explicit column and includes selection status plus summary
-statistics from the raster fields.
+The manifest records the complete configuration, Git revision, package
+versions, grid metadata, execution mode, and an output inventory.
+`parameters.json` repeats the complete configured inputs and adds resolved
+component values, including the landscape-derived Claessens threshold and the
+deposition critical slope in both degrees and gradient form. The summary stores
+domain and maximum per-source mass-balance errors, failed-material balance, and
+the active deposition rule. The region table keeps the model label as an
+explicit column and includes selection status plus summary statistics from the
+raster fields.
 
 Load one run without reading its large rasters:
 
@@ -964,6 +992,8 @@ You can control simulation parameters via:
 | `runout_distance_model` | `"prescribed"` or group-level `"claessens"` distance criterion |
 | `runout_distance`      | Prescribed selected-source distance provider       |
 | `runout_claessens_parameters` | Fraction and minimum movement slope |
+| `runout_deposition_model` | `"endpoint"` or nonlinear `"bedrock"` path deposition |
+| `runout_deposition_parameters` | Critical slope for nonlinear deposition |
 | `evolve_landscape`     | Enforce rerouting/hydrology refresh between events |
 | `verbose`              | Print progress and info (default: False)        |
 

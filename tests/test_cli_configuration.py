@@ -138,6 +138,49 @@ def test_selected_claessens_runout_does_not_require_prescribed_distance():
     assert prepared["simulation"]["runout_distance_model"] == "claessens"
 
 
+def test_landscape_adaptive_claessens_and_bedrock_deposition_are_accepted():
+    config = minimal_config()
+    config["simulation"].update(
+        {
+            "enable_runout": True,
+            "update_soil": True,
+            "runout_source_mode": "selected",
+            "runout_distance_model": "claessens",
+            "runout_claessens": {
+                "minimum_movement_slope": "auto",
+                "landscape_slope_percentile": 25.0,
+                "landscape_slope_bounds": [5.0, 30.0],
+            },
+            "runout_deposition_model": "bedrock",
+            "runout_deposition": {"critical_slope": 32.0},
+        }
+    )
+
+    prepared = prepare_config(config)
+
+    assert prepared["simulation"]["runout_claessens"][
+        "minimum_movement_slope"
+    ] == "auto"
+    assert prepared["simulation"]["runout_deposition_model"] == "bedrock"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("runout_deposition_model", "linear", "endpoint or bedrock"),
+        ("runout_deposition", {"critical_slope": 0.0}, "critical_slope"),
+    ],
+)
+def test_invalid_runout_deposition_configuration_is_rejected(
+    key, value, message
+):
+    config = minimal_config()
+    config["simulation"][key] = value
+
+    with pytest.raises(ValueError, match=message):
+        prepare_config(config)
+
+
 @pytest.mark.parametrize(
     ("claessens", "message"),
     [

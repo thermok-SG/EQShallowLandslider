@@ -305,7 +305,9 @@ class ShallowLandslider(Component):
         runout_source_mode: str = "newmark",
         runout_distance: float | np.ndarray | str | Callable | None = None,
         runout_distance_model: str = "prescribed",
-        runout_claessens_parameters: Mapping[str, float] | None = None,
+        runout_claessens_parameters: Mapping[str, object] | None = None,
+        runout_deposition_model: str = "endpoint",
+        runout_deposition_parameters: Mapping[str, float] | None = None,
         evolve_landscape: bool = False,
         g: float = 9.81,
         split_by_width_config: Optional[dict] = None,
@@ -399,7 +401,20 @@ class ShallowLandslider(Component):
             Parameters for the Claessens distance criterion. ``fraction`` is
             the dimensionless multiplier in ``R = fraction * vertical_drop``
             (default 0.4), and ``minimum_movement_slope`` is the local slope in
-            degrees below which deposition begins (default 10).
+            degrees below which deposition begins (default 10). Set it to
+            ``"auto"`` to use a clipped percentile of finite positive
+            landscape slopes; ``landscape_slope_percentile`` (default 25) and
+            ``landscape_slope_bounds`` (default [5, 30] degrees) control that
+            estimate.
+        runout_deposition_model : {"endpoint", "bedrock"}, optional
+            Deposition rule applied by the distance-limited transport kernel.
+            ``"endpoint"`` preserves the original all-at-endpoint behavior.
+            ``"bedrock"`` progressively deposits material with the nonlinear
+            BedrockLandslider transport-length relation.
+        runout_deposition_parameters : mapping, optional
+            Parameters for progressive deposition. ``critical_slope`` is in
+            degrees and defaults to ``angle_int_frict``. It is converted to a
+            dimensionless gradient before transport.
         evolve_landscape : bool, optional
             Require landscape-changing runout and enforce an external-state
             refresh between events. After runout, soil depth and topographic
@@ -475,6 +490,13 @@ class ShallowLandslider(Component):
         self.runout_claessens_parameters = self._validate_claessens_parameters(
             runout_claessens_parameters
         )
+        self.runout_deposition_model = str(runout_deposition_model).lower()
+        self.runout_deposition_parameters = (
+            self._validate_runout_deposition_parameters(
+                runout_deposition_parameters,
+                default_critical_slope=float(angle_int_frict),
+            )
+        )
         self.evolve_landscape = bool(evolve_landscape)
         self.g = float(g)
         self.split_by_width_config = split_by_width_config
@@ -508,6 +530,8 @@ class ShallowLandslider(Component):
         self._runout_erosional_path_distance = None
         self._runout_vertical_drop = None
         self._runout_deposition_reach = None
+        self._runout_claessens_slope_threshold = None
+        self._failed_material_mass_balance_error = None
         self._group_properties_df = None
         self._terrain_dirty = False
         self._terrain_revision = 0
@@ -548,6 +572,10 @@ class ShallowLandslider(Component):
         if self.runout_distance_model not in {"prescribed", "claessens"}:
             raise ValueError(
                 "runout_distance_model must be either 'prescribed' or 'claessens'"
+            )
+        if self.runout_deposition_model not in {"endpoint", "bedrock"}:
+            raise ValueError(
+                "runout_deposition_model must be either 'endpoint' or 'bedrock'"
             )
         if self.enable_runout and not self.update_soil:
             raise ValueError("enable_runout requires update_soil=True")
@@ -690,6 +718,16 @@ class ShallowLandslider(Component):
             )
         np.clip(fraction_after, 0.0, 1.0, out=fraction_after)
         self._failed_material_fraction[:] = fraction_after
+        expected_failed_depth = float(np.sum(failed_depth_after, dtype=float))
+        actual_failed_depth = float(
+            np.sum(fraction_after * soil_depth_after, dtype=float)
+        )
+        self._failed_material_mass_balance_error = (
+            actual_failed_depth - expected_failed_depth
+        )
+        balance_tolerance = 1.0e-12 * max(1.0, expected_failed_depth)
+        if abs(self._failed_material_mass_balance_error) > balance_tolerance:
+            raise RuntimeError("failed-material mixing failed mass conservation")
         self._update_effective_cohesion()
 
     def _initialize_required_output_fields(self):
@@ -720,6 +758,9 @@ class ShallowLandslider(Component):
             "relative_wetness": self._relative_wetness,
             "failed_material_fraction": self._failed_material_fraction,
             "effective_cohesion": self._effective_cohesion,
+            "failed_material_mass_balance_error": (
+                self._failed_material_mass_balance_error
+            ),
             "critical_relative_wetness": self._critical_wetness,
             "factor_of_safety": self._fos,
             "a_transient": self._a_transient,
@@ -753,7 +794,11 @@ class ShallowLandslider(Component):
             ),
             "runout_vertical_drop": self._runout_vertical_drop,
             "runout_deposition_reach": self._runout_deposition_reach,
+            "runout_claessens_slope_threshold": (
+                self._runout_claessens_slope_threshold
+            ),
             "runout_distance_model": self.runout_distance_model,
+            "runout_deposition_model": self.runout_deposition_model,
             "group_properties": self._group_properties_df,
             "runout": self._runout.results if self.enable_runout else None,
             "terrain_dirty": self._terrain_dirty,
@@ -849,7 +894,12 @@ class ShallowLandslider(Component):
             parameters = {}
         if not isinstance(parameters, Mapping):
             raise TypeError("runout_claessens_parameters must be a mapping")
-        allowed = {"fraction", "minimum_movement_slope"}
+        allowed = {
+            "fraction",
+            "minimum_movement_slope",
+            "landscape_slope_percentile",
+            "landscape_slope_bounds",
+        }
         unknown = set(parameters) - allowed
         if unknown:
             raise ValueError(
@@ -857,21 +907,107 @@ class ShallowLandslider(Component):
                 + ", ".join(sorted(unknown))
             )
 
+        fraction = float(parameters.get("fraction", 0.4))
+        threshold = parameters.get("minimum_movement_slope", 10.0)
+        if isinstance(threshold, str):
+            if threshold.lower() != "auto":
+                raise ValueError(
+                    "runout Claessens minimum_movement_slope must be a number "
+                    "or 'auto'"
+                )
+            threshold = "auto"
+        else:
+            threshold = float(threshold)
+
         normalized = {
-            "fraction": float(parameters.get("fraction", 0.4)),
-            "minimum_movement_slope": float(
-                parameters.get("minimum_movement_slope", 10.0)
-            ),
+            "fraction": fraction,
+            "minimum_movement_slope": threshold,
         }
-        if not np.all(np.isfinite(list(normalized.values()))):
-            raise ValueError("runout_claessens_parameters values must be finite")
+        if not np.isfinite(fraction):
+            raise ValueError("runout Claessens fraction must be finite")
         if normalized["fraction"] < 0.0:
             raise ValueError("runout Claessens fraction cannot be negative")
-        if not 0.0 <= normalized["minimum_movement_slope"] < 90.0:
+        if threshold != "auto" and not (
+            np.isfinite(threshold) and 0.0 <= threshold < 90.0
+        ):
             raise ValueError(
                 "runout Claessens minimum_movement_slope must be in [0, 90)"
             )
+        if threshold == "auto":
+            percentile = float(parameters.get("landscape_slope_percentile", 25.0))
+            bounds = parameters.get("landscape_slope_bounds", (5.0, 30.0))
+            if (
+                not isinstance(bounds, (list, tuple, np.ndarray))
+                or len(bounds) != 2
+            ):
+                raise ValueError(
+                    "runout Claessens landscape_slope_bounds must contain two values"
+                )
+            bounds = tuple(float(value) for value in bounds)
+            if not np.isfinite(percentile) or not 0.0 <= percentile <= 100.0:
+                raise ValueError(
+                    "runout Claessens landscape_slope_percentile must be in [0, 100]"
+                )
+            if (
+                not np.all(np.isfinite(bounds))
+                or not 0.0 <= bounds[0] < bounds[1] < 90.0
+            ):
+                raise ValueError(
+                    "runout Claessens landscape_slope_bounds must satisfy "
+                    "0 <= lower < upper < 90"
+                )
+            normalized["landscape_slope_percentile"] = percentile
+            normalized["landscape_slope_bounds"] = bounds
         return normalized
+
+    @staticmethod
+    def _validate_runout_deposition_parameters(
+        parameters, *, default_critical_slope
+    ):
+        """Return normalized parameters for path deposition."""
+        if parameters is None:
+            parameters = {}
+        if not isinstance(parameters, Mapping):
+            raise TypeError("runout_deposition_parameters must be a mapping")
+        unknown = set(parameters) - {"critical_slope"}
+        if unknown:
+            raise ValueError(
+                "Unsupported runout_deposition_parameters: "
+                + ", ".join(sorted(unknown))
+            )
+        critical_slope = float(
+            parameters.get("critical_slope", default_critical_slope)
+        )
+        if not np.isfinite(critical_slope) or not 0.0 < critical_slope < 90.0:
+            raise ValueError(
+                "runout deposition critical_slope must be finite and in (0, 90)"
+            )
+        return {"critical_slope": critical_slope}
+
+    def _resolve_claessens_slope_threshold(self) -> float:
+        """Resolve the fixed or landscape-percentile movement threshold."""
+        configured = self.runout_claessens_parameters["minimum_movement_slope"]
+        if configured != "auto":
+            threshold = float(configured)
+        else:
+            slopes = np.asarray(self._slope_deg32[self.grid.core_nodes], dtype=float)
+            slopes = slopes[np.isfinite(slopes) & (slopes > 0.0) & (slopes < 90.0)]
+            if slopes.size == 0:
+                raise ValueError(
+                    "Cannot infer the Claessens movement slope: the landscape "
+                    "has no finite positive core-node slopes"
+                )
+            percentile = self.runout_claessens_parameters[
+                "landscape_slope_percentile"
+            ]
+            lower, upper = self.runout_claessens_parameters[
+                "landscape_slope_bounds"
+            ]
+            threshold = float(
+                np.clip(np.percentile(slopes, percentile), lower, upper)
+            )
+        self._runout_claessens_slope_threshold = threshold
+        return threshold
 
     def _resolve_runout_distance(self, source_nodes: np.ndarray) -> np.ndarray:
         """Return a validated node-wise runout-distance array in metres."""
@@ -938,10 +1074,11 @@ class ShallowLandslider(Component):
         return int(candidates[np.argmax(gradients)])
 
     def _claessens_deposition_start(
-        self, head_node: int
+        self, head_node: int, threshold: float | None = None
     ) -> tuple[int | None, float]:
         """Trace to the first sub-threshold node, if one exists in-domain."""
-        threshold = self.runout_claessens_parameters["minimum_movement_slope"]
+        if threshold is None:
+            threshold = self._resolve_claessens_slope_threshold()
         boundary = set(np.asarray(self.grid.boundary_nodes, dtype=int))
         current = int(head_node)
         distance = 0.0
@@ -975,6 +1112,7 @@ class ShallowLandslider(Component):
             self.grid.at_node["topographic__elevation"], dtype=float
         )
         node_count = self.grid.number_of_nodes
+        slope_threshold = self._resolve_claessens_slope_threshold()
 
         distances = np.zeros(node_count, dtype=float)
         head_elevations = np.full(node_count, np.nan, dtype=float)
@@ -993,7 +1131,7 @@ class ShallowLandslider(Component):
             head_node = int(nodes[np.argmax(elevation[nodes])])
             head_elevation = float(elevation[head_node])
             start_node, erosional_distance = self._claessens_deposition_start(
-                head_node
+                head_node, slope_threshold
             )
             if start_node is None:
                 start_node_value = np.nan
@@ -1026,6 +1164,7 @@ class ShallowLandslider(Component):
                 "runout_vertical_drop_m": vertical_drop,
                 "runout_deposition_reach_m": deposition_reach,
                 "runout_distance_m": total_distance,
+                "runout_minimum_movement_slope_deg": slope_threshold,
             }
 
         self._runout_head_elevation = head_elevations
@@ -1046,6 +1185,7 @@ class ShallowLandslider(Component):
                 "runout_vertical_drop_m",
                 "runout_deposition_reach_m",
                 "runout_distance_m",
+                "runout_minimum_movement_slope_deg",
             ):
                 if column not in self._group_properties_df:
                     self._group_properties_df[column] = np.nan
@@ -1079,6 +1219,7 @@ class ShallowLandslider(Component):
                 self._runout_erosional_path_distance = None
                 self._runout_vertical_drop = None
                 self._runout_deposition_reach = None
+                self._runout_claessens_slope_threshold = None
 
         self._runout_distance_used = np.full(
             self.grid.number_of_nodes, np.nan, dtype=float
@@ -1094,6 +1235,12 @@ class ShallowLandslider(Component):
         self._runout.run_one_step(
             source_nodes=source_nodes,
             runout_distance=distances,
+            deposition_model=self.runout_deposition_model,
+            deposition_critical_slope=np.tan(
+                np.radians(
+                    self.runout_deposition_parameters["critical_slope"]
+                )
+            ),
         )
 
         self.update_failed_material_after_runout(

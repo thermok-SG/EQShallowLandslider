@@ -168,11 +168,18 @@ simulation:
   runout_distance: null # metres; required for selected + prescribed
   # Deposition begins below minimum_movement_slope; the depositional reach is
   # R = fraction * elevation loss from the selected group head to that point.
-  # These are the published example/default values. They are not calibrated
-  # for Nepal, so retain both parameters in experiment metadata.
+  # Use a numeric slope (the published example is 10 degrees), or "auto" to
+  # infer a reproducible, bounded lower-tail slope from the current landscape.
   runout_claessens:
     fraction: 0.4
-    minimum_movement_slope: 10.0 # degrees
+    minimum_movement_slope: "auto" # degrees or auto
+    landscape_slope_percentile: 25.0
+    landscape_slope_bounds: [5.0, 30.0] # degrees
+  # Keep the distance cutoff but optionally deposit material along its route.
+  # In bedrock mode, the default critical slope is angle_int_frict.
+  runout_deposition_model: "endpoint" # endpoint|bedrock
+  runout_deposition:
+    critical_slope: 30.0 # degrees; used only by bedrock deposition
   # If true, update topography after runout and require rerouting before the
   # next event. This is intended for event sequences managed by a driver.
   evolve_landscape: false

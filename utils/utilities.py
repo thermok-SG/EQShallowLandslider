@@ -1654,6 +1654,115 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
     regions = _build_region_output(ls, config, run_id)
     regions.to_csv(run_dir / "regions.csv", index=False)
     output_files = ["regions.csv"]
+
+    runout_results = ls.results.get("runout") or {}
+    soil_config = config.get("soil_params", {})
+    simulation_config = config.get("simulation", {})
+    cohesion_eff = getattr(ls, "cohesion_eff", soil_config.get("cohesion_eff"))
+    friction_deg = soil_config.get("angle_int_frict", 30.0)
+    if hasattr(ls, "angle_int_frict"):
+        friction_deg = float(np.degrees(ls.angle_int_frict))
+    resolved_parameters = {
+        "soil": {
+            "cohesion_eff_pa": cohesion_eff,
+            "failed_material_cohesion_pa": getattr(
+                ls,
+                "failed_material_cohesion",
+                soil_config.get("failed_material_cohesion"),
+            ),
+            "angle_internal_friction_deg": friction_deg,
+            "submerged_soil_proportion": float(
+                getattr(
+                    ls,
+                    "submerged_soil_proportion",
+                    soil_config.get("submerged_soil_proportion", 0.5),
+                )
+            ),
+            "wetness_source": getattr(ls, "wetness_source", "constant"),
+        },
+        "selection": {
+            "method": getattr(
+                ls,
+                "selection_method",
+                simulation_config.get("selection_method", "probabilistic"),
+            ),
+            "proportion_method": getattr(
+                ls,
+                "proportion_method",
+                simulation_config.get("proportion_method", "conservative"),
+            ),
+            "custom_proportion": getattr(
+                ls, "custom_proportion", simulation_config.get("custom_proportion")
+            ),
+            "random_seed": getattr(ls, "random_seed", config.get("random_seed")),
+        },
+        "displacement": {
+            "enabled": bool(
+                getattr(
+                    ls,
+                    "compute_displacement",
+                    simulation_config.get("compute_displacement", False),
+                )
+            ),
+            "time_shaking_seconds": float(
+                getattr(
+                    ls,
+                    "time_shaking",
+                    simulation_config.get("time_shaking", 0.0),
+                )
+            ),
+            "threshold_m": float(
+                getattr(
+                    ls,
+                    "displacement_threshold",
+                    simulation_config.get("displacement_threshold", 0.0),
+                )
+            ),
+        },
+        "runout": {
+            "enabled": bool(getattr(ls, "enable_runout", bool(runout_results))),
+            "source_mode": getattr(
+                ls,
+                "runout_source_mode",
+                simulation_config.get("runout_source_mode", "newmark"),
+            ),
+            "distance_model": getattr(
+                ls,
+                "runout_distance_model",
+                simulation_config.get("runout_distance_model", "prescribed"),
+            ),
+            "claessens_parameters": getattr(
+                ls,
+                "runout_claessens_parameters",
+                simulation_config.get("runout_claessens"),
+            ),
+            "resolved_claessens_slope_threshold_deg": ls.results.get(
+                "runout_claessens_slope_threshold"
+            ),
+            "deposition_model": getattr(
+                ls,
+                "runout_deposition_model",
+                simulation_config.get("runout_deposition_model", "endpoint"),
+            ),
+            "deposition_parameters": getattr(
+                ls,
+                "runout_deposition_parameters",
+                simulation_config.get("runout_deposition"),
+            ),
+            "resolved_deposition_critical_slope_gradient": (
+                runout_results.get("deposition_critical_slope")
+            ),
+        },
+    }
+    parameter_record = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "configured": config,
+        "resolved": resolved_parameters,
+    }
+    with open(run_dir / "parameters.json", "w", encoding="utf-8") as stream:
+        json.dump(_json_safe(parameter_record), stream, indent=2)
+    output_files.append("parameters.json")
     if output_cfg.get("write_parquet", True):
         try:
             regions.to_parquet(run_dir / "regions.parquet", index=False)
@@ -1711,6 +1820,10 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
                 if int(source) in moving_sources
             ],
             dtype=int,
+        )
+        source_mass_errors = np.asarray(
+            list(runout_results.get("source_mass_balance_errors", {}).values()),
+            dtype=float,
         )
         selected_footprint = np.asarray(ls.results["selected_labels"]) > 0
         erosion_footprint = erosion > 0
@@ -1791,6 +1904,19 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
                 "runout_mass_balance_error_node_m": float(
                     np.sum(deposition) - np.sum(erosion)
                 ),
+                "runout_mass_balance_error_m3": float(
+                    (np.sum(deposition) - np.sum(erosion)) * node_area_m2
+                ),
+                "runout_max_source_mass_balance_error_node_m": (
+                    float(np.max(np.abs(source_mass_errors)))
+                    if source_mass_errors.size else 0.0
+                ),
+                "runout_deposition_model": runout_results.get(
+                    "deposition_model", "endpoint"
+                ),
+                "runout_deposition_critical_slope_gradient": (
+                    runout_results.get("deposition_critical_slope")
+                ),
                 "final_soil_depth_min_m": float(np.nanmin(final_soil_depth)),
                 "negative_final_soil_depth_node_count": int(
                     np.count_nonzero(final_soil_depth < 0)
@@ -1817,6 +1943,9 @@ def save_model_run(save_pickle, ls, config, output_dir, logger, runtime_metadata
                     ),
                     "effective_cohesion_max_pa": float(
                         np.max(effective_cohesion)
+                    ),
+                    "failed_material_mass_balance_error_node_m": (
+                        ls.results.get("failed_material_mass_balance_error")
                     ),
                 }
             )
